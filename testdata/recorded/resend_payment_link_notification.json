@@ -1,12 +1,12 @@
 {
   "_meta": {
     "synthetic": false,
-    "captured_at": "2026-08-31T19:40:41.356474318Z",
+    "captured_at": "2026-08-31T20:27:50.127496751Z",
     "note": "The resend response. It reports that the notification API call succeeded and nothing about a person."
   },
   "request": {
     "method": "POST",
-    "path": "/v1/payment_links/plink_TWUnHCyrNqBmfF/notify_by/email"
+    "path": "/v1/payment_links/plink_TWVb5AfOc1pWI3/notify_by/email"
   },
   "response": {
     "status": 200,

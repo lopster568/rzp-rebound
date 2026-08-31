@@ -1,12 +1,12 @@
 {
   "_meta": {
     "synthetic": false,
-    "captured_at": "2026-08-31T19:40:40.294927022Z",
+    "captured_at": "2026-08-31T20:27:49.295549223Z",
     "note": "An order sitting at attempted with a failed payment under it, which the poller must not treat as terminal."
   },
   "request": {
     "method": "GET",
-    "path": "/v1/orders/order_TWUn56dUh8smHs"
+    "path": "/v1/orders/order_TWVavLKSSDqBUx"
   },
   "response": {
     "status": 200,
@@ -16,16 +16,16 @@
       "amount_paid": 0,
       "attempts": 1,
       "checkout": null,
-      "created_at": 1788205229,
+      "created_at": 1788208060,
       "currency": "INR",
       "description": null,
       "entity": "order",
-      "id": "order_TWUn56dUh8smHs",
+      "id": "order_TWVavLKSSDqBUx",
       "notes": {
         "purpose": "phase-1 fixture capture, driven to a failed payment"
       },
       "offer_id": null,
-      "receipt": "rcpt_capture_failed_1788205229",
+      "receipt": "rcpt_capture_failed_1788208060",
       "status": "attempted"
     }
   }

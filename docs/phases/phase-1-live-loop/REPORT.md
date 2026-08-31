@@ -307,6 +307,62 @@ Two things to carry into that work. First, `results/` is where every number
 goes, and a number without a run behind it does not go in a document. Second,
 every table gets its layer, per ADR-0004, and nothing sums across layers.
 
+## The review round
+
+The live half went through two hostile reviews before anything was pushed, run
+in parallel and briefed separately: one on correctness, one told to construct
+credential leaks rather than list suspicions. Both were told to reproduce a
+finding or not report it.
+
+They found ten defects worth fixing. `PROBLEMS.md` has all of them with their
+reproductions; the three that would have shipped as real problems:
+
+**Both clients followed redirects anywhere.** Neither set a `CheckRedirect`.
+The attempter is the one that matters: two of its four calls carry `key_id` in
+the query and the callback carries it as a path segment, so a 302 handed a
+foreign host half a credential pair and a 307 replayed the form body, which is
+the key id, the card number, and the CVV. Reproduced against a foreign test
+server. Both clients now refuse a hop off their own origin and still follow the
+same-origin callback the sequence depends on, which `make test-integration`
+against live test mode confirms.
+
+There is an uncomfortable lesson in the ordering. The span-attribute fix
+earlier in this phase moved the key id out of the span and left it in the URL.
+Go strips the `Authorization` header across a redirect and never strips a URL,
+so that fix left the checkout path with the weaker credential placement and no
+hop policy at all.
+
+**`apiError` redacted before parsing, which silently disabled the not-found
+mapping.** `redact.Value` replaces any run of 13 or more digits, and an
+unquoted JSON number is that shape, so a millisecond epoch in the error
+envelope left a document that no longer parsed. `Description` came back empty
+and `mapNotFound` stopped recognising the case `ErrOrderNotFound` exists for.
+The same class of ordering mistake as the truncate-before-redact bug from the
+offline round.
+
+**A 2xx with an empty body invented state on every read.** The tolerance was
+written for the resend and applied to all six calls, so `ListPaymentsForOrder`
+returned an empty slice and a nil error, which is a positive claim that an
+order has no attempts on it.
+
+Also worth recording: the rate-limit probe could not detect a 429 that the
+backoff retried successfully, so the PRD Q5 claim in this report rested on an
+instrument that could not have contradicted it. It now counts beneath the retry
+loop, and the re-run produced the numbers quoted above.
+
+Four credential leaks have now been found in this project, all four in code
+whose tests were green: two in the offline round, the span attribute, and the
+redirect. None of them was carelessness in the redaction code. Each lived on a
+surface the redaction tests were not asking about, and each was found by
+somebody told to build a leak rather than to read for one.
+
+One limit is documented rather than fixed, in `PROBLEMS.md`: any encoded form
+of the key id defeats both the literal replacement and the shape patterns, and
+every downstream guard uses the same patterns. There is no evidence Razorpay
+returns one, and encoding-aware redaction is an unbounded problem, so it is
+written down next to the existing statement that a key secret has no shape a
+pattern can find.
+
 ## What phase 2 inherits
 
 Unchanged from the phase 0 report, plus:
@@ -417,16 +473,17 @@ document is written from a run rather than from the test assertions.
 
 ## Test counts
 
-| | Offline half | Live half |
-|---|---|---|
-| Test functions, default build | 52 | 64 |
-| Test functions, integration tag | 0 | 5 |
-| Packages with tests | 10 | 10 |
+| | Offline half | Live half | After review |
+|---|---|---|---|
+| Test functions, default build | 52 | 64 | 70 |
+| Test functions, integration tag | 0 | 5 | 5 |
+| Packages with tests | 10 | 10 | 10 |
 
-The twelve new default-build functions are 1 config, 5 attempter, 4 live wire
-shape, 1 fake, and 1 classify. Every one runs with no credential, no container,
-and no network, because a fact learned from Razorpay only keeps holding if it
-becomes an offline assertion.
+The twelve default-build functions the live half added are 1 config, 5
+attempter, 4 live wire shape, 1 fake, and 1 classify. The review round added
+six more. Every one runs with no credential, no container, and no network,
+because a fact learned from Razorpay only keeps holding if it becomes an
+offline assertion.
 
 The five integration functions plus the two contract functions under the `live`
 harness are what spend real API calls.
@@ -601,6 +658,62 @@ check-docs: 26 file(s) clean
 
 `results/` now has runs in it for the first time, under `results/runs/`, which
 is gitignored. No number in this report is a recovery rate.
+
+## The review round
+
+The live half went through two hostile reviews before anything was pushed, run
+in parallel and briefed separately: one on correctness, one told to construct
+credential leaks rather than list suspicions. Both were told to reproduce a
+finding or not report it.
+
+They found ten defects worth fixing. `PROBLEMS.md` has all of them with their
+reproductions; the three that would have shipped as real problems:
+
+**Both clients followed redirects anywhere.** Neither set a `CheckRedirect`.
+The attempter is the one that matters: two of its four calls carry `key_id` in
+the query and the callback carries it as a path segment, so a 302 handed a
+foreign host half a credential pair and a 307 replayed the form body, which is
+the key id, the card number, and the CVV. Reproduced against a foreign test
+server. Both clients now refuse a hop off their own origin and still follow the
+same-origin callback the sequence depends on, which `make test-integration`
+against live test mode confirms.
+
+There is an uncomfortable lesson in the ordering. The span-attribute fix
+earlier in this phase moved the key id out of the span and left it in the URL.
+Go strips the `Authorization` header across a redirect and never strips a URL,
+so that fix left the checkout path with the weaker credential placement and no
+hop policy at all.
+
+**`apiError` redacted before parsing, which silently disabled the not-found
+mapping.** `redact.Value` replaces any run of 13 or more digits, and an
+unquoted JSON number is that shape, so a millisecond epoch in the error
+envelope left a document that no longer parsed. `Description` came back empty
+and `mapNotFound` stopped recognising the case `ErrOrderNotFound` exists for.
+The same class of ordering mistake as the truncate-before-redact bug from the
+offline round.
+
+**A 2xx with an empty body invented state on every read.** The tolerance was
+written for the resend and applied to all six calls, so `ListPaymentsForOrder`
+returned an empty slice and a nil error, which is a positive claim that an
+order has no attempts on it.
+
+Also worth recording: the rate-limit probe could not detect a 429 that the
+backoff retried successfully, so the PRD Q5 claim in this report rested on an
+instrument that could not have contradicted it. It now counts beneath the retry
+loop, and the re-run produced the numbers quoted above.
+
+Four credential leaks have now been found in this project, all four in code
+whose tests were green: two in the offline round, the span attribute, and the
+redirect. None of them was carelessness in the redaction code. Each lived on a
+surface the redaction tests were not asking about, and each was found by
+somebody told to build a leak rather than to read for one.
+
+One limit is documented rather than fixed, in `PROBLEMS.md`: any encoded form
+of the key id defeats both the literal replacement and the shape patterns, and
+every downstream guard uses the same patterns. There is no evidence Razorpay
+returns one, and encoding-aware redaction is an unbounded problem, so it is
+written down next to the existing statement that a key secret has no shape a
+pattern can find.
 
 ## What phase 2 inherits
 

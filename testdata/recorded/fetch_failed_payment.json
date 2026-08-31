@@ -1,12 +1,12 @@
 {
   "_meta": {
     "synthetic": false,
-    "captured_at": "2026-08-31T19:40:38.847670755Z",
+    "captured_at": "2026-08-31T20:27:48.195299402Z",
     "note": "A real failed payment. This is the capture PRD Q4 was settled from."
   },
   "request": {
     "method": "GET",
-    "path": "/v1/payments/pay_TWUn6FzZyxbTTr"
+    "path": "/v1/payments/pay_TWVavwHTr5tNyj"
   },
   "response": {
     "status": 200,
@@ -21,7 +21,7 @@
       "card": {
         "emi": false,
         "entity": "card",
-        "id": "card_TWUn6Vl9R5Hb0K",
+        "id": "card_TWVaw9KaavyB57",
         "international": false,
         "issuer": "DCBL",
         "last4": "0001",
@@ -31,9 +31,9 @@
         "token_iin": "410028000",
         "type": "debit"
       },
-      "card_id": "card_TWUn6Vl9R5Hb0K",
+      "card_id": "card_TWVaw9KaavyB57",
       "contact": "+919999999999",
-      "created_at": 1788205231,
+      "created_at": 1788208062,
       "currency": "INR",
       "description": null,
       "email": "probe@example.com",
@@ -44,14 +44,14 @@
       "error_source": "gateway",
       "error_step": "payment_authorization",
       "fee": null,
-      "id": "pay_TWUn6FzZyxbTTr",
+      "id": "pay_TWVavwHTr5tNyj",
       "international": false,
       "invoice_id": null,
       "method": "card",
       "notes": {
         "purpose": "phase-1 fixture capture, driven to a failed payment"
       },
-      "order_id": "order_TWUn56dUh8smHs",
+      "order_id": "order_TWVavLKSSDqBUx",
       "refund_status": null,
       "status": "failed",
       "tax": null,

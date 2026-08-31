@@ -1,12 +1,12 @@
 {
   "_meta": {
     "synthetic": false,
-    "captured_at": "2026-08-31T19:40:29.500027774Z",
+    "captured_at": "2026-08-31T20:27:40.581971154Z",
     "note": "The payments collection envelope for an order with no attempts on it."
   },
   "request": {
     "method": "GET",
-    "path": "/v1/orders/order_TWUn3eXIG5rumB/payments"
+    "path": "/v1/orders/order_TWVatyzJURHmKA/payments"
   },
   "response": {
     "status": 200,

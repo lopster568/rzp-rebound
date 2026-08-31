@@ -1,7 +1,7 @@
 {
   "_meta": {
     "synthetic": false,
-    "captured_at": "2026-08-31T19:40:41.881377942Z",
+    "captured_at": "2026-08-31T20:27:50.725293454Z",
     "note": "A missing resource. Razorpay answers 400 with a description rather than 404."
   },
   "request": {

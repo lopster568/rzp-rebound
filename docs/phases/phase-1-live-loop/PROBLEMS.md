@@ -396,3 +396,200 @@ point rather than a measurement, which is what their comment says.
 `TestLiveRateLimitObservation` is the probe, behind both the integration build
 tag and an `RZP_RATE_LIMIT_PROBE` variable, because a real ramp spends real
 calls and nobody should trip one by running the suite.
+
+## 2026-08-31: the live half went through two hostile reviews and they found ten more defects
+
+The offline half was reviewed before it shipped and that round is above. The
+live half got the same treatment, split across two reviewers briefed
+separately: one on correctness, one told to construct credential leaks rather
+than list suspicions. Both were told to reproduce or say nothing.
+
+Between them they found ten defects worth fixing. Six were reproduced against
+the code at HEAD before anything was changed, and every fix below went in with
+a failing test first.
+
+### The one that mattered most: both clients followed redirects anywhere
+
+Neither `razorpay.Client` nor `razorpay.Attempter` set an
+`http.Client.CheckRedirect`, so both followed up to ten hops wherever a
+`Location` header pointed.
+
+The attempter is where this bites. `resolve` pins every URL that comes out of
+an HTML form action back onto the configured root, and that part works: a
+reviewer fed it `//evil.example/x`, `https://api.razorpay.com@evil.example/x`
+and a `javascript:` URL, and all were rewritten or rejected. But nothing pinned
+the `Location` header, which is the one hop the design depends on, because the
+settle call answers 302 and the payment only settles once the callback is
+followed.
+
+Reproduced, against a foreign test server:
+
+- A 302 on any of the four steps hands that host the full request URI. Two of
+  the calls carry `key_id` in the query and the callback carries it as a path
+  segment.
+- A 307 on the first call replays the entire form body, which is `key_id`,
+  `card[number]`, and `card[cvv]`.
+
+The client is milder, because Go strips the `Authorization` header on a
+cross-domain redirect. It keeps it for a different port on the same host or for
+a subdomain, and a reviewer confirmed the base64 of the key pair reaching a
+foreign server on a port change.
+
+There is a sharp lesson in the ordering here. The fix for the span leak earlier
+in this phase moved the key id out of the span attribute and left it in the
+URL, which was correct as far as it went. Go strips a header across a redirect
+and never strips a URL, so the checkout path was left with the weaker
+credential placement and no hop policy at all.
+
+Fix: `pinnedRedirect` on both clients. Same-origin hops are still followed, so
+the real callback still works, and the hop ceiling is 3 rather than Go's 10.
+The refusal error names the two hosts and never the URL, because a refused
+redirect target is exactly the kind of URL that carries a credential.
+`TestClientAndAttempterRefuseToFollowARedirectOffTheirOrigin` drives all four
+cases and was seen failing on three of them, with the card number and CVV
+visible in the failure output. `make test-integration` still passes, which is
+what confirms the real callback is same origin.
+
+Both clients also gained a 30 second timeout, which neither had.
+
+### Redacting before parsing silently disabled the not-found mapping
+
+`apiError` scrubbed the body and then parsed the scrubbed text for
+`error.description`. `redact.Value` replaces a run of 13 or more digits with a
+bare marker, and an unquoted JSON number is exactly that shape, so a
+millisecond epoch anywhere in the error envelope left a document that no longer
+parsed. The unmarshal error was discarded, `Description` stayed empty, and
+`mapNotFound` stopped recognising the one case `ErrOrderNotFound` exists for.
+
+Razorpay's error envelope carries an open-shaped `metadata` object, which
+`testdata/recorded/fetch_missing_order.json` confirms, so this was reachable
+rather than theoretical. It is also the same class of mistake as the truncation
+bug from the offline round: an ordering between redaction and another operation
+that nobody wrote a test about.
+
+Fix: parse the raw body, then redact the two extracted fields individually.
+`captureResponse` already guarded the same hazard with a `json.Valid` check;
+`apiError` had the hazard and no guard.
+
+### A 2xx with an empty body invented state on every read
+
+`do` treated an empty 2xx as a success and left `out` untouched, which was
+written for the resend call and applied to all six. Reproduced: `FetchOrder`
+returned an order with an empty status and a nil error, and
+`ListPaymentsForOrder` returned an empty slice and a nil error.
+
+The second one is the bad one. An empty slice is a positive claim that the
+order has no attempts on it, and the poller and the recovery orchestrator both
+act on that claim. The comment justifying the tolerance talked about a call
+that moves money, and every call site that would have benefited from it was a
+read.
+
+Fix: `doWith` takes the tolerance as a parameter and only the resend passes it.
+
+### An attempt that ran and failed was recorded as never made
+
+`AttemptOutcome.Steps` was appended to after a 2xx, so a call that reached
+Razorpay and had its effect but whose response failed was absent from the
+trail. Reproduced on the worst case: the mock bank was told to authorize, the
+response came back 500, and `Steps` said the settle call never happened.
+
+For a project whose argument is that the audit trail says what actually
+happened, an attempt recorded as not made is the wrong direction to be wrong
+in. A step is now recorded when it is sent, and the doc comment says that
+presence means sent rather than succeeded.
+
+### The rate-limit probe could not see the thing it was measuring
+
+`TestLiveRateLimitObservation` counted a rate limit only through
+`ErrRetryBudgetExhausted`, which `do` returns after four attempts. A 429 that
+the backoff then retried successfully was counted as an ordinary answer, so the
+probe could have reported zero 429s while every call had been throttled three
+times.
+
+That instrument is what the PRD Q5 claim rests on, so the claim rested on
+nothing. Fix: a counting transport underneath the retry loop. Re-run on
+2026-08-31: 40 calls, 40 HTTP requests, 30.009 seconds, 1.3 calls per second,
+zero 429 responses seen beneath the retry loop. The claim is the same and it
+now has an instrument behind it that could have contradicted it.
+
+### Six smaller ones
+
+- **`TraceURL` guarded the empty string, not the invalid trace id.**
+  `trace.TraceID.String` never returns empty; a non-recording span context
+  renders as 32 zeros. So the "no trace id was recorded" branch in the demo was
+  dead and the failure mode was a link to a trace that cannot exist. It now
+  checks for 32 hex characters with at least one non-zero.
+- **`load_dotenv` mangled ordinary `.env` files.** A quoted value kept its
+  quotes, which would authenticate with the quotes included and produce a 401
+  an operator cannot explain. A final line with no trailing newline was
+  dropped, silently unsetting the last variable. `export NAME=value` and
+  `NAME = value` were skipped in silence, and a CR from a Windows editor was
+  kept. All fixed.
+- **The Makefile loaded `.env` a different way from the scripts.**
+  `set -a; . ./.env` is fatal under dash when the file is missing, so a fresh
+  checkout could not run `make jaeger-down`, which needs no credentials at all.
+  It also gave the file precedence over the caller's environment, the opposite
+  of the rule `load_dotenv` implements, and it executes command substitution
+  inside a value. The scripts now load their own env and the Makefile goes
+  through `load_dotenv` for the Go entrypoints.
+- **The fixture credential scan passed on zero files.** `set -uo pipefail` with
+  no `-e`, a `find` nothing checked, and no assertion that anything was
+  inspected, so a wrong output directory printed a clean result and exited 0.
+  For a control the script's own header calls "the last line rather than the
+  only one", that is the wrong failure mode. It now refuses a missing directory
+  and refuses a scan of zero files.
+- **A note that was not a string failed the whole order.** The same defect the
+  `Notes` type was added to fix, for a different shape. A dashboard-created
+  order with a numeric note would have been undecodable. Non-string values now
+  keep their JSON text.
+- **The capture line had no size cap.** One checkout page produced a JSONL line
+  of over a megabyte; `maxResponseBytes` caps the read and `apiError` truncates,
+  and the capture path did neither. Capped at 64KB, stored as a truncated string
+  so the line still parses.
+
+Also corrected without a test, because they cannot fail a run: the capture line
+recorded a synthetic `/checkout/<step>` path in a stream the client documents
+as the record of what Razorpay sent, and it now records the path that answered;
+step spans recorded no error status, so a transport failure left a step span
+indistinguishable from a successful one; the ledger opened with `os.Create`,
+so `-ledger` pointed twice at the same path destroyed the first run's evidence,
+and it is `O_EXCL` now; the ledger reader used a default `bufio.Scanner`, which
+stops at 64KB on a row that can carry an error string; the second `CreateOrder`
+in the capture run had no label of its own; two live tests used fixed receipt
+strings; and `compose_run` flattened its arguments with `$*` on the remote
+branch while the local branch used `"$@"`.
+
+### What was checked and found clean
+
+Worth recording, because a review that only produces findings reads as though
+nothing was verified. All ten files in `testdata/recorded/`, the whole working
+tree, and all git history: neither configured credential appears anywhere
+except `.env`, which is gitignored. The four ledgers under `results/runs/`:
+nothing. `Config.String` masks both halves. Every `fmt.Print` in `cmd/rzp`
+prints ids, statuses, a masked card, and redacted errors, checked by running
+the usage, missing-credential, and 401 paths. Happy-path spans carry only step,
+status, order id, payment id, and outcome.
+
+### One limit that is not fixed, and is not being called fixed
+
+`Client.Redact` matches three literal strings and `redact.Value` matches two
+shapes. Any encoded form of the key id defeats all five: a reviewer put a
+base64 and a percent-encoded key id through `apiError` and `captureResponse`
+and both survived into the capture line, which is what becomes a committed
+fixture, with every downstream guard using the same two patterns.
+
+There is no evidence Razorpay returns an encoded key id, and building
+encoding-aware redaction is an unbounded problem. What can be said is what this
+project already says about a key secret: the control is the package that holds
+the credential scrubbing before the string leaves, and the patterns are a
+backstop for recognisable shapes. This is a second case where the backstop does
+not reach, and it is written here rather than left to be discovered.
+
+Cost: about 90 minutes across both reviews and the fixes.
+
+Four credential leaks have now been found in this project, all four in code
+whose tests were green at the time: two in the offline round, the span
+attribute, and the redirect. The common shape is not carelessness in the
+redaction code. It is that each leak lived on a surface the redaction tests
+were not asking about, and each was found by someone told to construct a leak
+rather than to read for one.

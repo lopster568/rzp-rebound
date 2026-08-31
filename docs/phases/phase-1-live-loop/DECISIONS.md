@@ -552,3 +552,89 @@ control and this is the check on the control, run at the moment the files are
 written rather than at the moment somebody remembers to stage them. It looks
 for the configured secret by value, which is the only way to look for a key
 secret at all: it is a bare alphanumeric string with no shape to match.
+
+## 2026-08-31: both clients pin redirects to their own origin
+
+`pinnedRedirect` in `client.go` is the `CheckRedirect` on `razorpay.Client` and
+on `razorpay.Attempter`. A hop to anything other than the scheme and host the
+client was built for is refused, and the ceiling is 3 rather than Go's 10.
+
+The alternative was to keep following redirects and rely on Go's own header
+rule. That is not enough here, and the reason is specific rather than general:
+Go strips the `Authorization` header across a domain change and never strips a
+URL, and on the checkout path the credential is in the URL. `PROBLEMS.md` has
+the reproduction, including a 307 that replayed the card number and the CVV to
+a foreign host.
+
+Same-origin hops are still followed, and that is not a compromise: the settle
+call answers 302 and the payment only settles once the callback is followed,
+and that callback is on the same origin as the API. `make test-integration`
+passing against live test mode is what confirms it rather than the reasoning.
+
+The refusal error names the two hosts and never the URL, because a refused
+redirect target is exactly the kind of URL that carries a credential.
+
+## 2026-08-31: the empty-body tolerance belongs to one call, not to `do`
+
+`doWith` takes `tolerateEmptyBody` and only `ResendPaymentLinkNotification`
+passes it true.
+
+It was unconditional in `do` when it was written, with a comment about not
+turning a successful side effect into a reported failure for a call that moves
+money. The comment was right about the resend and wrong about everything else:
+all six call sites pass a non-nil `out`, so the tolerance applied to every read
+as well. `FetchOrder` returned an empty status and a nil error, and
+`ListPaymentsForOrder` returned an empty slice and a nil error.
+
+The list is the one that decided this. An empty slice is a positive claim that
+an order has no attempts on it, the poller and the orchestrator both act on
+that claim, and a recovery decision made from an invented empty list is exactly
+the class of number this project exists not to produce. A read that cannot be
+decoded is an error.
+
+## 2026-08-31: a note that is not a string keeps its JSON text
+
+`Notes.UnmarshalJSON` decodes into `map[string]json.RawMessage` and falls back
+to the raw text for any value that is not a JSON string.
+
+Returning an error was the other option and it is what the code did. It is the
+same defect the type was added to fix, one shape along: the order exists in
+Razorpay, the caller gets an error, and nothing knows the id of what it just
+read. This project only ever writes string notes, so the case needs an order
+created from the dashboard or by another integration, which is exactly the kind
+of thing that turns up once and takes an afternoon.
+
+A non-empty array is still an error, and that has not changed. An array is not
+a map with a different spelling, and returning an empty map for one would drop
+data. A scalar note has a faithful string form; an array of notes does not.
+
+## 2026-08-31: a step is recorded when it is sent
+
+`AttemptOutcome.Steps` gets a name before the call, not after a 2xx.
+
+The trail exists to say what happened. A call that reached Razorpay and had its
+effect but whose response failed is a call that was made, and the case that
+matters is the last one, where the mock bank has been told to authorize and the
+response comes back 500. Recording that as an attempt that never happened is
+the wrong direction to be wrong in for a system that moves money.
+
+The cost is that presence in `Steps` no longer means success. That is on the
+field's doc comment, and the error returned alongside says which step stopped
+the run.
+
+## 2026-08-31: `make` and the scripts load `.env` the same way
+
+Every shell script sources `scripts/lib.sh` and calls `load_dotenv`. The
+Makefile's `RUN_WITH_ENV` goes through the same function for the Go
+entrypoints, and the shell targets do not use it at all because the scripts
+already do it themselves.
+
+`set -a; . ./.env; set +a` was the first version and it was wrong in three
+ways, all of them found in review. Sourcing a missing file is fatal under dash,
+so a fresh checkout could not run `make jaeger-down`, a target that needs no
+credentials. `set -a` gives the file precedence over the caller's exported
+environment, which is the opposite of the rule `load_dotenv` documents and
+implements, so the same variable resolved differently depending on which entry
+point was used. And sourcing executes command substitution inside a value.
+
+One loader, one precedence rule, one place to fix the next parsing bug.

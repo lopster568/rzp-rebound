@@ -80,7 +80,7 @@ stronger one.
 |---|---|
 | PRD Q2: the risk-block error code | Still unknown. No call in the spike produced a risk block, and nothing in the test account can obviously force one. `testcards.PendingRiskBlockCode` stands. |
 | PRD Q3: the card that forces a success | There is no such card. The outcome is chosen at step 5 of the mechanism above, and the same card number produced both a capture and a failure. `testcards.PendingSuccessCard` stands, and its doc comment now records this rather than an open question. |
-| PRD Q5: the rate limit | Not measured. The spike and the fixture capture made roughly 60 requests on 2026-08-31 at a sequential pace, and not one 429 came back, so `DefaultMaxAttempts`, `DefaultBaseBackoff`, `DefaultMaxBackoff`, and `DefaultMaxConcurrent` in `client.go` are still a starting point rather than a measurement. A number for the limit needs a deliberate ramp, which is phase 2 work. |
+| PRD Q5: the rate limit | Not measured. The deliberate probe on 2026-08-31 made 40 calls in 30.009 seconds, a rate of 1.3 calls per second, and the counting transport underneath the retry loop saw 40 HTTP requests and zero 429 responses. Roughly 100 further calls that day across the spike, the captures, and the demo runs produced none either. That rules out a limit low enough to matter at this pace and is not a measurement of the limit, so `DefaultMaxAttempts`, `DefaultBaseBackoff`, `DefaultMaxBackoff`, and `DefaultMaxConcurrent` in `client.go` are still a starting point. A number for the limit needs a deliberate ramp, which is phase 2 work. The count comes from beneath the retry loop on purpose: counting at the call boundary, which is what the probe did first, cannot see a 429 the backoff absorbed. |
 | The eight documented magic cards | None of them reproduced its documented error code. All eight rows are in the table below. |
 | Whether a 5xx means the call did not happen | No 5xx was observed at all, so the conservative no-retry rule in `Client.do` stands untested rather than confirmed. |
 | Whether UPI `success@razorpay` can be driven server side | No. `POST /v1/payments/create/upi` answered `400` with `The requested URL was not found on the server` under Basic auth, and `401` with `Please provide your api key for authentication purposes` with `key_id` in the body or the query string. The two `upi_vpas` rows in `testdata/magic_cards.json` stay unverified. |
@@ -127,14 +127,29 @@ actually produces is `payment_failed`, which carries no cause, so it classifies
 `unclassified` and is not retry eligible. The eight-entry reason table is
 exercised by the fake gateway and by nothing live.
 
-## A credential warning about step 3
+## Two credential warnings about the checkout steps
 
-The HTML page returned by `POST /v1/payments/{id}/authenticate` carries the key
-id inside a form action URL, and so does the mock bank page after it. Anything
-that captures a response from those two steps has to run it through
-`Client.Redact` before it is written anywhere, which is what the capture hook
-already does for every response body.
+**The pages carry the key id.** The HTML page returned by
+`POST /v1/payments/{id}/authenticate` carries the key id inside a form action
+URL, and so does the mock bank page after it. Anything that captures a response
+from those two steps has to run it through `Client.Redact` before it is written
+anywhere, which is what the capture hook already does for every response body.
 
-This is the concrete case the phase 0 and phase 1 redaction work was built for,
-and it was found by reading a page rather than by a test. `PROBLEMS.md` has the
-entry.
+**So do the URLs, which is worse.** Steps 4 and 5 take `key_id` as a query
+parameter, and the callback that step 5 redirects to carries the key id as a
+path segment. Two consequences, both found the hard way and both written up in
+`PROBLEMS.md`:
+
+- An instrumented HTTP transport records the URL. `otelhttp` records
+  `url.full`, so tracing these calls put the key id into span attributes of a
+  real run. `razorpay.Attempter` therefore does not use `otelhttp` and emits
+  its own spans, which carry no URL.
+- A redirect hands the URL to whatever host the `Location` header names. Go
+  strips the `Authorization` header across a domain change and never strips a
+  URL, so a credential in a URL survives a hop that a credential in a header
+  would not. Both clients now refuse a redirect off the origin they were
+  pointed at, and follow the same-origin callback the sequence needs.
+
+The general shape is worth stating: on this path the credential is in the URL
+and not in a header, so every control that assumes it is in a header does not
+apply.

@@ -395,3 +395,47 @@ id was found in a real Jaeger trace. The offline reproduction:
 Both of those are the honest order for a bug a live call found: the live
 failure is the discovery, and the offline test is what stops it coming back
 without a credential in the loop.
+
+## The review round, 2026-08-31
+
+Six more test functions came out of two hostile reviews of the live half, taking
+the default build from 64 to 70. Each was written as a failing assertion first
+and seen failing against the code as it was. `PROBLEMS.md` has the findings.
+
+| Test | Asserts |
+|---|---|
+| `TestClientAndAttempterRefuseToFollowARedirectOffTheirOrigin` | Neither client follows a redirect off its configured origin, on a 302 or a 307, and a foreign host receives neither credential nor the card number. A same-origin redirect is still followed. |
+| `TestClientStillRecognisesAMissingResourceWhenTheBodyCarriesALongNumber` | A missing-resource 400 still maps to the not-found sentinel when the error envelope carries a 13-digit number, and the body a caller sees is still scrubbed. |
+| `TestClientDoesNotInventStateFromAnEmptyResponseBody` | Five read and create calls error on an empty 2xx body rather than returning a zero value, for both 200 and 204. The resend still reports accepted. |
+| `TestAttemptOutcomeRecordsAStepThatRanAndThenFailed` | A settle call the mock bank acted on appears in `Steps` even when its response failed. |
+| `TestAttempterDecodesEntitiesInHiddenInputValues` | An escaped ampersand in a hidden input value is decoded before the field is carried forward, as it already was for form actions. |
+| `TestOrderDecodesNotesThatAreNotStrings` | An order with numeric, boolean, and null notes decodes rather than failing the whole response. |
+
+`TestConfigReadsJaegerUIURLAndBuildsATraceURL` gained two cases rather than a
+new function: the all-zero trace id and a malformed one both produce no link.
+
+Red output for the two that carry the most:
+
+```
+--- FAIL: TestClientAndAttempterRefuseToFollowARedirectOffTheirOrigin/attempter_307_replays_the_form_body_off_origin
+    a foreign host received the key id: /v1/payments/create/ajax form=...card%5Bcvv%5D=123...card%5Bnumber%5D=4100280000080001...
+    a foreign host received the card number: /v1/payments/create/ajax form=...
+--- FAIL: TestClientAndAttempterRefuseToFollowARedirectOffTheirOrigin/attempter_302_hands_over_the_request_uri
+    a foreign host received the key id: /callback/sig/key_id_placeholder form=
+--- FAIL: TestClientAndAttempterRefuseToFollowARedirectOffTheirOrigin/client_refuses_an_off-origin_redirect
+    the client followed a redirect off its configured origin and reported no error
+    the foreign host was contacted 1 time(s)
+```
+
+```
+--- FAIL: TestClientDoesNotInventStateFromAnEmptyResponseBody/OK
+    FetchOrder returned an order and no error for an empty body
+    CreateOrder returned an order and no error for an empty body
+    ListPaymentsForOrder returned 0 payment(s) and no error for an empty body, which is a positive claim that the order has no attempts
+    FetchPayment returned a payment and no error for an empty body
+    CreatePaymentLink returned a link and no error for an empty body
+```
+
+The card number in that first block is the well-known Razorpay test card and
+the key id is this suite's placeholder, so nothing in the output is a real
+credential. That it reads like one is the point of the test.
