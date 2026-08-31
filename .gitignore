@@ -1,7 +1,23 @@
 .env
-results/runs/
-results/batches/
 bin/
 *.pem
 __pycache__/
 .pytest_cache/
+
+# Run output is evidence for whoever ran it, not a committed artefact, with two
+# deliberate exceptions. One batch manifest and one full run are tracked so the
+# committed table under results/tables/ can be recomputed by anyone: a results
+# table with no inputs behind it is a number nobody can check.
+#
+# Both exceptions are synthetic. The manifest comes out of batch.Generate from a
+# seed and the run is the fake layer, so neither carries anything from Razorpay
+# and neither is a credential. The live-layer run stays untracked, because its
+# order ids are real Razorpay test-mode ids.
+#
+# The negations need the star form. A rule that excludes the directory itself
+# stops git from ever looking inside it, so `results/runs/` with an exception
+# under it would not work.
+results/runs/*
+!results/runs/sample-phase-2-fake/
+results/batches/*
+!results/batches/b-1234-40.json

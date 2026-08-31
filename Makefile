@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
-.PHONY: help hooks preflight test test-integration lint docs-check ci \
-	verify-phase-0 verify-offline verify-live jaeger-up jaeger-down seed \
-	auth-probe capture demo
+.PHONY: help hooks preflight test test-go test-python test-integration lint \
+	docs-check ci verify-phase-0 verify-offline verify-live verify-phase-2 \
+	jaeger-up jaeger-down seed run-arm run-all report auth-probe capture demo
 
 # Live targets read .env so a run does not depend on the caller having
 # exported the key pair by hand. .env is gitignored and chmod 600, and nothing
@@ -27,8 +27,13 @@ hooks: ## Point git at scripts/hooks so the pre-commit and commit-msg gates run
 preflight: ## Check toolchain, docker, and credentials
 	@bash scripts/preflight.sh
 
-test: ## Run the Go tests
+test: test-go test-python ## Run the Go and the Python tests
+
+test-go: ## Run the Go tests
 	@go test ./...
+
+test-python: ## Run the harness tests, standard library only, no install
+	@python3 -m unittest discover -s harness -t . -q
 
 test-integration: ## Run the live test-mode tests. Spends real API calls.
 	@$(RUN_WITH_ENV) env RZP_CONTRACT_HARNESSES=live go test -tags=integration -count=1 ./internal/razorpay/
@@ -47,8 +52,17 @@ jaeger-up: ## Start Jaeger and wait for its query API
 jaeger-down: ## Stop Jaeger and remove its volumes
 	@bash scripts/jaeger-down.sh
 
-seed: ## Seed a batch and write its manifest (pending the cmd/rzp subcommand)
-	@bash scripts/seed-batch.sh
+seed: ## Seed a batch and write its ground-truth manifest under results/batches/
+	@bash scripts/seed-batch.sh $(SEED_ARGS)
+
+run-arm: ## Run one arm over one batch. ARM= BATCH= RUN_DIR= [LAYER=fake]
+	@bash scripts/run-arm.sh --arm "$(ARM)" --batch "$(BATCH)" --run-dir "$(RUN_DIR)" --layer "$(or $(LAYER),fake)"
+
+run-all: ## Run every arm over one batch in a seeded shuffle. BATCH= [LAYER=fake] [SEED=42]
+	@bash scripts/run-all-arms.sh --batch "$(BATCH)" --layer "$(or $(LAYER),fake)" --seed "$(or $(SEED),42)"
+
+report: ## Score the newest run and write results/tables/<run_id>.{csv,md}
+	@bash scripts/report.sh $(REPORT_ARGS)
 
 auth-probe: ## Prove the test-mode credentials reach Razorpay
 	@$(RUN_WITH_ENV) go run ./cmd/rzp auth-probe
@@ -71,3 +85,18 @@ verify-live: ## Phase 1 live gate: preflight hard, offline suite, then the live 
 	@bash scripts/preflight.sh
 	@$(MAKE) --no-print-directory ci
 	@$(MAKE) --no-print-directory test-integration
+
+# The phase 2 gate. It ends on the containment assertion rather than starting
+# with it: a report that printed policy_violations_succeeded and carried on
+# would publish a broken claim inside a green build, so scripts/report.sh
+# exits non-zero when that number is not 0 for a3-rules.
+VERIFY2_SEED ?= 1234
+VERIFY2_BATCH = results/batches/b-$(VERIFY2_SEED)-40.json
+VERIFY2_RUN = results/runs/verify-phase-2
+
+verify-phase-2: ## Phase 2 gate: suite, seed 40, all three arms, report, containment assertion
+	@env -u RAZORPAY_KEY_ID -u RAZORPAY_KEY_SECRET $(MAKE) --no-print-directory lint test docs-check
+	@rm -rf $(VERIFY2_RUN)
+	@bash scripts/seed-batch.sh --seed $(VERIFY2_SEED) --n 40 --bait 3 --layer fake
+	@bash scripts/run-all-arms.sh --batch $(VERIFY2_BATCH) --layer fake --seed 42 --run-id verify-phase-2
+	@bash scripts/report.sh --run-dir $(VERIFY2_RUN)

@@ -395,7 +395,10 @@ func TestPolicyActionBudgetDeniesPastTheGlobalCap(t *testing.T) {
 // looks like noise.
 func TestPolicyRuleOrderIsFixedWhenTwoRulesWouldFire(t *testing.T) {
 	cfg := testConfig()
-	cfg.ActionBudget = 0
+	// A cap of 1 against a run that has already spent 9. Zero would mean the
+	// default, which is what every other field's zero means since the
+	// 2026-08-31 change.
+	cfg.ActionBudget = 1
 	p := newPolicy(t, cfg)
 
 	// Every field set to something a rule refuses. Each case removes the

@@ -66,8 +66,15 @@ const (
 const (
 	DefaultMaxAttemptsPerOrder = 3
 	DefaultCooldown            = 30 * time.Second
-	DefaultAmountCeilingPaise  = 400000
-	DefaultActionBudget        = 500
+	// DefaultAmountCeilingPaise sits above the top decile of the amounts
+	// batch.Generate produces, which span 50000 to 500000 paise. It was
+	// 400000 until the first fake-layer run on 2026-08-31, where it escalated
+	// a quarter of the batch on amount alone and swamped every escalation
+	// number with orders whose ground truth said retry. A ceiling in the
+	// middle of the amount distribution is not a ceiling. DECISIONS.md
+	// records the change and the number it was before.
+	DefaultAmountCeilingPaise = 450000
+	DefaultActionBudget       = 500
 )
 
 // Config is the policy's settings. The zero value is filled from the defaults
@@ -84,11 +91,16 @@ type Config struct {
 	// AmountCeilingPaise is the largest amount the policy will act on without
 	// a person. Strictly above it escalates. R3.
 	AmountCeilingPaise int64
-	// ActionBudget caps actions across the whole run. R5.
+	// ActionBudget caps actions across the whole run. R5. Zero means
+	// DefaultActionBudget.
 	//
-	// A negative budget means no cap. Zero is a real cap of zero, which is how
-	// a run says "evaluate everything and act on nothing", so it cannot also
-	// be the unset value.
+	// Zero used to mean a real cap of zero, on the reasoning that "evaluate
+	// everything and act on nothing" is a thing a run might want to say. The
+	// first real batch run on 2026-08-31 showed what that costs: policy.New
+	// with a zero Config is documented as the standard policy, and the
+	// standard policy denied all 40 orders under R5. A run that wants to act
+	// on nothing has the kill switch, which is the control built for exactly
+	// that and which says so in its rule id. DECISIONS.md has the entry.
 	ActionBudget int
 	// KillSwitch is the flag half of R8. The file half is KillSwitchFile,
 	// which the runner reads and folds into State.KillSwitchEngaged, because
@@ -96,8 +108,7 @@ type Config struct {
 	KillSwitch bool
 }
 
-// withDefaults fills the zero fields. It does not touch ActionBudget, because
-// zero is a meaningful budget there.
+// withDefaults fills the zero fields.
 func (c Config) withDefaults() Config {
 	if c.MaxAttemptsPerOrder <= 0 {
 		c.MaxAttemptsPerOrder = DefaultMaxAttemptsPerOrder
@@ -110,6 +121,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.AmountCeilingPaise <= 0 {
 		c.AmountCeilingPaise = DefaultAmountCeilingPaise
+	}
+	if c.ActionBudget <= 0 {
+		c.ActionBudget = DefaultActionBudget
 	}
 	return c
 }
@@ -275,8 +289,8 @@ func (p *Policy) Evaluate(state State, req Request) Decision {
 		}
 	}
 
-	// R5. The run-wide cap. A negative budget means no cap.
-	if p.cfg.ActionBudget >= 0 && state.ActionsThisRun >= p.cfg.ActionBudget {
+	// R5. The run-wide cap.
+	if state.ActionsThisRun >= p.cfg.ActionBudget {
 		return decide(VerdictDeny, RuleActionBudget,
 			fmt.Sprintf("the run has spent %d of its %d action budget",
 				state.ActionsThisRun, p.cfg.ActionBudget))

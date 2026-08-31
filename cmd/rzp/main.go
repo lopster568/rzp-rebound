@@ -14,9 +14,12 @@ import (
 
 // subcommands maps a name to what it runs.
 var subcommands = map[string]func(ctx context.Context, args []string) error{
-	"auth-probe": runAuthProbe,
-	"capture":    runCapture,
-	"demo":       runDemo,
+	"auth-probe":    runAuthProbe,
+	"capture":       runCapture,
+	"demo":          runDemo,
+	"seed":          runSeed,
+	"run":           runRun,
+	"policy-config": runPolicyConfig,
 }
 
 func main() {
@@ -50,6 +53,9 @@ func usage() {
   auth-probe   Prove the configured test-mode credentials reach Razorpay
   capture      Capture real API responses into testdata/recorded/
   demo         Run the recovery loop end to end against test mode
+  seed         Write a batch manifest with its ground truth under results/batches/
+  run          Run one arm over one batch and write its outcomes and its ledger
+  policy-config Print the policy a run would use, as JSON, for the run manifest
 
 Every subcommand reads RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET from the
 environment. Test-mode keys only.

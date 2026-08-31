@@ -46,7 +46,7 @@ func runDemo(ctx context.Context, args []string) error {
 			*secondOutcome, razorpay.AttemptSucceed, razorpay.AttemptFail)
 	}
 
-	rig, err := newLiveRig(ctx, "", nil)
+	rig, err := newLiveRig(ctx, "", nil, 0)
 	if err != nil {
 		return err
 	}

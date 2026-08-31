@@ -24,8 +24,14 @@ type liveRig struct {
 	telemetry *telemetry.Provider
 }
 
-// newLiveRig builds the rig. capture may be nil.
-func newLiveRig(ctx context.Context, serviceName string, capture io.Writer) (*liveRig, error) {
+// newLiveRig builds the rig. capture may be nil, and maxConcurrent zero means
+// razorpay.DefaultMaxConcurrent.
+//
+// The cap is a parameter rather than a constant because a batch run makes two
+// orders of magnitude more calls than a demo does, and PRD Q5 is open: no 429
+// has ever been observed here, which bounds nothing. The batch runner passes a
+// smaller number than the demo needs to.
+func newLiveRig(ctx context.Context, serviceName string, capture io.Writer, maxConcurrent int) (*liveRig, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, err
@@ -55,6 +61,7 @@ func newLiveRig(ctx context.Context, serviceName string, capture io.Writer) (*li
 		KeySecret:      cfg.RazorpayKeySecret,
 		TracerProvider: provider.TracerProvider,
 		RawCapture:     capture,
+		MaxConcurrent:  maxConcurrent,
 	})
 	if err != nil {
 		_ = provider.Shutdown(ctx)

@@ -88,7 +88,7 @@ func runCapture(ctx context.Context, args []string) error {
 	}
 
 	capture := newLabeledCapture()
-	rig, err := newLiveRig(ctx, "rzp-capture", capture)
+	rig, err := newLiveRig(ctx, "rzp-capture", capture, 0)
 	if err != nil {
 		return err
 	}
