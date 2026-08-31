@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| Status | v1.1. Updated at the end of phase 2. |
-| Date | 2026-08-31 |
+| Status | v1.2. Updated at the end of phase 3. |
+| Date | 2026-09-01 |
 | Owner | Roshan Singh |
 
 ## 1. Executive summary
@@ -100,15 +100,16 @@ four of them are not written yet.
 |---|---|---|
 | `make preflight` | One line per tool (go, jq, claude, docker), then one per credential variable. Toolchain gaps are hard failures, missing keys are warnings, and the last line is the count of each. | Works. `scripts/preflight.sh`. |
 | `make seed` | The batch id, the seed, the per-class counts, the bait count, and the path of the manifest written under `results/batches/`. | Works. `cmd/rzp/seed.go`, phase 2. |
-| `make run-all` | One progress line per arm per order, then a per-arm summary: orders touched, actions taken, orders recovered, escalated, and unobserved, and the gateway call count. | Works for the three deterministic arms. `cmd/rzp/run.go` and `harness/orchestrator.py`, phase 2. The LLM arm is phase 3. |
-| `make report` | The three-arm comparison table, the per-failure-class breakdown, and the honesty metrics, written to `results/tables/` as CSV and markdown and echoed to the terminal. Exits non-zero when `policy_violations_succeeded` is not 0 for `a3-rules`. | Works. `harness/aggregate.py`, phase 2. |
+| `make run-all` | One progress line per arm per order, then a per-arm summary: orders touched, actions taken, orders recovered, escalated, and unobserved, and the gateway call count. | Works for all four arms. `cmd/rzp/run.go` and `harness/orchestrator.py` for three of them; `cmd/rzp-mcp` and `harness/agent_runner.py` for `a2-agent`, which needs the `claude` CLI and spends one headless invocation per order. |
+| `make report` | The four-arm comparison table, the per-failure-class breakdown, the honesty metrics, and the agent arm's cost, written to `results/tables/` as CSV and markdown and echoed to the terminal. Exits non-zero when `policy_violations_succeeded` is not 0 for `a2-agent` or `a3-rules`. | Works. `harness/aggregate.py`. |
 | `make run-arm` | The same, for one arm. | Works. Phase 2. |
 | `make demo` | The scripted end-to-end run: seed, three arms, report, and the Jaeger URL for the trace of one recovered order. | Planned, phase 4. |
 
 Supporting targets that exist today: `make hooks`, `make test` (Go and
 Python), `make test-go`, `make test-python`, `make lint`, `make docs-check`,
 `make ci`, `make verify-phase-0`, `make verify-offline`, `make verify-live`,
-`make verify-phase-2`.
+`make verify-phase-2`, `make verify-phase-3`, `make agent-smoke`, and
+`make trace-links`.
 
 ## 7. Success metrics
 
@@ -374,6 +375,7 @@ Full diagram and component contracts: `/ARCHITECTURE.md`, written in phase 4.
 
 | Risk | Why it bites | Mitigation | Owning phase |
 |---|---|---|---|
+| A rule consulted correctly and then raced. Two concurrent callers both read the attempt count, both pass the cap, and both act. | Every action carries an allow verdict, so `policy_violations_succeeded` reads 0 and the containment column calls the run clean. The metric that gates the build cannot see it. | The whole action path is under one lock, and `TestConcurrentActionToolCallsCannotBothPassTheAttemptCap` goes red against the unlocked code on every run. Found and fixed in phase 3. | 3 |
 | The second-attempt mechanism against the live API is unknown. `AttemptPayment` exists on the fake because a real attempt happens in checkout, and `Port` has no equivalent. | Without it, the live layer cannot demonstrate a recovery end to end. | Phase 1 spike drives one order from `created` to `paid` and writes down how. Per ADR-0004 the three layers stay separate, so an unsolved live path costs batch size in the live table, not the build. | 1 |
 | The docker daemon is down, so no Jaeger. | The trace-per-decision claim has no viewer behind it during a demo. | Preflight already reports it as a hard failure before a run starts, and the stdout exporter keeps producing spans. Phase 0 finished with the daemon down. | 1 |
 | Razorpay rate limits are undocumented here. | A batch large enough to be interesting could trip a limit mid-run and corrupt an arm's numbers. | Capped concurrency and 429 backoff on every live call (NFR-4), plus a recorded note of the first limit hit. Batch size drops to fit. | 1 |
@@ -389,7 +391,7 @@ Detail lives in `docs/phases/README.md` and in each phase directory.
 | 0 foundations | 2026-08-31 | Every seam the later phases plug into exists and is proven by tests that run offline with no credentials. | Done. 28 tests green. |
 | 1 live loop | 2026-09-01 | Drive a real test-mode order to a documented failure and back to paid, and confirm the card table against live responses. | Done 2026-08-31. The loop closes; none of the eight cards confirmed, which is the finding. |
 | 2 policy and eval | 2026-09-02 | Retry policy plus a batch harness that scores decisions against the ground-truth manifest. | Done 2026-08-31. 9 rules, 3 arms, 53 tests, and a three-arm table on two layers. `docs/phases/phase-2-policy-and-eval/REPORT.md`. |
-| 3 agent arm | 2026-09-03 | An agent drives the loop over MCP and is scored on the same batches. | Not started |
+| 3 agent arm | 2026-09-03 | An agent drives the loop over MCP and is scored on the same batches. | Done 2026-09-01. Seven tools, two gate layers, 44 tests, and a four-arm table on two layers. The agent matched the rules arm on all 40 fake-layer orders. `docs/phases/phase-3-agent-arm/REPORT.md`. |
 | 4 submission | 2026-09-04 | Demo, writeup, and the numbers that back them. | Not started |
 
 ## 13. Open questions
@@ -405,7 +407,8 @@ Each one has a trigger that closes it. All opened 2026-08-31.
 | Q5 | What rate limit does test mode enforce? | Phase 1 measures it: the first 429 under backoff, recorded with the request rate that produced it. | **Open.** No 429 at 1.4 requests per second over 40 sequential calls on 2026-08-31. The probe is `TestLiveRateLimitObservation`, behind `RZP_RATE_LIMIT_PROBE`. A real ramp is phase 2. |
 | Q6 | Are the four attempt budgets in `batch.MaxLegitAttemptsFor` (3, 2, 1, 0) right? They are an eval choice made without data. | Phase 2 rescores a batch against observed outcomes and either keeps the numbers or moves them with a reason. | **Answered on a different axis, 2026-08-31, and still open on the original one.** The numbers were not moved, because the phase 2 run found something prior to whether they are right: nothing enforces them. `R1-MAX-ATTEMPTS` is a flat cap of 3 per order and no rule reads the per-class budget, so the attempt-budget-exhausted bait order is allowed a third attempt and the rules arm takes it. Whether 3, 2, 1, 0 are the right numbers is a question for a rule that reads them, which is phase 3. |
 | Q7 | Does `RZP_LAYER` mean the measurement layer (live, replay, fake), as this PRD and ADR-0004 use it, or the "recovery layer" its doc comment in `internal/config` names? | Phase 2, when the batch runner becomes the first code to write the value. The doc comment moves to whichever meaning the runner uses. | **Closed 2026-08-31: the measurement layer.** `rzp run` takes `-layer` with `fake` or `live`, every outcome row and every results row carries it, and ADR-0004 forbids summing across it. The doc comment in `internal/config` was corrected. |
-| Q8 | What does a rule set that reads the per-class attempt budget do to the false-action count, and does it cost recovery? | Phase 3 adds the rule and reruns the same seeded batch, so the two tables can be put side by side. | Open, phase 3, opened 2026-08-31 out of Q6. |
+| Q8 | What does a rule set that reads the per-class attempt budget do to the false-action count, and does it cost recovery? | Phase 3 adds the rule and reruns the same seeded batch, so the two tables can be put side by side. | **Still open, deliberately, and moved to phase 4.** Adding a tenth rule in the same phase that added the agent would have confounded the two changes: a table where both the decision maker and the rule set moved says nothing about either. The attempt-budget-exhausted bait caught `a2-agent` and `a3-rules` identically, which is the same finding phase 2 had and now with a second arm walking into it. |
+| Q9 | Does an agent add anything over the rule set on a batch where the correct action is a function of the failure class? | Phase 3 runs both over the same batch. | **Closed 2026-09-01: no.** `a2-agent` and `a3-rules` produced identical recoveries, actions, false actions, and escalations on all 40 fake-layer orders, and identical behaviour on all 8 live ones. The agent cost 3.94 usd and 14 minutes more. What it added is an actor that can propose something out of bounds: 16 refusals against the rules arm's 9, and none through. Whether an agent wins on a batch where the answer is not a function of the class is a different question and this batch cannot answer it. |
 
 ## 14. Glossary
 
@@ -446,4 +449,5 @@ reported, never dropped from a denominator.
 | Date | Version | Change |
 |---|---|---|
 | 2026-08-31 | v1.0 draft | First version, written at the end of phase 0. |
+| 2026-09-01 | v1.2 | End of phase 3. Section 6 marks `run-all` and `report` as covering four arms. Section 8 marks FR-MCP-1, FR-MCP-2, FR-MCP-3, FR-POL-4, and FR-POL-7 met with their covering tests, and FR-BATCH-6 still not built. Section 11 gains the raced-rule risk, which the containment metric cannot see. Section 12 marks phase 3 done. Q8 stays open on purpose and Q9 is opened and closed. |
 | 2026-08-31 | v1.1 | End of phase 2. Section 6 marks `seed`, `run-all`, and `report` as working. Section 8 replaces "planned, phase 2" with the covering test for policy, store, recovery, notify, audit, telemetry, poller, and clock, and marks the three requirements phase 2 did not meet as not met rather than leaving them ambiguous: FR-POL-4 (the order allowlist, unreachable until an arm can name an order id), FR-STORE-2 (durable resume), and FR-BATCH-6 (the paid-order bait). Q7 closed, Q6 answered on a different axis, Q8 opened. |
