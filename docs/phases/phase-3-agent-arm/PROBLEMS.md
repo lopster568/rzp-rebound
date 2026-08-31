@@ -153,7 +153,48 @@ have written spans into the JSON-RPC frame stream.
 `TestLiveLayerRefusesToServeWithNoOTLPEndpoint` covers it. The fake layer needs
 no guard, because it builds no provider at all when the endpoint is unset.
 
-## 9. The test list grew by six Python methods
+## 9. Parallel tool calls could put eight payments on an order the cap allowed one
+
+The worst thing found in this phase, and it was found by reading the code
+rather than by any run.
+
+`internal/store`'s doc comment has said since phase 2 that snapshot, evaluate,
+and commit are three separate lock acquisitions, so two callers can both read
+`AttemptsMade` at 2 against a cap of 3 and both commit, putting 4 attempts on
+one order under `R1-MAX-ATTEMPTS`. Phase 2 recorded it as unreachable, and it
+was: `rzp run` processes orders one at a time.
+
+An MCP client issues tool calls in parallel. The SDK dispatches each request in
+its own goroutine, so the sequence became reachable the moment the agent arm
+existed, and nothing in the phase 3 test list was looking for it.
+
+Measured. Against the unlocked code, eight concurrent `retry_payment` calls on
+an order with one of its two permitted attempts already spent put **eight**
+payments on it. Every one of those eight actions carried an `allow` verdict, so
+`policy_violations_succeeded` would have read 0 and the containment column
+would have said the run was clean. That is the failure mode worth being loudest
+about: the metric that gates the build cannot see a rule that was consulted
+correctly and then raced.
+
+`Server.act` now holds one mutex from before the snapshot to after the commit.
+It is a single lock rather than one per order because an invocation serves one
+order; for a server built with several it is conservative rather than wrong.
+
+`TestConcurrentActionToolCallsCannotBothPassTheAttemptCap` covers it. The first
+version of that test was a probabilistic detector: against the unlocked code it
+went red about twice in forty runs, because the window between the snapshot and
+the commit is a few microseconds wide. It now widens that window with a 25ms
+delay in the spy attempter and starts its eight callers on a barrier, which
+takes it to red on every run against the unlocked code and green under `-race`
+against the locked one. A test that usually passes against the bug it exists for
+is a test nobody can act on.
+
+The fake-layer run had already started when this landed, so it ran on the
+unlocked binary. Its ledger was checked afterwards for the signature, an order
+with more attempts than `R1-MAX-ATTEMPTS` permitted, and the result is in
+`REPORT.md`.
+
+## 10. The test list grew by six Python methods
 
 Named in `TESTS.md` under "Changes to this list while the tests were written",
 with what each one is for. The list stays a record of what was named before the

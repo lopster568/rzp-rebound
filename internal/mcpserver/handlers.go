@@ -289,6 +289,12 @@ func (s *Server) act(ctx context.Context, a action) (*mcp.CallToolResult, any, e
 		return errResult(fmt.Errorf("order %s is not in this batch", a.orderID)), nil, nil
 	}
 
+	// Held from before the snapshot to after the commit. Everything between is
+	// one decision, and a second caller reading the state halfway through it
+	// would read a state that is about to be false. See Server.actMu.
+	s.actMu.Lock()
+	defer s.actMu.Unlock()
+
 	state, err := s.observe(ctx, order.OrderID)
 	if err != nil {
 		return errResult(err), nil, nil

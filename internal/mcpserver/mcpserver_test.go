@@ -130,6 +130,12 @@ type spyAttempter struct {
 	mu        sync.Mutex
 	forbidden bool
 	attempts  int
+	// delay widens the window between an action's policy snapshot and its
+	// commit. Only the concurrency test sets it, and it sets it because
+	// without it that test is a probabilistic detector: against the unlocked
+	// code it went red about twice in forty runs, and a test that usually
+	// passes against the bug it exists for is a test nobody can act on.
+	delay time.Duration
 }
 
 func newSpyAttempter(t *testing.T, inner recovery.Attempter) *spyAttempter {
@@ -148,11 +154,21 @@ func (s *spyAttempter) count() int {
 	return s.attempts
 }
 
+func (s *spyAttempter) setDelay(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.delay = d
+}
+
 func (s *spyAttempter) Attempt(ctx context.Context, order batch.AgentVisibleOrder, card string) (recovery.AttemptRecord, error) {
 	s.mu.Lock()
 	s.attempts++
 	forbidden := s.forbidden
+	delay := s.delay
 	s.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
 	if forbidden {
 		s.t.Errorf("a payment attempt reached the gateway with no policy pass behind it: order %s", order.OrderID)
 	}
@@ -1167,5 +1183,54 @@ func TestNoToolResponseCarriesACredential(t *testing.T) {
 				t.Errorf("%s put a credential on the wire: %s", tool, body)
 			}
 		}
+	}
+}
+
+func TestConcurrentActionToolCallsCannotBothPassTheAttemptCap(t *testing.T) {
+	// The race internal/store's doc comment describes, reachable for the first
+	// time here: an MCP client can issue tool calls in parallel, and snapshot,
+	// evaluate, and commit are three separate lock acquisitions.
+	//
+	// The order arrives with one attempt against a cap of two, so exactly one
+	// more attempt is permitted. Four callers ask at once. Without the lock in
+	// Server.act they all read attempts=1, all pass R1, and all four reach the
+	// gateway.
+	cap := 2
+	r := newRig(t, rigOptions{
+		policyConfig: &policy.Config{MaxAttemptsPerOrder: cap},
+		actionBudget: 100,
+	})
+	order := r.retryableOrder()
+	r.recordDecision(order, recovery.ActionRetrySameInstrument)
+	r.attempter.setDelay(25 * time.Millisecond)
+
+	// A start barrier plus that delay, so the callers actually overlap inside
+	// the window rather than merely being launched together.
+	const callers = 8
+	start := make(chan struct{})
+	var ready, done sync.WaitGroup
+	ready.Add(callers)
+	done.Add(callers)
+	for range callers {
+		go func() {
+			defer done.Done()
+			ready.Done()
+			<-start
+			// Not r.call: that fatals from a non-test goroutine, which is not
+			// allowed. A transport error is picked up by the assertions below
+			// instead.
+			_, _ = r.session.CallTool(t.Context(), &mcp.CallToolParams{
+				Name:      mcpserver.ToolRetryPayment,
+				Arguments: map[string]any{"order_id": order},
+			})
+		}()
+	}
+	ready.Wait()
+	close(start)
+	done.Wait()
+
+	if got := r.attempter.count(); got != 1 {
+		t.Errorf("%d payment attempts reached the gateway from %d concurrent callers, want 1: "+
+			"the order had 1 of its %d permitted attempts", got, callers, cap)
 	}
 }

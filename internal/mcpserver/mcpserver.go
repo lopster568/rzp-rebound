@@ -279,6 +279,25 @@ type Server struct {
 	mcp    *mcp.Server
 	tracer trace.Tracer
 
+	// actMu serializes the whole action path: snapshot, evaluate, execute,
+	// commit.
+	//
+	// internal/store's doc comment says why it is needed. Each store method
+	// holds its own lock, which makes each one safe on its own and does not
+	// make the sequence safe: two callers can both read AttemptsMade at 2
+	// against a cap of 3 and both commit, putting 4 attempts on an order under
+	// R1. That was unreachable while the only callers were arms in a
+	// sequential loop. An MCP client can issue tool calls in parallel, so it
+	// is reachable now.
+	//
+	// It is a single mutex rather than one per order because an invocation
+	// serves one order. For a server built with several it is conservative
+	// rather than wrong: it serializes actions across orders that could have
+	// run at once, and nothing here needs that concurrency.
+	//
+	// It is never held while taking mu, and mu is never held while taking it.
+	actMu sync.Mutex
+
 	mu           sync.Mutex
 	allowed      map[string]batch.AgentVisibleOrder
 	order        []string
