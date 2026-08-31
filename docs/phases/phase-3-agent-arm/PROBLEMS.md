@@ -112,7 +112,48 @@ observations, and the reasoning is in the test rather than in a commit message:
   `batch.Order` that is not on `batch.AgentVisibleOrder`. A field added to the
   manifest is covered without anybody remembering to add it here.
 
-## 7. The test list grew by six Python methods
+## 7. The fake-layer run carries `attempt_no` 0 on its action rows
+
+Found by reading `internal/mcpserver/handlers.go` while the fake-layer run was
+already in flight. `finishAction` wrote `attempt_no` as a literal zero: the
+attempt number was computed in `act` and never passed down. The
+`policy_evaluated` row it sits next to carried the right value all along.
+
+Nothing reads the field. `harness/scorer.py` computes FA-2 from
+`attempts_seen` on the outcome row and `max_legit_attempts` in the manifest,
+and `policy_counts` reads the kind, the verdict, and the side-effect flag. So
+no published number moves either way.
+
+The fix landed after the fake run started and before the live one. Restarting
+the fake run would have cost forty more headless invocations against a
+sixty-invocation budget for the night, so it was allowed to finish on one
+consistent binary rather than being restarted or, worse, switched mid-run.
+
+What that leaves is one disclosed inconsistency: in
+`results/runs/phase-3-fake/a2-agent/ledger.jsonl` the `action_taken` and
+`action_skipped` rows carry `attempt_no` 0, and in the live run they carry the
+real value. Per ADR-0004 the two layers are never summed anyway, and this note
+is here so a reader of the ledger is not left wondering.
+
+## 8. The live layer would have printed its spans onto the MCP transport
+
+Found by reading the code before the live run rather than by running it, which
+is the only way this one could have been found cheaply: the symptom is a
+connection failure with nothing naming the cause.
+
+`internal/telemetry` falls back to the stdout exporter when no OTLP endpoint is
+configured. That is correct for `rzp run`, whose stdout is a terminal. The live
+gateway rig builds its provider through the same function, and `rzp-mcp`'s
+stdout is the MCP transport, so a live invocation with no endpoint set would
+have written spans into the JSON-RPC frame stream.
+
+`rzp-mcp -layer live` now refuses to start without
+`OTEL_EXPORTER_OTLP_ENDPOINT`, and the error says why and names
+`scripts/jaeger-up.sh`, which prints the value.
+`TestLiveLayerRefusesToServeWithNoOTLPEndpoint` covers it. The fake layer needs
+no guard, because it builds no provider at all when the endpoint is unset.
+
+## 9. The test list grew by six Python methods
 
 Named in `TESTS.md` under "Changes to this list while the tests were written",
 with what each one is for. The list stays a record of what was named before the

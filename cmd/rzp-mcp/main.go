@@ -131,6 +131,10 @@ func run(ctx context.Context, args []string) (runErr error) {
 		return fmt.Errorf("batch %s has no order %s", batchFile.BatchID, opts.orderID)
 	}
 
+	if err := requireExporterForLive(opts.layer); err != nil {
+		return err
+	}
+
 	engaged, err := policy.KillSwitchFile(opts.killSwitchFile)
 	if err != nil {
 		return err
@@ -377,6 +381,35 @@ func observeAndRecord(
 		return class, len(payments), err
 	}
 	return class, len(payments), nil
+}
+
+// requireExporterForLive refuses to serve the live layer with no OTLP endpoint.
+//
+// It is a guard against a silent protocol corruption rather than a policy about
+// telemetry. internal/telemetry falls back to the stdout exporter when no
+// endpoint is configured, the live rig builds its provider through that
+// function, and stdout is the MCP transport. A span printed there is not a lost
+// trace, it is a malformed JSON-RPC frame, and the client reports it as a
+// connection failure with nothing naming the cause.
+//
+// The fake layer needs no guard because newTracer below builds no provider at
+// all when the endpoint is unset.
+func requireExporterForLive(layer string) error {
+	if layer != runner.LayerLive {
+		return nil
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if cfg.OTLPEndpoint == "" {
+		return fmt.Errorf(
+			"the live layer needs %s set: with no endpoint the tracer falls back to "+
+				"the stdout exporter, and stdout is the MCP transport. Run scripts/jaeger-up.sh, "+
+				"which prints the value to export",
+			config.EnvOTLPEndpoint)
+	}
+	return nil
 }
 
 // newTracer builds the span exporter, or a tracer that records nothing.

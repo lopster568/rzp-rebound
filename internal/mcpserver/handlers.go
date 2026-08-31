@@ -340,7 +340,7 @@ func (s *Server) act(ctx context.Context, a action) (*mcp.CallToolResult, any, e
 	if !passes {
 		out.Allowed = false
 		out.Note = "refused by the policy. Read policy_rule and policy_reason, and choose something else."
-		if err := s.finishAction(ctx, a, order, state.class, decision, out, effect{kind: recovery.ActionNone}, nil); err != nil {
+		if err := s.finishAction(ctx, a, order, state.class, decision, attemptNo, out, effect{kind: recovery.ActionNone}, nil); err != nil {
 			return nil, nil, err
 		}
 		return jsonResult(out), nil, nil
@@ -355,7 +355,7 @@ func (s *Server) act(ctx context.Context, a action) (*mcp.CallToolResult, any, e
 	if got.commitKey != "" {
 		s.opts.Store.Commit(order.OrderID, got.commitKey, got.commitAction)
 	}
-	if err := s.finishAction(ctx, a, order, state.class, decision, out, got, execErr); err != nil {
+	if err := s.finishAction(ctx, a, order, state.class, decision, attemptNo, out, got, execErr); err != nil {
 		return nil, nil, err
 	}
 	if execErr != nil {
@@ -378,6 +378,7 @@ func (s *Server) finishAction(
 	order batch.AgentVisibleOrder,
 	class classify.Class,
 	decision policy.Decision,
+	attemptNo int,
 	out ActionOutput,
 	got effect,
 	execErr error,
@@ -393,7 +394,7 @@ func (s *Server) finishAction(
 		recovery.DetailSideEffect:      btoa(got.sideEffect),
 		recovery.DetailEscalated:       btoa(got.escalated),
 		recovery.DetailIdempotencyKey:  policy.ShortKey(decision.IdempotencyKey),
-		recovery.DetailAttemptNo:       itoa(0),
+		recovery.DetailAttemptNo:       itoa(attemptNo),
 		recovery.DetailGatewayCalls:    itoa(got.gatewayCalls),
 		"claimed_recovered":            btoa(got.claimedRecovered),
 		"attempts_remaining":           itoa(decision.Remaining),

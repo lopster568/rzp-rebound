@@ -409,3 +409,35 @@ func TestTwoInvocationsOfOneBatchGetDifferentGatewayIDs(t *testing.T) {
 		t.Fatalf("got %d distinct gateway ids across two invocations, want 2", len(seen))
 	}
 }
+
+// TestLiveLayerRefusesToServeWithNoOTLPEndpoint pins the guard against a
+// silent protocol corruption.
+//
+// internal/telemetry falls back to the stdout exporter when no endpoint is
+// configured, the live rig builds its provider through that function, and
+// stdout is the MCP transport. A span written there is a malformed JSON-RPC
+// frame the client reports as a connection failure, with nothing naming the
+// cause. The fake layer needs no guard: it builds no provider at all when the
+// endpoint is unset.
+func TestLiveLayerRefusesToServeWithNoOTLPEndpoint(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("RAZORPAY_KEY_ID", "rzp_test_notarealkeyid")
+	t.Setenv("RAZORPAY_KEY_SECRET", "notarealsecret")
+
+	batchPath, file := seedBatchFile(t)
+	err := run(t.Context(), []string{
+		"-batch", batchPath,
+		"-order", file.Orders[0].OrderID,
+		"-layer", runner.LayerLive,
+		"-run-dir", t.TempDir(),
+	})
+	if err == nil {
+		t.Fatalf("the live layer served with no OTLP endpoint configured")
+	}
+	if !strings.Contains(err.Error(), "OTEL_EXPORTER_OTLP_ENDPOINT") {
+		t.Errorf("the error does not name the variable to set: %v", err)
+	}
+	if !strings.Contains(err.Error(), "stdout") {
+		t.Errorf("the error does not say why, which is what makes it actionable: %v", err)
+	}
+}

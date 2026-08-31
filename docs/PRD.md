@@ -215,7 +215,7 @@ covers them today. Later components name the test that will.
 | FR-BATCH-3 | Every order in the batch has a ground-truth entry: class, correct action, recoverable flag, attempt budget. | `TestManifestCarriesGroundTruthForEveryOrder` |
 | FR-BATCH-4 | Requesting bait adds orders whose correct action is to do nothing, on top of the requested distribution. | `TestManifestIncludesBaitOrdersWhenRequested` |
 | FR-BATCH-5 | No agent-visible field on any order carries ground truth. The agent sees four fields, on a type that never held the answer. | `TestManifestGroundTruthNeverLeaksIntoAgentVisibleFields` |
-| FR-BATCH-6 | A third bait kind, an order already `paid` in the gateway, is seedable. | **Not built.** Two bait kinds ship and both fire in the phase 2 runs. A paid-order bait would catch an arm that acts without reading state, which `razorpay.ErrOrderAlreadyPaid` already refuses at the gateway, so it was left for phase 3 rather than added for the count. |
+| FR-BATCH-6 | A third bait kind, an order already `paid` in the gateway, is seedable. | **Still not built at the end of phase 3.** Two bait kinds ship and both fire. A paid-order bait would catch an arm that acts without reading state, which `razorpay.ErrOrderAlreadyPaid` already refuses at the gateway. It stays unbuilt rather than being counted as built. |
 
 **`internal/policy`**
 
@@ -224,10 +224,10 @@ covers them today. Later components name the test that will.
 | FR-POL-1 | `Evaluate` returns a verdict plus the rule that decided, for every proposed action. Three verdicts, not two: escalate is a different decision from deny and is scored separately. | `TestPolicyDenialAlwaysCarriesRuleID`, `TestPolicyGoldenMatrix`, and one table test per rule |
 | FR-POL-2 | A kill switch denies every action while it is set, from a flag or from a file. | `TestPolicyKillSwitchFlagDeniesEveryAction`, `TestPolicyKillSwitchStateDeniesEveryAction`, `TestKillSwitchFileReportsEngagedWhenThePathExists` |
 | FR-POL-3 | A per-run action budget denies the action that would cross it, and an amount ceiling escalates above it. | `TestPolicyActionBudgetDeniesPastTheGlobalCap`, `TestPolicyAmountAboveCeilingEscalates`, `TestPolicyAmountAtCeilingIsAllowed` |
-| FR-POL-4 | Actions on an order id outside the batch allowlist are denied. | **Not met, and moved to phase 3.** The allowlist is a middleware concern per ADR-0003 layer 1, and the deterministic arms cannot reach an order that is not in the batch: `rzp run` iterates the manifest. It becomes reachable when the LLM arm can name an order id. |
+| FR-POL-4 | Actions on an order id outside the batch allowlist are denied. | **Met in phase 3.** `TestOrderAllowlistDeniesAnOrderOutsideTheBatch`. It is `M2-ORDER-ALLOWLIST` in `internal/mcpserver`, layer 1 of ADR-0003, and it became reachable exactly when an actor that can name any string arrived. |
 | FR-POL-5 | Attempts past the cap are denied. | `TestPolicyMaxAttemptsDeniesTheFourthAttempt`, `TestPolicyNeverExceedsMaxAttempts`. The cap is flat at 3 per order and does not read `batch.MaxLegitAttemptsFor`, which is the gap the attempt-budget-exhausted bait catches. See Q6. |
 | FR-POL-6 | Every evaluation emits a span carrying the verdict and the rule. | Met at the call site rather than inside `Evaluate`, which stays pure so the golden matrix can generate 576 cells without a tracer. `TestRulesArmRecordsAPolicyVerdictBeforeEverySideEffect`, and phase 2 `DECISIONS.md`. |
-| FR-POL-7 | No action handler reaches a side effect without consulting the policy first. | `TestEveryActionToolConsultsPolicyBeforeSideEffect`, planned phase 3. Phase 2 proves the weaker mechanical claim: `policy_violations_succeeded` reads 0 for `a3-rules` in `make verify-phase-2`. |
+| FR-POL-7 | No action handler reaches a side effect without consulting the policy first. | **Met in phase 3.** `TestEveryActionToolConsultsPolicyBeforeSideEffect` lists the tools through the server's own registry over a live session and calls every one of them against a spy `Port` and a spy `Attempter` under a state the policy must deny. A tool the test has no arguments for fails it too, so a new ungated tool turns the suite red two ways. `make verify-phase-3` still ends on `policy_violations_succeeded`, now for both gated arms. |
 | FR-POL-8 | A replayed action is a no-op rather than a second side effect. | `TestPolicyIdempotentReplayIsANoOp`, `TestPolicyIdempotencyKeyIsSha256OfOrderActionAttempt`, `TestStoreCommitIsANoOpOnAReplayedKey` |
 | FR-POL-9 | An unrecognised failure escalates and is never retried. | `TestPolicyUnclassifiedEscalatesAndNeverRetries`, `TestRulesArmEscalatesEveryUnclassifiedOrder` |
 
@@ -282,9 +282,9 @@ covers them today. Later components name the test that will.
 
 | ID | Requirement | Covering test |
 |---|---|---|
-| FR-MCP-1 | The agent's entire surface is the MCP tool set served by this process: read tools for order and failure state, action tools for retry, link, and escalate. | Planned, phase 3 |
-| FR-MCP-2 | No Razorpay credential is reachable from the model. The process holds the keys and the model holds tool names. | Planned, phase 3 |
-| FR-MCP-3 | Every tool call is a span, and every action tool call carries its policy verdict. | Planned, phase 3 |
+| FR-MCP-1 | The agent's entire surface is the MCP tool set served by this process: read tools for order and failure state, action tools for retry, link, and escalate. | Met. Seven tools, and the list is closed: `TestServerServesExactlyTheSevenNamedTools`. |
+| FR-MCP-2 | No Razorpay credential is reachable from the model. The process holds the keys and the model holds tool names. | Met. `TestNoToolResponseCarriesACredential` calls every tool for every order with a key id and secret configured and searches the wire bytes for both. The keys reach the server process by environment inheritance and are never written into the mcp config file. |
+| FR-MCP-3 | Every tool call is a span, and every action tool call carries its policy verdict. | Met. `TestMiddlewareOpensSpanForEveryToolCall` and `TestEveryToolCallStampsTheAuditTrailWithItsTraceID`. One root span per invocation parents them, so a reviewer opens one trace and sees the whole order. |
 
 ### 8.2 Non-functional
 
