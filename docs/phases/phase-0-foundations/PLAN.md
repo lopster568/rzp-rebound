@@ -14,7 +14,8 @@ a tracer provider, and config loading that redacts secrets.
 
 ## Tests first
 
-`TESTS.md` lists all 24 test functions with the assertion each one makes.
+`TESTS.md` lists all 28 test functions with the assertion each one makes. This
+line and that file both said 24 on 2026-08-31; the tables always held 28.
 Order of work per group: write the tests, run them, paste the red output into
 `TESTS.md`, then write the package until they pass.
 

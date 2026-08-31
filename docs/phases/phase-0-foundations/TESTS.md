@@ -1,7 +1,12 @@
 # Phase 0 tests
 
-24 test functions. Each one is written and seen failing before the code it
+28 test functions. Each one is written and seen failing before the code it
 covers exists.
+
+The header read "24" when this file was written on 2026-08-31, and `PLAN.md`
+repeated the number, but the seven tables below hold 28 rows: 2 clock, 8
+classify, 5 razorpay fake, 2 port contract, 5 batch, 3 telemetry, 3 config.
+The tables are what got written. The count was corrected on 2026-08-31.
 
 ## internal/clock
 
@@ -73,4 +78,70 @@ the same suite.
 
 ## Red run
 
-(failing output pasted by the implementation step before code was written)
+Run on 2026-08-31 with go1.25.0, before any of the six packages had a working
+body in it. Every package held nothing but type declarations and functions
+returning zero values, so 27 of the 28 tests failed on their assertions rather
+than on a compile error. The one exception is explained under the excerpt.
+
+The pre-commit hook runs `go vet ./...`, which type-checks test files, so a
+commit whose tests name symbols that do not exist cannot get through the gate.
+The declarations therefore went in with the tests, the bodies did not.
+`PROBLEMS.md` records it.
+
+```
+$ go test ./...
+?   	github.com/lopster568/rzp-recovery-agent/cmd/rzp	[no test files]
+--- FAIL: TestGeneratorProducesRequestedClassDistribution (0.00s)
+    batch_test.go:38: Generate returned a nil manifest and no error
+--- FAIL: TestManifestGroundTruthNeverLeaksIntoAgentVisibleFields (0.00s)
+    batch_test.go:179: Generate returned a nil manifest and no error
+FAIL	github.com/lopster568/rzp-recovery-agent/internal/batch	0.003s
+--- FAIL: TestClassifierMapsInsufficientFundToRetryEligible (0.00s)
+    classify_test.go:51: insufficient_fund classified as , want
+    classify_test.go:54: insufficient_fund is not retry eligible, but the balance can change between attempts
+--- FAIL: TestClassifierIsTotalOverKnownRazorpayErrorCodes (0.00s)
+    --- FAIL: TestClassifierIsTotalOverKnownRazorpayErrorCodes/GATEWAY_ERROR (0.00s)
+        classify_test.go:165: GATEWAY_ERROR (error_class) is documented in ../../testdata/error_codes.json but classifies as
+        classify_test.go:168: GATEWAY_ERROR classified as 0, which has no name
+    classify_test.go:175: pending_risk_block_code classifies as
+FAIL	github.com/lopster568/rzp-recovery-agent/internal/classify	0.005s
+--- FAIL: TestFakeClockNowIsStableWithoutAdvance (0.00s)
+    clock_test.go:20: first Now() = 0001-01-01 00:00:00 +0000 UTC, want the instant the fake was built at, 2026-08-31 09:00:00 +0000 UTC
+--- FAIL: TestFakeClockAdvanceMovesNowForward (0.00s)
+    --- FAIL: TestFakeClockAdvanceMovesNowForward/one_second (0.00s)
+        clock_test.go:45: after Advance(1s) Now() = 0001-01-01 00:00:00 +0000 UTC, want 2026-08-31 09:00:01 +0000 UTC
+FAIL	github.com/lopster568/rzp-recovery-agent/internal/clock	0.004s
+--- FAIL: TestConfigLoadsKeysFromEnv (0.00s)
+    config_test.go:38: RAZORPAY_KEY_ID = "", want "key_id_placeholder"
+--- FAIL: TestConfigStringRedactsSecret (0.00s)
+    config_test.go:74: String() returned nothing
+--- FAIL: TestConfigFailsFastWhenKeyIDMissing (0.00s)
+    config_test.go:144: RequireLiveAccess returned no error with no credentials set
+FAIL	github.com/lopster568/rzp-recovery-agent/internal/config	0.002s
+--- FAIL: TestPortContract_CreateOrderThenFetchOrderRoundTrips (0.00s)
+    --- FAIL: TestPortContract_CreateOrderThenFetchOrderRoundTrips/fake (0.00s)
+        contract_test.go:79: CreateOrder returned an empty id
+--- FAIL: TestPortContract_FailedPaymentCarriesErrorCodeAndSource (0.00s)
+    --- FAIL: TestPortContract_FailedPaymentCarriesErrorCodeAndSource/fake (0.00s)
+        contract_test.go:116: no documented card forces insufficient_fund
+--- FAIL: TestFakeMagicCardInsufficientFundProducesFailedPaymentWithErrorCode (0.00s)
+    fake_test.go:85: error_code = "", want "insufficient_fund"
+--- FAIL: TestFakeRejectsAttemptOnAlreadyPaidOrder (0.00s)
+    fake_test.go:209: second charge on a paid order returned <nil>, want razorpay: order is already paid
+FAIL	github.com/lopster568/rzp-recovery-agent/internal/razorpay	0.003s
+--- FAIL: TestNewTracerProviderShutsDownCleanly (0.00s)
+    telemetry_test.go:46: NewTracerProvider returned a nil provider and no error
+--- FAIL: TestStdoutExporterIsUsedWhenOTLPEndpointIsUnset (0.00s)
+    telemetry_test.go:97: NewTracerProvider returned a nil provider and no error
+FAIL	github.com/lopster568/rzp-recovery-agent/internal/telemetry	0.002s
+```
+
+27 of 28 failed. 6 packages red, 0 passing tests.
+
+`TestClassifierUnknownErrorCodeIsUnclassifiedAndNotRetryEligible` passed
+against the empty classifier, and no honest edit makes it fail there. It
+asserts that an unrecognised failure comes back `Unclassified` and not retry
+eligible, and a classifier that recognises nothing gives exactly that answer.
+Its job is to catch a later change that makes the default retry, and it can
+only do that job once a table exists to be defaulted away from. The seven
+tests around it are what force the table into being.
