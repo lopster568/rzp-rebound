@@ -65,6 +65,34 @@ file's `_meta.gap`. Phase 1 confirms the real code string from the Razorpay
 docs and adds it. Until then that test has to invent its input, which means it
 tests the classifier's contract, not a documented Razorpay behaviour.
 
+## 2026-08-31: resolved the toolchain conflict by bumping go.mod to `go 1.25.0`
+
+Taken: option 1 from the entry above, with the twist that no system-wide go1.25
+install was needed. `go.mod` now says `go 1.25.0` and
+`.github/workflows/ci.yml` asks for `go-version: "1.25.x"`. The system go is
+still go1.24.6, `GOTOOLCHAIN` is the default `auto`, and
+`golang.org/toolchain@v0.0.1-go1.25.0.linux-amd64` was already in the module
+cache, so the go command switches itself.
+
+Evidence, run in the repo root after the edit:
+
+```
+$ go version
+go version go1.25.0 linux/amd64
+$ go build ./...
+$ go vet ./...
+$ GOPROXY=off go mod download go.opentelemetry.io/otel go.opentelemetry.io/otel/sdk \
+    go.opentelemetry.io/otel/exporters/stdout/stdouttrace \
+    go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc
+```
+
+All four exit 0. `GOPROXY=off` proves the modules and the 1.25 toolchain both
+come from the local cache, not the network. `go version` reporting 1.25.0 while
+the installed binary is 1.24.6 is the automatic switch doing its job.
+
+CI on `ubuntu-latest` gets a 1.25 toolchain from `actions/setup-go`, so the
+runner never pays for a toolchain download at build time.
+
 ## 2026-08-31: the slop list holds phrases, not words
 
 `scripts/slop-patterns.txt` has 25 multi-word phrases. Single banned words from

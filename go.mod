@@ -1,6 +1,6 @@
 module github.com/lopster568/rzp-recovery-agent
 
-go 1.24
+go 1.25.0
 
 require (
 	github.com/modelcontextprotocol/go-sdk v1.7.0
