@@ -7,7 +7,12 @@
       "error_class": "a top-level Razorpay error class returned in error.code"
     },
     "read_by": "TestClassifierIsTotalOverKnownRazorpayErrorCodes asserts the classifier returns a class for every code listed here and never panics.",
-    "gap": "The classify test list includes TestClassifierMapsRiskBlockToNeverRetry, but no risk-block code is in the documented card table. Confirm the exact Razorpay code string in phase 1 and add it here before relying on that test for coverage."
+    "gap": "The classify test list includes TestClassifierMapsRiskBlockToNeverRetry, but no risk-block code is in the documented card table and the 2026-08-31 live walk produced none either. The exact Razorpay code string is still unknown.",
+    "live_observation_2026_08_31": "Every one of the eight documented cards, driven through the only mechanism that makes a test-mode payment attempt happen, came back with error.reason payment_failed and error.code BAD_REQUEST_ERROR. Not one documented reason string was produced. The eight reason rows below are exercised by the fake gateway and by nothing live. docs/RAZORPAY-TEST-MODE-NOTES.md has the walk.",
+    "pending": [
+      "payment_failed"
+    ],
+    "pending_reason": "payment_failed names no cause, so there is no basis on which to call a retry eligible and no honest class to give it. It falls to the fail-closed Unclassified default, which is asserted by TestClassifierLeavesTheObservedLiveReasonUnclassified rather than left implicit."
   },
   "codes": [
     {
@@ -59,6 +64,13 @@
       "code": "GATEWAY_ERROR",
       "kind": "error_class",
       "documented_date": "2026-08-31"
+    },
+    {
+      "code": "payment_failed",
+      "kind": "reason",
+      "documented_date": "2026-08-31",
+      "observed_date": "2026-08-31",
+      "note": "The only failure reason Razorpay test mode was observed producing. See _meta.pending_reason."
     }
   ]
 }

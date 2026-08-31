@@ -10,16 +10,26 @@ import (
 )
 
 // PendingRiskBlockCode stands in for the Razorpay error code that marks a
-// payment blocked by risk. testdata/magic_cards.json documents no risk-block
-// card and testdata/error_codes.json records the gap in _meta.gap, so no real
-// code string is known. This constant is deliberately not shaped like a
-// Razorpay code, so it cannot be mistaken for one. Phase 1 replaces it.
+// payment blocked by risk. No risk block was produced by any call in the
+// 2026-08-31 live test-mode run, and testdata/error_codes.json records the gap
+// in _meta.gap, so no real code string is known. This constant is deliberately
+// not shaped like a Razorpay code, so it cannot be mistaken for one. PRD Q2 is
+// still open.
 const PendingRiskBlockCode = "pending_risk_block_code"
 
 // PendingSuccessCard stands in for the test card that forces a successful
-// authorization. testdata/magic_cards.json records in _meta.open_question that
-// the number is not documented there yet, so this is not a card number either.
-// Phase 1 replaces it.
+// authorization.
+//
+// The 2026-08-31 live run answered the question behind it, and the answer is
+// that there is no such card. The outcome of a test-mode attempt is chosen at
+// the last step of the checkout sequence through one form field carrying S or
+// F, and the same card number produced both a captured payment and a failed
+// one. See docs/RAZORPAY-TEST-MODE-NOTES.md.
+//
+// The constant stays because Table.SuccessCard has to return something for a
+// table with no success_cards entry, and something that cannot be mistaken for
+// a card number is the right something. It is not a fact waiting to be filled
+// in any more; it is a concept that does not apply.
 const PendingSuccessCard = "pending_success_card"
 
 // DefaultPath is the card table this package reads, relative to the

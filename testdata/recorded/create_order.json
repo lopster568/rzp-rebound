@@ -1,0 +1,30 @@
+{
+  "_meta": {
+    "synthetic": false,
+    "captured_at": "2026-08-31T19:40:28.243411328Z",
+    "note": "The response to creating an order, at status created. Nothing is ever attempted on this one."
+  },
+  "request": {
+    "method": "POST",
+    "path": "/v1/orders"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "amount": 100000,
+      "amount_due": 100000,
+      "amount_paid": 0,
+      "attempts": 0,
+      "created_at": 1788205228,
+      "currency": "INR",
+      "entity": "order",
+      "id": "order_TWUn3eXIG5rumB",
+      "notes": {
+        "purpose": "phase-1 fixture capture, never attempted"
+      },
+      "offer_id": null,
+      "receipt": "rcpt_capture_quiet_1788205227",
+      "status": "created"
+    }
+  }
+}

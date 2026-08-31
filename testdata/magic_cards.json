@@ -2,58 +2,92 @@
   "_meta": {
     "source": "Razorpay test-card documentation, read 2026-08-31",
     "documented_date": "2026-08-31",
-    "verified_policy": "verified is false for every entry until a phase 1 live test-mode run observes the documented error code coming back from the API. A phase 1 run flips the entries it confirms.",
-    "open_question": "The card number that forces a SUCCESSFUL authorization on a second attempt is not recorded here yet. Confirm it from the Razorpay test-card docs in phase 1 and add it as a success_cards entry before writing TestFakeSuccessCardOnSecondAttemptMarksOrderPaid against a live run.",
-    "mode": "test mode only. These numbers do nothing on live keys."
+    "verified_policy": "verified is false for every entry until a live test-mode run observes the documented error code coming back from the API. The 2026-08-31 run observed none of them, so every entry is still false and each one records what came back instead.",
+    "open_question": "Resolved on 2026-08-31, and not the way it was asked. There is no card that forces a successful authorization. The outcome is chosen at the last step of the checkout sequence through a single form field carrying S or F, and the same card number produced both a captured payment and a failed one. success_cards stays empty because the concept does not apply.",
+    "mode": "test mode only. These numbers do nothing on live keys.",
+    "live_walk_2026_08_31": "All eight cards were driven through the checkout sequence in docs/RAZORPAY-TEST-MODE-NOTES.md, one order each, with the mock bank told to decline. Every one produced the identical failure: error_reason payment_failed, error_code BAD_REQUEST_ERROR, error_source gateway, error_step payment_authorization. The card number does not reach the mock bank in a form that changes what it returns. This does not establish that the documented codes are wrong, only that the one mechanism that works without a browser does not reproduce them.",
+    "risk_block": "No risk block was produced by any call in the 2026-08-31 run, so PRD Q2 is still open and testcards.PendingRiskBlockCode still stands in for the code."
   },
   "failure_cards": [
     {
       "card_number": "4100280000090000",
       "error_code": "payment_timed_out",
       "verified": false,
-      "documented_date": "2026-08-31"
+      "documented_date": "2026-08-31",
+      "observed_error_reason": "payment_failed",
+      "observed_error_code": "BAD_REQUEST_ERROR",
+      "observed_date": "2026-08-31",
+      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table."
     },
     {
       "card_number": "4100280000080001",
       "error_code": "insufficient_fund",
       "verified": false,
-      "documented_date": "2026-08-31"
+      "documented_date": "2026-08-31",
+      "observed_error_reason": "payment_failed",
+      "observed_error_code": "BAD_REQUEST_ERROR",
+      "observed_date": "2026-08-31",
+      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table."
     },
     {
       "card_number": "4100280000070002",
       "error_code": "payment_cancelled",
       "verified": false,
-      "documented_date": "2026-08-31"
+      "documented_date": "2026-08-31",
+      "observed_error_reason": "payment_failed",
+      "observed_error_code": "BAD_REQUEST_ERROR",
+      "observed_date": "2026-08-31",
+      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table."
     },
     {
       "card_number": "4100280000060003",
       "error_code": "card_declined",
       "verified": false,
-      "documented_date": "2026-08-31"
+      "documented_date": "2026-08-31",
+      "observed_error_reason": "payment_failed",
+      "observed_error_code": "BAD_REQUEST_ERROR",
+      "observed_date": "2026-08-31",
+      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table."
     },
     {
       "card_number": "4100280000030006",
       "error_code": "card_disabled_for_online_payments",
       "verified": false,
-      "documented_date": "2026-08-31"
+      "documented_date": "2026-08-31",
+      "observed_error_reason": "payment_failed",
+      "observed_error_code": "BAD_REQUEST_ERROR",
+      "observed_date": "2026-08-31",
+      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table."
     },
     {
       "card_number": "4100280000010008",
       "error_code": "card_number_invalid",
       "verified": false,
-      "documented_date": "2026-08-31"
+      "documented_date": "2026-08-31",
+      "observed_error_reason": "payment_failed",
+      "observed_error_code": "BAD_REQUEST_ERROR",
+      "observed_date": "2026-08-31",
+      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table."
     },
     {
       "card_number": "4100280000020007",
       "error_code": "gateway_technical_error",
       "verified": false,
-      "documented_date": "2026-08-31"
+      "documented_date": "2026-08-31",
+      "observed_error_reason": "payment_failed",
+      "observed_error_code": "BAD_REQUEST_ERROR",
+      "observed_date": "2026-08-31",
+      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table."
     },
     {
       "card_number": "4100280000000009",
       "error_code": "authentication_failed",
       "verified": false,
-      "documented_date": "2026-08-31"
+      "documented_date": "2026-08-31",
+      "observed_error_reason": "payment_failed",
+      "observed_error_code": "BAD_REQUEST_ERROR",
+      "observed_date": "2026-08-31",
+      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table."
     }
   ],
   "upi_vpas": [
@@ -61,13 +95,17 @@
       "vpa": "success@razorpay",
       "outcome": "forces success",
       "verified": false,
-      "documented_date": "2026-08-31"
+      "documented_date": "2026-08-31",
+      "unverified_reason": "Not drivable. POST /v1/payments/create/upi answered 400 under HTTP Basic auth and 401 with key_id in the body or the query string on 2026-08-31, so no UPI attempt could be made server side.",
+      "observed_date": "2026-08-31"
     },
     {
       "vpa": "failure@razorpay",
       "outcome": "forces decline",
       "verified": false,
-      "documented_date": "2026-08-31"
+      "documented_date": "2026-08-31",
+      "unverified_reason": "Not drivable. POST /v1/payments/create/upi answered 400 under HTTP Basic auth and 401 with key_id in the body or the query string on 2026-08-31, so no UPI attempt could be made server side.",
+      "observed_date": "2026-08-31"
     }
   ]
 }

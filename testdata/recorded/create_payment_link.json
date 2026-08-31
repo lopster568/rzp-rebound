@@ -1,0 +1,46 @@
+{
+  "_meta": {
+    "synthetic": false,
+    "captured_at": "2026-08-31T19:40:40.71651697Z",
+    "note": "The response to creating a payment link, with the nested notify object accepted."
+  },
+  "request": {
+    "method": "POST",
+    "path": "/v1/payment_links"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "accept_partial": false,
+      "allow_full_payment": false,
+      "amount": 100000,
+      "amount_paid": 0,
+      "cancelled_at": 0,
+      "created_at": 1788205240,
+      "currency": "INR",
+      "customer": [],
+      "description": "phase-1 fixture capture",
+      "expire_by": 0,
+      "expired_at": 0,
+      "first_min_partial_amount": 0,
+      "id": "plink_TWUnHCyrNqBmfF",
+      "notes": null,
+      "notify": {
+        "email": false,
+        "sms": false,
+        "whatsapp": false
+      },
+      "payment_plan": false,
+      "payments": null,
+      "reference_id": "ref_capture_1788205240",
+      "reminder_enable": false,
+      "reminders": [],
+      "short_url": "https://rzp.io/rzp/gbGHBe3",
+      "status": "created",
+      "updated_at": 1788205240,
+      "upi_link": false,
+      "user_id": "",
+      "whatsapp_link": false
+    }
+  }
+}

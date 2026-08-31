@@ -1,0 +1,68 @@
+{
+  "_meta": {
+    "synthetic": false,
+    "captured_at": "2026-08-31T19:40:39.623808177Z",
+    "note": "The payments collection envelope with one failed attempt in it."
+  },
+  "request": {
+    "method": "GET",
+    "path": "/v1/orders/order_TWUn56dUh8smHs/payments"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "count": 1,
+      "entity": "collection",
+      "items": [
+        {
+          "acquirer_data": {
+            "auth_code": null
+          },
+          "amount": 100000,
+          "amount_refunded": 0,
+          "bank": null,
+          "captured": false,
+          "card": {
+            "emi": false,
+            "entity": "card",
+            "id": "card_TWUn6Vl9R5Hb0K",
+            "international": false,
+            "issuer": "DCBL",
+            "last4": "0001",
+            "name": "",
+            "network": "Visa",
+            "sub_type": "consumer",
+            "token_iin": "410028000",
+            "type": "debit"
+          },
+          "card_id": "card_TWUn6Vl9R5Hb0K",
+          "contact": "+919999999999",
+          "created_at": 1788205231,
+          "currency": "INR",
+          "description": null,
+          "email": "probe@example.com",
+          "entity": "payment",
+          "error_code": "BAD_REQUEST_ERROR",
+          "error_description": "Payment failed",
+          "error_reason": "payment_failed",
+          "error_source": "gateway",
+          "error_step": "payment_authorization",
+          "fee": null,
+          "id": "pay_TWUn6FzZyxbTTr",
+          "international": false,
+          "invoice_id": null,
+          "method": "card",
+          "notes": {
+            "purpose": "phase-1 fixture capture, driven to a failed payment"
+          },
+          "order_id": "order_TWUn56dUh8smHs",
+          "refund_status": null,
+          "status": "failed",
+          "tax": null,
+          "vpa": null,
+          "wallet": null
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "_meta": {
+    "synthetic": false,
+    "captured_at": "2026-08-31T19:40:28.844368016Z",
+    "note": "An order read back before any payment attempt."
+  },
+  "request": {
+    "method": "GET",
+    "path": "/v1/orders/order_TWUn3eXIG5rumB"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "amount": 100000,
+      "amount_due": 100000,
+      "amount_paid": 0,
+      "attempts": 0,
+      "checkout": null,
+      "created_at": 1788205228,
+      "currency": "INR",
+      "description": null,
+      "entity": "order",
+      "id": "order_TWUn3eXIG5rumB",
+      "notes": {
+        "purpose": "phase-1 fixture capture, never attempted"
+      },
+      "offer_id": null,
+      "receipt": "rcpt_capture_quiet_1788205227",
+      "status": "created"
+    }
+  }
+}
