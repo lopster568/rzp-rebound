@@ -27,6 +27,7 @@ gained a client, and the operator got three scripts.
 | `internal/audit` | `Recorder`, the dual sink. One event goes to attributes on the active span and to a JSONL ledger line carrying that span's trace id. Redaction by detail-key name and by value shape, and a monotonic sequence per order. |
 | `internal/notify` | `NotifierPort`, `Mock`, and `Notifier`. Three audit-phrase constants, all of them about an API call. `Receipt.DeliveryConfirmed` is false on every path. |
 | `internal/recovery` | `Orchestrator`, the first slice: poll, classify, act, read the outcome back out of the gateway. Three audit rows per order. |
+| `internal/redact` | The card-shaped and key-shaped patterns, in one place, called by `internal/audit` and by the client's capture path. It has no test file of its own: it is covered through both callers, the same arrangement `internal/testcards` has under FR-CARDS-1. |
 | `scripts/` | `jaeger-up.sh` and `jaeger-down.sh` wrap the compose file and wait on the query API. `seed-batch.sh` is a skeleton that exits non-zero. `make jaeger-up`, `make jaeger-down`, `make seed`, and `make verify-offline` wire them in. |
 
 Commits, in order:
@@ -41,7 +42,15 @@ ae0577b feat(razorpay): replay client over recorded fixtures, with one labelled 
 c9cd785 feat(notify): notifier port, mock, and a receipt that reports an API call and nothing about a person
 e890ede feat(recovery): orchestrator first slice, outcome read back from the gateway
 666b392 build(scripts): jaeger up and down with a health wait, seed skeleton, make targets
+d89c0c0 docs(phase-1): decisions, problems, and the offline-half report
+aa3c251 fix(razorpay): scrub credentials out of captured JSON response bodies
+1217c80 test(razorpay): assert no credential reaches an otelhttp span attribute
+118226e fix: redact before truncating, close the card-pattern gap, and correct four review findings
 ```
+
+The last three are the review round. `aa3c251` and `118226e` each close a
+credential leak that the green suite had not been asking about, and
+`PROBLEMS.md` has both with the measurement that found them.
 
 `db671e8` holds `PLAN.md` and `TESTS.md` and no code. `0c10bc7` is the red
 commit: it carries all 24 new tests, the second contract harness, and six files
@@ -55,6 +64,7 @@ commit after it adds behaviour to a package whose tests were already failing.
 |---|---|---|
 | Test functions | 28 | 52 |
 | Packages with tests | 6 | 10 |
+| Packages | 11 | 12 |
 
 Per package after: `razorpay` 17, `classify` 8, `audit` 5, `batch` 5, `poller`
 4, `config` 3, `notify` 3, `telemetry` 3, `clock` 2, `recovery` 2.
@@ -144,10 +154,38 @@ $ env -u RAZORPAY_KEY_ID -u RAZORPAY_KEY_SECRET go test ./... -count=1 -race
 10 packages ok, 0 failures
 ```
 
-**CI green.** The last push, `666b392`, completed successfully on
-`ubuntu-latest` with `go-version: "1.25.x"`.
+**CI green.** The last push, `118226e`, completed successfully on
+`ubuntu-latest` with `go-version: "1.25.x"`, as did every push before it in
+this phase.
+
+## The review round
+
+The offline half went through a review agent after the packages were green,
+briefed to construct concrete leaks rather than list suspicions. It found six
+real defects. Two were credential leaks the green suite was not asking about:
+`Client.apiError` truncated the error body before redacting it, so a secret
+straddling the 512-byte cut left up to a character short of the whole thing in
+every error message, measured at 11 of 22 characters; and the card pattern was
+bounded at 19 digits, so a card inside a longer run of digits passed through
+whole. The other four were a failed action recorded as a skipped one, a rejected
+notification returning a nil error, a silent 1 MiB response truncation, and a
+health check waiting on the wrong port.
+
+Each fix was written as a failing assertion first and seen failing.
+`PROBLEMS.md` has the findings with their measurements, and `DECISIONS.md` has
+the three that changed a design rather than a line.
+
+A green suite is not a reviewed one. Both of the leaks lived in code whose tests
+passed, in the same commits that added tests specifically about redaction.
 
 ## Additional evidence
+
+`internal/redact` is new and holds the two patterns that used to live in
+`internal/audit`. What it cannot do is on the function: a Razorpay key secret is
+a bare alphanumeric string with no shape to match, so the control for a secret
+is the package that holds it scrubbing before the string leaves, which
+`razorpay.Client.Redact` does on every error and every captured body. The
+regexes are a backstop for recognisable shapes and are documented as one.
 
 `go.mod` gained
 `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0` and its
