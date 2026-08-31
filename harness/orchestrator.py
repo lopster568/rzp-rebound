@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import random
@@ -30,6 +31,12 @@ from pathlib import Path
 
 
 DEFAULT_ARMS = "a0-control,a1-naive,a3-rules"
+
+# The LLM arm. It is not driven by `rzp run`: its decision maker is a headless
+# `claude` invocation per order, and harness/agent_runner.py is what runs those.
+# Everything else about it is the same, which is the property
+# harness/test_arm_config.py asserts key by key.
+AGENT_ARM = "a2-agent"
 
 # The policy is read out of the binary that is about to run, never copied here.
 #
@@ -55,9 +62,27 @@ def policy_config(rzp_bin: str) -> dict:
     except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
         return dict(POLICY_UNAVAILABLE)
 
-# The deterministic arms have no prompt. Phase 3's LLM arm replaces this with a
-# real digest of the prompt file it ran.
+# The deterministic arms have no prompt. A run that includes the LLM arm
+# records the digest of the charter file that actually ran, computed from the
+# bytes on disk rather than copied from anywhere.
 PROMPT_SHA256_DETERMINISTIC = "n/a (deterministic arms)"
+
+DEFAULT_PROMPT_PATH = "prompts/agent_system.md"
+
+
+def prompt_sha256(arms: list[str], prompt_path: str) -> str:
+    """The prompt digest for the run manifest.
+
+    A run with no LLM arm has no prompt and says so. A run with one and no
+    readable prompt file is an error recorded as an error: a manifest that
+    claims a digest it could not compute is worse than one that admits it.
+    """
+    if AGENT_ARM not in arms:
+        return PROMPT_SHA256_DETERMINISTIC
+    try:
+        return hashlib.sha256(Path(prompt_path).read_bytes()).hexdigest()
+    except OSError as err:
+        return "error: could not read " + prompt_path + ": " + str(err)
 
 # A key id is a credential, so only a prefix is recorded.
 #
@@ -124,6 +149,8 @@ def build_manifest(
     shuffled: bool,
     started_at: str,
     policy: dict,
+    prompt_digest: str,
+    agent: dict | None = None,
 ) -> dict:
     return {
         "run_id": run_id,
@@ -134,17 +161,26 @@ def build_manifest(
         "batch_path": batch_path,
         "layer": layer,
         "git_sha": git_sha(),
-        "prompt_sha256": PROMPT_SHA256_DETERMINISTIC,
+        "prompt_sha256": prompt_digest,
         "key_id_prefix": key_id_prefix(),
         "shuffled": shuffled,
         "cell_order": cells,
         "policy": policy,
+        "agent": agent or {},
     }
 
 
 def arm_command(
-    rzp_bin: str, arm: str, layer: str, batch: str, run_dir: Path, seq_path: Path
+    rzp_bin: str,
+    arm: str,
+    layer: str,
+    batch: str,
+    run_dir: Path,
+    seq_path: Path,
+    agent: dict | None = None,
 ) -> list[str]:
+    if arm == AGENT_ARM:
+        return agent_command(arm, layer, batch, run_dir, seq_path, agent or {})
     return [
         rzp_bin,
         "run",
@@ -159,6 +195,41 @@ def arm_command(
         "-order-sequence",
         str(seq_path),
     ]
+
+
+def agent_command(
+    arm: str, layer: str, batch: str, run_dir: Path, seq_path: Path, agent: dict
+) -> list[str]:
+    """The a2-agent driver. Same batch, same layer, same run directory, same
+    order sequence: what differs is that the decision maker is a model."""
+    cmd = [
+        sys.executable,
+        "-m",
+        "harness.agent_runner",
+        "--batch",
+        batch,
+        "--layer",
+        layer,
+        "--run-dir",
+        str(run_dir),
+        "--order-sequence",
+        str(seq_path),
+        "--server-binary",
+        str(agent.get("server_binary") or "./bin/rzp-mcp"),
+        "--prompt",
+        str(agent.get("prompt") or DEFAULT_PROMPT_PATH),
+        "--model",
+        str(agent.get("model") or "sonnet"),
+        "--max-budget-usd",
+        str(agent.get("max_budget_usd") or 0.50),
+    ]
+    if agent.get("max_invocations"):
+        cmd += ["--max-invocations", str(agent["max_invocations"])]
+    if agent.get("action_budget"):
+        cmd += ["--action-budget", str(agent["action_budget"])]
+    if agent.get("timeout_sec"):
+        cmd += ["--timeout-sec", str(agent["timeout_sec"])]
+    return cmd
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -180,6 +251,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--no-shuffle", action="store_true", help="keep arm-major batch order"
     )
+    parser.add_argument(
+        "--prompt", default=DEFAULT_PROMPT_PATH, help="the agent charter, for a2-agent"
+    )
+    parser.add_argument("--mcp-bin", default="./bin/rzp-mcp", help="the mcp server binary")
+    parser.add_argument("--model", default="sonnet", help="the model a2-agent runs")
+    parser.add_argument("--max-budget-usd", type=float, default=0.50)
+    parser.add_argument(
+        "--max-invocations",
+        type=int,
+        default=0,
+        help="hard stop on a2-agent's headless invocations, zero means no stop",
+    )
+    parser.add_argument("--agent-action-budget", type=int, default=0)
+    parser.add_argument("--agent-timeout-sec", type=int, default=0)
     args = parser.parse_args(argv)
 
     batch_path = args.batch
@@ -210,6 +295,16 @@ def main(argv: list[str] | None = None) -> int:
     if shuffled:
         shuffle_cells(cells, args.seed)
 
+    agent = {
+        "server_binary": args.mcp_bin,
+        "prompt": args.prompt,
+        "model": args.model,
+        "max_budget_usd": args.max_budget_usd,
+        "max_invocations": args.max_invocations,
+        "action_budget": args.agent_action_budget,
+        "timeout_sec": args.agent_timeout_sec,
+    }
+
     started_at = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     manifest = build_manifest(
         run_id=run_id,
@@ -222,6 +317,8 @@ def main(argv: list[str] | None = None) -> int:
         shuffled=shuffled,
         started_at=started_at,
         policy=policy_config(args.rzp_bin),
+        prompt_digest=prompt_sha256(arms, args.prompt),
+        agent=agent if AGENT_ARM in arms else {},
     )
 
     if args.dry_run:
@@ -242,7 +339,9 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 "would run "
                 + " ".join(
-                    arm_command(args.rzp_bin, arm, layer, batch_path, run_dir, seq_path)
+                    arm_command(
+                        args.rzp_bin, arm, layer, batch_path, run_dir, seq_path, agent
+                    )
                 )
             )
         return 0
@@ -259,7 +358,9 @@ def main(argv: list[str] | None = None) -> int:
         seq = arm_sequence(cells, arm)
         seq_path.write_text("\n".join(seq) + "\n", encoding="utf-8")
 
-        cmd = arm_command(args.rzp_bin, arm, layer, batch_path, run_dir, seq_path)
+        cmd = arm_command(
+            args.rzp_bin, arm, layer, batch_path, run_dir, seq_path, agent
+        )
         print("running: " + " ".join(cmd), file=sys.stderr)
         # No capture_output: the child inherits stdout and stderr so a long arm
         # streams instead of going quiet for minutes.

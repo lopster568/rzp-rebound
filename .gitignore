@@ -31,3 +31,7 @@ results/tables/verify-phase-2.md
 # A pointer to the run that finished last, so scripts/report.sh does not have
 # to guess from modification times. Local state, not an artefact.
 results/runs/LAST_RUN
+
+# The phase 3 gate regenerates this pair on every run, same reason as phase 2.
+results/tables/verify-phase-3.csv
+results/tables/verify-phase-3.md

@@ -410,6 +410,9 @@ func (s *Server) finishAction(
 	if !out.Allowed {
 		detail["refused_action"] = a.policyAction
 	}
+	if reason := s.escalationReason(order.OrderID); got.escalated && reason != "" {
+		detail["escalation_reason"] = reason
+	}
 
 	if err := s.record(ctx, audit.Event{
 		OrderID:        order.OrderID,
@@ -575,17 +578,13 @@ func (s *Server) executeEscalate(
 ) (effect, error) {
 	out.Note = "handed to a person. Nothing automated will run on this order."
 
-	if err := s.record(ctx, audit.Event{
-		OrderID:        order.OrderID,
-		Kind:           KindDecisionRecorded,
-		ProposedAction: DecisionEscalate,
-		Detail: map[string]string{
-			DetailChosenAction: DecisionEscalate,
-			DetailReasoning:    reason,
-		},
-	}); err != nil {
-		return effect{kind: recovery.ActionNone, escalated: true}, err
-	}
+	// The reason goes on the action row rather than into a second
+	// decision_recorded row. record_decision already wrote one for this order,
+	// and two rows of the same kind for one decision reads as two decisions.
+	s.mu.Lock()
+	t := s.tally(order.OrderID)
+	t.escalationReason = reason
+	s.mu.Unlock()
 
 	// No gateway call, so no side effect and no commit. An escalation is a
 	// decision with an outcome, and it is scored in the escalation precision

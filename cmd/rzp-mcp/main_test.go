@@ -371,3 +371,41 @@ func TestCompiledServerWritesAnOutcomeRowReadBackFromTheGateway(t *testing.T) {
 		t.Errorf("the ledger has no decision_recorded row")
 	}
 }
+
+// TestTwoInvocationsOfOneBatchGetDifferentGatewayIDs pins the fix for a bug
+// the two-order smoke run found on 2026-09-01.
+//
+// Every invocation is its own process with its own in-memory fake, and the
+// fake's rng is read only for id generation. Two invocations of the same batch
+// therefore gave their first order the same gateway id, and the arm's whole
+// ledger came out filed under one id. harness/aggregate.py selects a class's
+// ledger rows by gateway id, so every per-class row would have picked up every
+// other class's rows.
+func TestTwoInvocationsOfOneBatchGetDifferentGatewayIDs(t *testing.T) {
+	seen := map[string]string{}
+
+	for _, index := range []int{0, 1} {
+		nth := index
+		r := startServer(t, func(o batch.Order) bool {
+			if !retryable(o) {
+				return false
+			}
+			if nth > 0 {
+				nth--
+				return false
+			}
+			return true
+		})
+		gateway := r.gatewayOrderID()
+		if previous, ok := seen[gateway]; ok {
+			t.Fatalf("two manifest orders got the same gateway id %s: %s and %s",
+				gateway, previous, r.manifest.OrderID)
+		}
+		seen[gateway] = r.manifest.OrderID
+		r.closeAndWait()
+	}
+
+	if len(seen) != 2 {
+		t.Fatalf("got %d distinct gateway ids across two invocations, want 2", len(seen))
+	}
+}

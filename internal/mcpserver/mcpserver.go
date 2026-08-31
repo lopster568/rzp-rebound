@@ -239,6 +239,7 @@ type orderTally struct {
 	lastRefusedRule    string
 	haveAllowed        bool
 	haveRefused        bool
+	escalationReason   string
 }
 
 // Options configures a Server.
@@ -371,6 +372,17 @@ func (s *Server) Tally(orderID string) Tally {
 		out.ActionKind = recovery.ActionNone
 	}
 	return out
+}
+
+// escalationReason is what escalate_to_human said a person should look at. It
+// goes on the action row rather than into a second decision_recorded row.
+func (s *Server) escalationReason(orderID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t, ok := s.tallies[orderID]; ok {
+		return t.escalationReason
+	}
+	return ""
 }
 
 // ToolCalls returns how many tool calls this invocation received.

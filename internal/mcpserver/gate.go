@@ -82,9 +82,19 @@ func (s *Server) gate(next mcp.MethodHandler) mcp.MethodHandler {
 
 		// The row goes down before the call is dispatched. A refusal that
 		// leaves no row is what makes a containment count unprovable.
+		// The verdict and the rule go on the row itself as well as into the
+		// detail map, so a reader grepping the ledger for a rule id finds the
+		// tool call that hit it and not only the policy evaluation behind it.
+		//
+		// It changes no metric. harness/scorer.py counts evaluations by kind
+		// and both violation counts off the side-effect flag, and a tool_call
+		// row deliberately carries no side-effect flag.
 		if err := s.record(ctx, audit.Event{
-			OrderID: s.ledgerKey(requested),
-			Kind:    KindToolCall,
+			OrderID:        s.ledgerKey(requested),
+			Kind:           KindToolCall,
+			ProposedAction: tool,
+			PolicyVerdict:  string(decision.verdict),
+			PolicyRule:     decision.rule,
 			Detail: map[string]string{
 				DetailTool:        tool,
 				DetailGateVerdict: string(decision.verdict),

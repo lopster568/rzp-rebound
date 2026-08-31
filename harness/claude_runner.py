@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import tempfile
 import time
@@ -75,6 +76,27 @@ INFRA_RETRY_WAIT_SEC = 20
 # Envelope subtypes that are not a completed answer.
 SUBTYPE_SUCCESS = "success"
 SUBTYPE_BUDGET_EXHAUSTED = "error_max_budget_usd"
+
+# Variables the mcp config has to restate for the server process.
+#
+# The CLI starts the server with the parent environment, which is how the
+# Razorpay credentials reach it without ever being written to a file. It makes
+# one exception: it strips OTEL_* from the child, because those configure its
+# own telemetry. So the server got no OTLP endpoint, built no exporter, and
+# every audit row came out with an empty trace id, which is FR-AUD-3 silently
+# not met.
+#
+# Measured on 2026-09-01 with a probe server that dumped its environment: 58
+# variables arrived, RAZORPAY_KEY_ID among them, OTEL_EXPORTER_OTLP_ENDPOINT
+# not. PROBLEMS.md has it.
+#
+# These carry a host and port and a service name. None of them is a
+# credential, so restating them by value in the config file leaks nothing.
+PASSTHROUGH_ENV = (
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_SERVICE_NAME",
+    "RZP_JAEGER_UI_URL",
+)
 
 
 @dataclass
@@ -158,16 +180,27 @@ def mcp_config(
     if action_budget:
         args += ["-action-budget", str(action_budget)]
 
-    # env is empty rather than absent. The server process inherits the parent's
-    # environment, which is where RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are,
-    # and nothing is added here: a credential written into a config file is a
-    # credential on disk in a directory the harness does not own.
+    # The server inherits the parent environment, which is where
+    # RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are. No credential is written
+    # here: a key in a config file is a key on disk in a directory this harness
+    # does not own.
+    #
+    # What is written here is the telemetry configuration, because the CLI
+    # strips OTEL_* on its way to the child. See PASSTHROUGH_ENV. A variable
+    # that is not set in this process is left out rather than written empty, so
+    # the file says what was configured and not what was not.
+    env = {}
+    for name in PASSTHROUGH_ENV:
+        value = os.environ.get(name, "").strip()
+        if value:
+            env[name] = value
+
     return {
         "mcpServers": {
             SERVER_ALIAS: {
                 "command": server_binary,
                 "args": args,
-                "env": {},
+                "env": env,
             }
         }
     }

@@ -21,6 +21,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -42,6 +43,7 @@ import (
 	"github.com/lopster568/rzp-recovery-agent/internal/store"
 	"github.com/lopster568/rzp-recovery-agent/internal/telemetry"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 )
@@ -167,7 +169,7 @@ func run(ctx context.Context, args []string) (runErr error) {
 		return err
 	}
 
-	rig, err := runner.NewGatewayRig(ctx, opts.layer, batchFile, runClock)
+	rig, err := runner.NewGatewayRig(ctx, opts.layer, perOrderBatch(batchFile, opts.orderID), runClock)
 	if err != nil {
 		return err
 	}
@@ -218,6 +220,21 @@ func run(ctx context.Context, args []string) (runErr error) {
 		return err
 	}
 
+	// One root span for the whole invocation, so a reviewer opening the trace
+	// sees the classification, every tool call, and the outcome as one tree
+	// rather than as a handful of unrelated traces. The MCP session's request
+	// contexts descend from the one Run is given, so the middleware's per-call
+	// spans hang off this one.
+	ctx, invocation := tracer.Start(ctx, "mcp.invocation")
+	invocation.SetAttributes(
+		attribute.String("rzp.arm", opts.arm),
+		attribute.String("rzp.layer", opts.layer),
+		attribute.String("rzp.batch_id", batchFile.BatchID),
+		attribute.String("rzp.manifest_order_id", order.ManifestID),
+		attribute.String(mcpserver.AttrOrderID, order.Visible.OrderID),
+	)
+	defer invocation.End()
+
 	// The class goes on the record before the agent sees anything, so the
 	// ledger for this arm starts the same way the other three arms' ledgers
 	// do and the scorer needs no separate path.
@@ -255,7 +272,10 @@ func run(ctx context.Context, args []string) (runErr error) {
 		row.Error = serveErr.Error()
 	}
 
-	final, ferr := rig.Port.FetchOrder(ctx, order.Visible.OrderID)
+	// The read-back gets its own span, so the outcome_observed row joins to a
+	// trace like every other row does. FR-AUD-3 is every row, not most rows.
+	outcomeCtx, outcomeSpan := tracer.Start(ctx, "mcp.observe_outcome")
+	final, ferr := rig.Port.FetchOrder(outcomeCtx, order.Visible.OrderID)
 	if ferr != nil {
 		// An unobserved row is unscorable, which the scorer counts and keeps
 		// out of every denominator rather than folding into "not recovered".
@@ -268,7 +288,7 @@ func run(ctx context.Context, args []string) (runErr error) {
 		row.AmountPaidPaise = final.AmountPaid
 		row.Observed = true
 
-		if _, err := recorder.Record(ctx, audit.Event{
+		if _, err := recorder.Record(outcomeCtx, audit.Event{
 			OrderID:        order.Visible.OrderID,
 			Kind:           audit.KindOutcomeObserved,
 			Class:          class.String(),
@@ -286,9 +306,15 @@ func run(ctx context.Context, args []string) (runErr error) {
 				"decisions_recorded": strconv.Itoa(tally.DecisionsRecorded),
 			},
 		}); err != nil {
+			outcomeSpan.End()
 			return err
 		}
 	}
+	outcomeSpan.SetAttributes(
+		attribute.String("rzp.final_order_status", row.FinalOrderStatus),
+		attribute.Bool("rzp.recovered", row.Recovered),
+	)
+	outcomeSpan.End()
 
 	// Port calls plus the ones an attempt made outside Port, the same sum
 	// cmd/rzp run writes. A payment attempt is four checkout calls on the live
@@ -385,6 +411,31 @@ func newTracer(ctx context.Context, rig *runner.GatewayRig, layer string) (trace
 		defer cancel()
 		_ = provider.Shutdown(shutdownCtx)
 	}, nil
+}
+
+// perOrderBatch returns the batch file with the gateway seed varied by order.
+//
+// Every invocation is its own process with its own in-memory fake, and the
+// fake's rng is read for exactly one thing: generating ids. Two invocations of
+// the same batch therefore handed their first order the same gateway id, and
+// the arm's ledger came out with forty different manifest orders filed under
+// one gateway id. The overall table row survives that, because it reads the
+// whole ledger. The per-class rows do not: harness/aggregate.py selects a
+// class's ledger rows by gateway id, so every class row would have picked up
+// every other class's rows.
+//
+// Found by running the two-order smoke on 2026-09-01 and reading the ledger,
+// not by reading the code. PROBLEMS.md has it.
+//
+// The offset is a hash of the order id, so it is deterministic: the same order
+// in the same batch gets the same ids on every rerun. Nothing else about the
+// fake moves, because nothing else about the fake reads the rng.
+func perOrderBatch(file *runner.BatchFile, orderID string) *runner.BatchFile {
+	varied := *file
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(orderID))
+	varied.Seed = file.Seed + int64(h.Sum64()&0x7fffffff)
+	return &varied
 }
 
 func findOrder(file *runner.BatchFile, orderID string) (batch.Order, bool) {

@@ -1,7 +1,8 @@
 .DEFAULT_GOAL := help
 .PHONY: help hooks preflight test test-go test-race test-python test-integration lint \
 	docs-check ci verify-phase-0 verify-offline verify-live verify-phase-2 \
-	jaeger-up jaeger-down seed run-arm run-all report auth-probe capture demo
+	verify-phase-3 jaeger-up jaeger-down seed run-arm run-all report auth-probe \
+	capture demo agent-smoke
 
 # Live targets read .env so a run does not depend on the caller having
 # exported the key pair by hand. .env is gitignored and chmod 600, and nothing
@@ -61,8 +62,11 @@ seed: ## Seed a batch and write its ground-truth manifest under results/batches/
 run-arm: ## Run one arm over one batch. ARM= BATCH= RUN_DIR= [LAYER=fake]
 	@bash scripts/run-arm.sh --arm "$(ARM)" --batch "$(BATCH)" --run-dir "$(RUN_DIR)" --layer "$(or $(LAYER),fake)"
 
-run-all: ## Run every arm over one batch in a seeded shuffle. BATCH= [LAYER=fake] [SEED=42]
-	@bash scripts/run-all-arms.sh --batch "$(BATCH)" --layer "$(or $(LAYER),fake)" --seed "$(or $(SEED),42)"
+run-all: ## Run every arm over one batch in a seeded shuffle. BATCH= [LAYER=fake] [SEED=42] [ARMS=] [RUN_ARGS=]
+	@bash scripts/run-all-arms.sh --batch "$(BATCH)" --layer "$(or $(LAYER),fake)" --seed "$(or $(SEED),42)" $(if $(ARMS),--arms $(ARMS),) $(RUN_ARGS)
+
+agent-smoke: ## Drive a2-agent over N fake orders from a batch. BATCH= [N=2] [RUN_DIR=]
+	@bash scripts/agent-smoke.sh --batch "$(BATCH)" --n "$(or $(N),2)" --run-dir "$(RUN_DIR)"
 
 report: ## Score the newest run and write results/tables/<run_id>.{csv,md}
 	@bash scripts/report.sh $(REPORT_ARGS)
@@ -103,3 +107,27 @@ verify-phase-2: ## Phase 2 gate: suite, seed 40, all three arms, report, contain
 	@bash scripts/seed-batch.sh --seed $(VERIFY2_SEED) --n 40 --bait 3 --layer fake
 	@bash scripts/run-all-arms.sh --batch $(VERIFY2_BATCH) --layer fake --seed 42 --run-id verify-phase-2
 	@bash scripts/report.sh --run-dir $(VERIFY2_RUN)
+
+# The phase 3 gate. It is the phase 2 gate plus the arm that needs a model, and
+# it ends on the same containment assertion, which now covers a2-agent too:
+# harness/aggregate.py's CONTAINED_ARMS is both gated arms, so a leaked action
+# tool fails the build rather than printing a number and carrying on.
+#
+# a2-agent is capped at VERIFY3_INVOCATIONS orders. The gate exists to prove
+# the pipeline runs end to end and that nothing got past the gate, and driving
+# forty headless invocations to learn that would spend a subscription on a
+# build step. The orders past the cap get an outcome row saying they were not
+# run, so the table says what it did rather than looking like a short batch.
+VERIFY3_SEED ?= 1234
+VERIFY3_INVOCATIONS ?= 2
+VERIFY3_BATCH = results/batches/b-$(VERIFY3_SEED)-40.json
+VERIFY3_RUN = results/runs/verify-phase-3
+
+verify-phase-3: ## Phase 3 gate: suite, seed 40, four arms with a2 capped, report, containment assertion
+	@env -u RAZORPAY_KEY_ID -u RAZORPAY_KEY_SECRET $(MAKE) --no-print-directory lint test docs-check
+	@rm -rf $(VERIFY3_RUN)
+	@bash scripts/seed-batch.sh --seed $(VERIFY3_SEED) --n 40 --bait 3 --layer fake
+	@bash scripts/run-all-arms.sh --batch $(VERIFY3_BATCH) --layer fake --seed 42 \
+		--arms a0-control,a1-naive,a2-agent,a3-rules \
+		--max-invocations $(VERIFY3_INVOCATIONS) --run-id verify-phase-3
+	@bash scripts/report.sh --run-dir $(VERIFY3_RUN)
