@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/classify"
+	"github.com/lopster568/rzp-recovery-agent/internal/razorpay"
 	"github.com/lopster568/rzp-recovery-agent/internal/testcards"
 )
 
@@ -173,5 +174,70 @@ func TestClassifierIsTotalOverKnownRazorpayErrorCodes(t *testing.T) {
 	// The risk block is not in the file yet. It still has to classify.
 	if got := classify.Classify(classify.Failure{Reason: testcards.PendingRiskBlockCode}); got == classify.Unclassified {
 		t.Errorf("%s classifies as %v", testcards.PendingRiskBlockCode, got)
+	}
+}
+
+// TestClassifierLeavesTheObservedLiveReasonUnclassified pins what the phase 1
+// live half found, which is uncomfortable and is the point.
+//
+// The eight reasons this classifier maps come from Razorpay's documented test
+// cards. On 2026-08-31 all eight of those cards were driven through the only
+// mechanism that can make a test-mode payment attempt happen, and every one of
+// them came back with error.reason "payment_failed" and error.code
+// "BAD_REQUEST_ERROR". Not one documented reason string was ever produced.
+// docs/RAZORPAY-TEST-MODE-NOTES.md has the walk.
+//
+// "payment_failed" names no cause. Nothing about it says whether a balance, a
+// disabled card, or a gateway hiccup stopped the charge, so there is no basis
+// on which to call a retry eligible, and inventing one would be the exact
+// dishonesty this project is built to avoid. It therefore stays out of the
+// reasons table and falls to the fail-closed default.
+//
+// It is listed in error_codes.json under _meta.pending, so the totality test
+// skips it rather than failing, and a reader of that file finds it rather than
+// wondering why the live reason is missing.
+func TestClassifierLeavesTheObservedLiveReasonUnclassified(t *testing.T) {
+	got := classify.Classify(classify.Failure{
+		Code:   razorpay.ErrorClassBadRequest,
+		Reason: razorpay.ReasonPaymentFailed,
+		Source: razorpay.ErrorSourceGateway,
+		Step:   razorpay.ErrorStepPaymentAuthorization,
+	})
+
+	if got != classify.Unclassified {
+		t.Errorf("%s classified as %v, want unclassified: it names no cause a retry could act on",
+			razorpay.ReasonPaymentFailed, got)
+	}
+	if got.IsRetryEligible() {
+		t.Errorf("%s is retry eligible, which is a retry with nothing behind it",
+			razorpay.ReasonPaymentFailed)
+	}
+
+	// The coarse class alone must not rescue it either. BAD_REQUEST_ERROR maps
+	// to NeverRetry, and reason wins over code, so a caller must not be able
+	// to get a decision by dropping the reason.
+	if bare := classify.Classify(classify.Failure{Code: razorpay.ErrorClassBadRequest}); bare != classify.NeverRetry {
+		t.Errorf("%s alone classified as %v, want never_retry", razorpay.ErrorClassBadRequest, bare)
+	}
+
+	// The file has to carry it, or the next person reads a table of eight
+	// reasons and believes test mode produces them.
+	f := loadErrorCodes(t)
+	listed := false
+	for _, entry := range f.Codes {
+		if entry.Code == razorpay.ReasonPaymentFailed {
+			listed = true
+			if entry.Kind != "reason" {
+				t.Errorf("%s is listed with kind %q, want reason", entry.Code, entry.Kind)
+			}
+		}
+	}
+	if !listed {
+		t.Errorf("%s is the only failure reason live test mode produces and %s does not list it",
+			razorpay.ReasonPaymentFailed, errorCodesPath)
+	}
+	if !slices.Contains(f.Meta.Pending, razorpay.ReasonPaymentFailed) {
+		t.Errorf("%s is not in _meta.pending, so the totality test will demand a class for a reason that names no cause",
+			razorpay.ReasonPaymentFailed)
 	}
 }
