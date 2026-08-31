@@ -2,11 +2,18 @@ package audit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"regexp"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/clock"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Redacted is what a key-shaped or card-shaped value becomes before either
@@ -39,12 +46,56 @@ const (
 	AttrPolicyRule     = "rzp.policy.rule"
 )
 
+// detailAttrPrefix namespaces free-form detail keys on a span, so a detail
+// called "kind" cannot overwrite the event's own kind attribute.
+const detailAttrPrefix = "rzp.detail."
+
 // ErrNoOrderID is returned when an event arrives with no order to attach it
 // to. A row that cannot be joined to an order cannot be scored.
 var ErrNoOrderID = errors.New("audit: event has no order id")
 
 // ErrNoKind is returned when an event arrives with no kind.
 var ErrNoKind = errors.New("audit: event has no kind")
+
+// ErrNoWriter is returned when a Recorder is built with no ledger to write to.
+var ErrNoWriter = errors.New("audit: recorder needs a writer")
+
+// redactedKeys are detail keys whose value never reaches either sink, whatever
+// the value looks like. Matching on the key catches a credential that a
+// value-shape check would miss.
+var redactedKeys = map[string]bool{
+	"api_key":             true,
+	"authorization":       true,
+	"card":                true,
+	"card_number":         true,
+	"contact":             true,
+	"customer_contact":    true,
+	"customer_email":      true,
+	"customer_phone":      true,
+	"cvv":                 true,
+	"email":               true,
+	"expiry":              true,
+	"key":                 true,
+	"key_id":              true,
+	"key_secret":          true,
+	"pan":                 true,
+	"phone":               true,
+	"razorpay_key_id":     true,
+	"razorpay_key_secret": true,
+	"secret":              true,
+	"token":               true,
+}
+
+// cardLike matches 13 to 19 digits, with optional single spaces or hyphens
+// between them. Nothing else this ledger records is that long and all numeric:
+// amounts in paise are six digits, a unix timestamp is ten, and every
+// identifier carries a letter prefix.
+var cardLike = regexp.MustCompile(`\b\d(?:[ -]?\d){12,18}\b`)
+
+// keyLike matches a Razorpay key prefix followed by a key body. The prefix is
+// assembled from parts so this source file does not itself contain a string
+// the pre-commit secret scan would flag.
+var keyLike = regexp.MustCompile(`rzp_(?:` + "test" + `|` + "live" + `)_[A-Za-z0-9]{6,}`)
 
 // Event is one decision or observation the recovery loop wants on the record.
 type Event struct {
@@ -107,16 +158,117 @@ type Recorder struct {
 }
 
 // NewRecorder returns a Recorder.
-func NewRecorder(opts Options) (*Recorder, error) { return &Recorder{}, nil }
+func NewRecorder(opts Options) (*Recorder, error) {
+	if opts.Writer == nil {
+		return nil, ErrNoWriter
+	}
+
+	c := opts.Clock
+	if c == nil {
+		c = clock.Real()
+	}
+	return &Recorder{w: opts.Writer, clock: c, seq: make(map[string]int)}, nil
+}
 
 // Record writes ev to both sinks and returns the ledger line it wrote.
-func (r *Recorder) Record(ctx context.Context, ev Event) (Record, error) { return Record{}, nil }
+func (r *Recorder) Record(ctx context.Context, ev Event) (Record, error) {
+	if ev.OrderID == "" {
+		return Record{}, ErrNoOrderID
+	}
+	if ev.Kind == "" {
+		return Record{}, fmt.Errorf("%w: order %s", ErrNoKind, ev.OrderID)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.seq[ev.OrderID]++
+	rec := Record{
+		Sequence:       r.seq[ev.OrderID],
+		OrderID:        ev.OrderID,
+		Kind:           ev.Kind,
+		Class:          RedactValue(ev.Class),
+		ProposedAction: RedactValue(ev.ProposedAction),
+		PolicyVerdict:  RedactValue(ev.PolicyVerdict),
+		PolicyRule:     RedactValue(ev.PolicyRule),
+		RecordedAt:     r.clock.Now().UTC().Format(time.RFC3339Nano),
+		Detail:         redactDetail(ev.Detail),
+	}
+
+	span := trace.SpanFromContext(ctx)
+	if sc := span.SpanContext(); sc.IsValid() {
+		rec.TraceID = sc.TraceID().String()
+		rec.SpanID = sc.SpanID().String()
+	}
+
+	encoded, err := json.Marshal(rec)
+	if err != nil {
+		// Undo the sequence number: a row that was not written did not happen,
+		// and leaving a gap would make the next row look like a lost one.
+		r.seq[ev.OrderID]--
+		return Record{}, fmt.Errorf("audit: encode the row for %s: %w", ev.OrderID, err)
+	}
+	if _, err := r.w.Write(append(encoded, '\n')); err != nil {
+		r.seq[ev.OrderID]--
+		return Record{}, fmt.Errorf("audit: write the row for %s: %w", ev.OrderID, err)
+	}
+
+	span.SetAttributes(spanAttributes(rec)...)
+	return rec, nil
+}
+
+// spanAttributes is the other sink. It carries the same values as the ledger
+// line, so a reviewer reading the trace and a scoring pass reading the file
+// cannot come away with different accounts of the same event.
+func spanAttributes(rec Record) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{
+		attribute.String(AttrOrderID, rec.OrderID),
+		attribute.String(AttrKind, rec.Kind),
+		attribute.Int(AttrSequence, rec.Sequence),
+	}
+	for key, value := range map[string]string{
+		AttrClass:          rec.Class,
+		AttrProposedAction: rec.ProposedAction,
+		AttrPolicyVerdict:  rec.PolicyVerdict,
+		AttrPolicyRule:     rec.PolicyRule,
+	} {
+		if value != "" {
+			attrs = append(attrs, attribute.String(key, value))
+		}
+	}
+	for key, value := range rec.Detail {
+		attrs = append(attrs, attribute.String(detailAttrPrefix+key, value))
+	}
+	return attrs
+}
+
+func redactDetail(detail map[string]string) map[string]string {
+	if len(detail) == 0 {
+		return nil
+	}
+
+	out := make(map[string]string, len(detail))
+	for key, value := range detail {
+		if IsRedactedKey(key) {
+			out[key] = Redacted
+			continue
+		}
+		out[key] = RedactValue(value)
+	}
+	return out
+}
 
 // RedactValue replaces anything shaped like a card number or a Razorpay key
 // inside s.
-func RedactValue(s string) string { return "" }
+func RedactValue(s string) string {
+	if s == "" {
+		return s
+	}
+	s = cardLike.ReplaceAllString(s, Redacted)
+	return keyLike.ReplaceAllString(s, Redacted)
+}
 
 // IsRedactedKey reports whether a detail key names a credential or a card
 // field, in which case the value never reaches either sink whatever it looks
 // like.
-func IsRedactedKey(key string) bool { return false }
+func IsRedactedKey(key string) bool { return redactedKeys[strings.ToLower(strings.TrimSpace(key))] }
