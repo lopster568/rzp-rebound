@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Blocks a commit on unformatted Go, vet failures, prose violations, or a
+# staged Razorpay key. Enable with: make hooks
+set -uo pipefail
+
+ROOT=$(git rev-parse --show-toplevel) || exit 1
+# shellcheck source=../lib.sh
+. "$ROOT/scripts/lib.sh"
+cd "$ROOT" || exit 1
+
+status=0
+
+staged() {
+	git diff --cached --name-only --diff-filter=ACM -- "$@"
+}
+
+# 1. gofmt on staged Go files
+go_files=$(staged '*.go')
+if [ -n "$go_files" ]; then
+	if ! command -v gofmt >/dev/null 2>&1; then
+		say "pre-commit: gofmt not on PATH, skipping format check"
+	else
+		unformatted=$(printf '%s\n' "$go_files" | xargs gofmt -l 2>/dev/null)
+		if [ -n "$unformatted" ]; then
+			printf 'pre-commit: gofmt would change these files:\n%s\n' "$unformatted" >&2
+			status=1
+		fi
+	fi
+fi
+
+# 2. go vet, only once there is Go source to vet
+if command -v go >/dev/null 2>&1 && [ -n "$(git ls-files '*.go')" ]; then
+	if ! go vet ./... >/tmp/rzp-vet.$$ 2>&1; then
+		say "pre-commit: go vet failed"
+		cat /tmp/rzp-vet.$$ >&2
+		status=1
+	fi
+	rm -f /tmp/rzp-vet.$$
+else
+	say "pre-commit: no Go source yet, skipping go vet"
+fi
+
+# 3. prose gate on staged .md and .txt
+prose_files=$(staged '*.md' '*.txt')
+if [ -n "$prose_files" ]; then
+	# shellcheck disable=SC2086
+	if ! bash "$ROOT/scripts/check-docs.sh" $prose_files; then
+		status=1
+	fi
+fi
+
+# 4. secrets in staged content, any file type. The three guardrail files are
+#    excluded because they have to contain the pattern they are looking for.
+secrets_diff() {
+	git diff --cached -U0 -- . \
+		':(exclude)scripts/check-docs.sh' \
+		':(exclude)scripts/hooks/pre-commit' \
+		':(exclude)scripts/slop-patterns.txt'
+}
+if secrets_diff | grep -qE '^\+.*(rzp_test_[A-Za-z0-9]{8,}|rzp_live_)'; then
+	say "pre-commit: staged diff contains something shaped like a Razorpay key:"
+	secrets_diff | grep -nE '^\+.*(rzp_test_[A-Za-z0-9]{8,}|rzp_live_)' >&2
+	status=1
+fi
+
+if [ "$status" -ne 0 ]; then
+	say ""
+	die "commit blocked. Fix the above, or re-run with --no-verify if you know why the check is wrong."
+fi
+
+say "pre-commit: ok"

@@ -1,0 +1,43 @@
+# Literal slop phrases banned in this repo's prose, curated from
+# ~/.claude/skills/no-ai-slop/SKILL.md. Matched case-insensitively as fixed
+# strings by scripts/check-docs.sh (grep -F -i), one per line.
+#
+# Rule for adding a line: it must be a phrase no honest technical sentence in
+# this repo would contain. Single words that appear in real engineering prose
+# (robust, harness, simply) are deliberately NOT listed, because they would
+# fire on legitimate text and train everyone to ignore the check.
+
+# Throat-clearing openers
+Here's the thing
+Here's what I mean
+Let me be clear
+The uncomfortable truth is
+
+# Faux-insight setups
+What nobody tells you
+What most people get wrong
+The part everyone misses
+
+# Empty phrases that delay the point
+It's important to note
+It's worth noting
+At the end of the day
+In today's fast-paced
+In the age of
+The reality is
+Let's face it
+In conclusion
+
+# Banned vocabulary
+game-changer
+game changer
+paradigm shift
+this changes everything
+cutting-edge
+ever-evolving
+delve into
+
+# Importance puffery
+stands as a testament
+marks a pivotal moment
+plays a vital role
