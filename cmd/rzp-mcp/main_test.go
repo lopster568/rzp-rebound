@@ -441,3 +441,38 @@ func TestLiveLayerRefusesToServeWithNoOTLPEndpoint(t *testing.T) {
 		t.Errorf("the error does not say why, which is what makes it actionable: %v", err)
 	}
 }
+
+// TestOutcomeContextSurvivesTheSessionsCancellation pins the fix for the bug
+// that cost the first live run its whole agent arm.
+//
+// The CLI takes the server's process group with it when it exits, so the
+// SIGTERM that arrives cancels the context the session ran on. The read-back
+// that produces the outcome row must not be cancelled with it. On the fake
+// layer nothing showed, because razorpay.Fake ignores the context it is given;
+// on the live layer all 8 read-backs failed and all 8 rows came back
+// unscorable, which is an arm that did its work and had the answer discarded.
+func TestOutcomeContextSurvivesTheSessionsCancellation(t *testing.T) {
+	parent, cancel := context.WithCancel(t.Context())
+	readBack, done := outcomeContext(parent)
+	defer done()
+
+	cancel()
+
+	select {
+	case <-parent.Done():
+	case <-time.After(time.Second):
+		t.Fatalf("the parent context did not cancel, so this test proves nothing")
+	}
+
+	if err := readBack.Err(); err != nil {
+		t.Fatalf("the read-back context was cancelled with the session: %v", err)
+	}
+
+	deadline, ok := readBack.Deadline()
+	if !ok {
+		t.Errorf("the read-back context has no deadline, so a hung gateway would hang the process")
+	}
+	if remaining := time.Until(deadline); remaining > OutcomeReadBackTimeout {
+		t.Errorf("the read-back deadline is %s away, want at most %s", remaining, OutcomeReadBackTimeout)
+	}
+}

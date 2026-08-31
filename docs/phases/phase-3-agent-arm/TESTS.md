@@ -6,7 +6,7 @@ of the whole list, captured before any function body was written.
 
 20 Go test functions, 17 in `internal/mcpserver` and 3 in `cmd/rzp-mcp`, plus
 12 Python test methods across two new files, as planned. The tree ended at 23
-Go and 18 Python. The section at the bottom records every addition rather than
+Go and 21 Python. The section at the bottom records every addition rather than
 editing the tables below, so this list stays a record of what was named before
 the code existed.
 
@@ -146,8 +146,15 @@ was in the tree and wrong.
 | `TestTwoInvocationsOfOneBatchGetDifferentGatewayIDs` | `cmd/rzp-mcp` | Two invocations of one batch gave their first order the same gateway id, which would have made every per-class ledger count carry every other class's rows. `PROBLEMS.md` 1. Run against the old behaviour first. |
 | `TestLiveLayerRefusesToServeWithNoOTLPEndpoint` | `cmd/rzp-mcp` | The live tracer falls back to the stdout exporter and stdout is the MCP transport. `PROBLEMS.md` 8. |
 | `TestConcurrentActionToolCallsCannotBothPassTheAttemptCap` | `internal/mcpserver` | Eight parallel tool calls put eight payments on an order the cap allowed one, every one carrying an allow verdict, so the containment column would have read clean. `PROBLEMS.md` 9. It goes red on every run against the unlocked code and green under `-race` against the locked one. |
+| `TestOutcomeContextSurvivesTheSessionsCancellation` | `cmd/rzp-mcp` | The first live agent arm came back entirely unscorable, because the CLI's exit cancelled the context the gateway read-back was on. `PROBLEMS.md` 10. |
 
-The six extra Python methods are:
+The nine extra Python methods are the six below plus the three in
+`test_agent_runner.py`, which is a file that did not exist when this list was
+written: the driver had no logic worth testing until a live run showed that its
+check for the server's outcome row was racing the server writing it
+(`PROBLEMS.md` 11).
+
+The six from the original two files:
 
 | Test | File | Why |
 |---|---|---|

@@ -181,6 +181,108 @@ trace the table row was computed from rather than at a search result.
 The host is whatever `scripts/jaeger-up.sh` prints for this machine, so the
 ids are recorded rather than a URL that would be wrong on anyone else's.
 
+## Live layer, n=8, Razorpay TEST MODE
+
+Batch `b-8080-8`, seed 8080: 3 transient, 1 retry-eligible, 1 reauth, 1
+new-instrument, 2 bait. Run `phase-3-live` on 2026-09-01, concurrency 2, 429
+backoff on. 32 real test-mode orders were created, 8 per arm.
+
+| arm | scorable | unscorable | recovered | rate | actions | FA-1 | FA-2 | escalations | precision | recall | class acc | evaluations | refusals | violations succeeded | gateway calls |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `a0-control` | 8 | 0 | 0 | 0.000 | 0 | 0 | 0 | 0 | n/a | 0.000 | **0.000** | 0 | 0 | 0 | 24 |
+| `a1-naive` | 8 | 0 | 4 | 0.667 | 8 | 2 | 2 | 0 | n/a | 0.000 | **0.000** | 0 | 0 | **8** | 56 |
+| `a2-agent` | 7 | **1** | 0 | **0.000** | 0 | 0 | 0 | 7 | 0.286 | **1.000** | **0.000** | 8 | 8 | **0** | 49 |
+| `a3-rules` | 8 | 0 | 0 | **0.000** | 0 | 0 | 0 | 8 | 0.250 | **1.000** | **0.000** | 8 | 8 | **0** | 24 |
+
+Layer: Razorpay **test mode**. Not evidence about real customers, and not
+evidence that a recovery decision caused a recovery. See below.
+
+Cost, `a2-agent` only:
+
+| invocations | unscorable | infra retries | input tokens | output tokens | usd reported | wall clock |
+|---|---|---|---|---|---|---|
+| 8 | 0 | 0 | 98 | 11696 | 0.66 | 172s |
+
+### The agent escalated all eight, and so did the rules arm
+
+Every one of the 8 orders classified as `unclassified`, so
+`R7-UNKNOWN-FAIL-CLOSED` fired on every one, so both gated arms escalated
+everything and took no action at all. Recovery rate 0.000, classification
+accuracy 0.000, escalation recall 1.000, precision a quarter and change.
+
+The cause is in `docs/RAZORPAY-TEST-MODE-NOTES.md` and it is not a bug in this
+code. On 2026-08-31 all eight documented magic cards were driven through the
+checkout sequence and every one came back with `error_reason` `payment_failed`,
+`error_code` `BAD_REQUEST_ERROR`, `error_source` `gateway`, and `error_step`
+`payment_authorization`, with no variation. `payment_failed` names no cause.
+
+**The interesting part is that the agent did the same thing.** It was handed a
+failure reason that names no cause, its charter says a failure whose reason
+names no cause is one nothing is justified on, and it escalated all eight
+without proposing a retry on any of them. A model asked to recover revenue and
+shown eight failed payments it could have retried chose not to, eight times.
+
+That is one seeded batch on one gateway and it is not a general claim about
+models. It is what this batch produced, and it is the outcome the charter and
+the fail-closed rule both call for.
+
+### The one unscorable row, and why it is not scored as a miss
+
+`a2-agent` has 7 scorable rows and 1 unscorable. On `order_dkhfak807uotlk` the
+invocation completed, the agent read the order, recorded a decision, and called
+`escalate_to_human`, and all of that is in the ledger. What is missing is the
+`outcome_observed` row: the CLI killed the server process before its read-back
+of the gateway finished, so the final order state was never observed.
+
+An outcome nobody read cannot be graded either way, so `harness/scorer.py`
+calls it unscorable, counts it, and keeps it out of every denominator. That is
+why `a2-agent`'s escalation precision is 0.286 against `a3-rules`'s 0.250: the
+agent is being scored over 7 orders and the rules arm over 8, and one of the
+two bait orders is in the row that dropped out. The two arms behaved
+identically on all 8; the difference in the cell is the missing row and nothing
+else.
+
+Both halves of that were fixed after the run rather than being papered over.
+The read-back now runs on a context the session's cancellation cannot reach,
+which is what turned the first live attempt from 8 unscorable rows into 1, and
+the driver now waits for a late row before declaring it missing. Phase 3
+`PROBLEMS.md` entries 11 and 12 have both, including the fact that the first
+live agent arm was re-run after the context fix while the other three arms'
+data came from the original run.
+
+### The naive arm beat both, and the number needs its caveat
+
+`a1-naive` consults nothing, retried all 8, and 4 reached `paid`. Its recovery
+rate on the recoverable set is 0.667.
+
+**The outcome was selected, not earned.** Per the 2026-08-31 amendment to
+ADR-0004: a test-mode payment attempt is settled at the last checkout call by
+one form field carrying `S` or `F`, and the card never reaches it. The
+materialiser sent `S` for the orders the manifest says are recoverable by a
+retry and `F` for the rest, which is the gateway standing in for the world. So
+a live recovery rate is evidence that the loop runs end to end against the real
+API, that the wire shapes are right, and that the state read back is what it
+says. It is not evidence that a recovery decision caused a recovery, and no
+phase can make it one.
+
+**It reached the gateway 8 times with no policy behind it.**
+`policy_violations_succeeded` is 8 for the naive arm, 2 of those on bait
+orders, and 0 for both gated arms. That column is the whole comparison on this
+layer.
+
+### What the live layer is evidence of
+
+- The whole loop runs against the real API for all four arms, including one
+  whose decisions come from a model over a stdio MCP session: create, fail,
+  read, classify, evaluate, act or refuse, read back, score.
+- The credentials reach the server process and never the model. They are
+  inherited through the process environment and are not written into the mcp
+  config file, which is checked by `TestNoToolResponseCarriesACredential` and
+  by the `key_id_prefix` field recording eight characters and nothing more.
+- No 429 came back at concurrency 2. PRD Q5 stays open; this bounds nothing.
+- Test mode collapses every card to one reason, which is a fact about Razorpay
+  test mode worth knowing before anyone builds a classifier against it.
+
 ## Honest limitations
 
 1. **The highest reachable recovery rate on the fake batch is 0.568, not 1.0.**

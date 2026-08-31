@@ -194,7 +194,61 @@ unlocked binary. Its ledger was checked afterwards for the signature, an order
 with more attempts than `R1-MAX-ATTEMPTS` permitted, and the result is in
 `REPORT.md`.
 
-## 10. The test list grew by six Python methods
+## 10. The first live agent arm came back entirely unscorable
+
+The worst kind of failure this eval has, because it does not look like a
+failure. It looks like an arm with no data.
+
+All 8 live `a2-agent` outcome rows came back with `observed` false and the
+error `context canceled`. `harness/scorer.py` correctly called every one of
+them unscorable, and the arm had done its work: the ledger has the
+classification, the tool calls, the decisions, and the policy evaluations for
+all 8.
+
+The cause is the read-back. `cmd/rzp-mcp` builds its context with
+`signal.NotifyContext(..., SIGTERM)`, which is right for the session. When the
+CLI exits it takes the server's process group with it, the SIGTERM arrives, the
+context cancels, and the `FetchOrder` that produces the outcome row is
+cancelled with it.
+
+**Nothing showed on the fake layer.** `razorpay.Fake` ignores the context it is
+handed, so every fake-layer read-back succeeded and all 40 rows came back
+observed. The live HTTP client honours it. A whole layer's worth of a bug
+hidden by a test double that is more permissive than the thing it doubles.
+
+The read-back now runs on `context.WithoutCancel` plus a 30 second deadline.
+`TestOutcomeContextSurvivesTheSessionsCancellation` pins it: cancel the parent,
+assert the read-back context is still live and still has a deadline.
+
+The live agent arm was re-run on the fixed binary, over the same batch and the
+same order sequence, while the other three arms' live data came from the
+original run. That is disclosed in `RESULTS.md` rather than left for a reader
+to infer from timestamps.
+
+## 11. One live order still lost its outcome row, to a race the driver could see
+
+After the context fix, 7 of the 8 live rows were observed and one was not. On
+`order_dkhfak807uotlk` the invocation completed, the agent read the order,
+recorded a decision, and escalated, and the ledger has all of it up to and
+including the `action_skipped` row. The `outcome_observed` row is missing: the
+CLI killed the server process before its read-back of the live API finished.
+
+Two different things, and only one of them is fixable here.
+
+`harness/agent_runner.py` checked for the server's outcome row the instant the
+CLI returned. The server writes that row on its way out, after the client
+disconnects, so there is a window in which the CLI has returned and the row is
+not on disk. It now polls for up to 10 seconds before declaring the row
+missing, with `test_agent_runner.py` covering both the late arrival and the
+give-up.
+
+The other half is not fixable from this side. A server the CLI killed before it
+could read the gateway produced no observation, and an outcome nobody read
+cannot be graded either way. That row stays unscorable, is counted, and is
+explained in `RESULTS.md`. Charging it to the arm would be charging the harness
+to the thing being measured.
+
+## 12. The test list grew by six Python methods
 
 Named in `TESTS.md` under "Changes to this list while the tests were written",
 with what each one is for. The list stays a record of what was named before the

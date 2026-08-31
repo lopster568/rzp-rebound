@@ -276,9 +276,14 @@ func run(ctx context.Context, args []string) (runErr error) {
 		row.Error = serveErr.Error()
 	}
 
-	// The read-back gets its own span, so the outcome_observed row joins to a
-	// trace like every other row does. FR-AUD-3 is every row, not most rows.
-	outcomeCtx, outcomeSpan := tracer.Start(ctx, "mcp.observe_outcome")
+	// The read-back runs on a context the client's exit cannot cancel. See
+	// outcomeContext.
+	readBack, cancelReadBack := outcomeContext(ctx)
+	defer cancelReadBack()
+
+	// It gets its own span, so the outcome_observed row joins to a trace like
+	// every other row does. FR-AUD-3 is every row, not most rows.
+	outcomeCtx, outcomeSpan := tracer.Start(readBack, "mcp.observe_outcome")
 	final, ferr := rig.Port.FetchOrder(outcomeCtx, order.Visible.OrderID)
 	if ferr != nil {
 		// An unobserved row is unscorable, which the scorer counts and keeps
@@ -469,6 +474,33 @@ func perOrderBatch(file *runner.BatchFile, orderID string) *runner.BatchFile {
 	_, _ = h.Write([]byte(orderID))
 	varied.Seed = file.Seed + int64(h.Sum64()&0x7fffffff)
 	return &varied
+}
+
+// OutcomeReadBackTimeout bounds the gateway read that produces the outcome
+// row. It is generous because it is the last call of the process and there is
+// nothing to be gained by giving up on it early.
+const OutcomeReadBackTimeout = 30 * time.Second
+
+// outcomeContext returns a context for the gateway read that produces the
+// outcome row, detached from the one the session ran on.
+//
+// The process is started by the CLI, and when the CLI exits it takes the
+// process group with it: the SIGTERM that arrives cancels the context
+// signal.NotifyContext built. Everything up to that point should stop, which
+// is what the signal is for. The read-back should not.
+//
+// It cost the first live run its whole agent arm. On the fake layer nothing
+// showed: razorpay.Fake ignores the context it is handed, so FetchOrder
+// succeeded and every row came back observed. On the live layer the HTTP
+// client honours it, so all 8 read-backs failed with "context canceled", all 8
+// rows came back with observed false, and harness/scorer.py correctly called
+// every one of them unscorable. The arm had done its work and the harness
+// threw the answer away.
+//
+// A cancelled read-back is the worst shape of failure this eval has, because
+// it does not look like a failure. It looks like an arm with no data.
+func outcomeContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), OutcomeReadBackTimeout)
 }
 
 func findOrder(file *runner.BatchFile, orderID string) (batch.Order, bool) {

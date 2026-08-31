@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -32,6 +33,19 @@ import claude_runner  # noqa: E402
 
 
 ARM = "a2-agent"
+
+# How long to wait for the server's outcome row after the CLI has exited.
+#
+# The server writes that row on its way out, after the client disconnects, so
+# for a moment the CLI has returned and the row is not on disk yet. Declaring
+# it missing in that window would file a completed order as unscorable.
+#
+# It does not cover the case where the CLI killed the server before it finished
+# the read-back. That happened once in eight on the live layer, and it produces
+# a genuinely unscorable row: the outcome was never observed, and saying so is
+# the honest reading.
+OUTCOME_WAIT_SEC = 10.0
+OUTCOME_POLL_SEC = 0.1
 
 # The task line appended to the charter. It names the order and nothing else:
 # every judgment the arm makes has to come from what the tools return, and a
@@ -51,6 +65,31 @@ def build_prompt(charter: str) -> str:
 def read_order_sequence(path: str | Path) -> list[str]:
     lines = Path(path).read_text(encoding="utf-8").splitlines()
     return [line.strip() for line in lines if line.strip()]
+
+
+def wait_for_outcome(
+    path: Path,
+    order_id: str,
+    timeout: float = OUTCOME_WAIT_SEC,
+    poll: float = OUTCOME_POLL_SEC,
+    now=None,
+    sleep=None,
+) -> bool:
+    """Wait for the server's outcome row for one order, or give up.
+
+    Polls rather than sleeping a fixed interval, so a slow machine does not
+    turn into an unscorable row and a fast one does not pay for it.
+    """
+    now = now or time.monotonic
+    sleep = sleep or time.sleep
+
+    deadline = now() + timeout
+    while True:
+        if order_id in outcome_ids(path):
+            return True
+        if now() >= deadline:
+            return False
+        sleep(poll)
 
 
 def outcome_ids(path: Path) -> set[str]:
@@ -213,8 +252,7 @@ def main(argv: list[str] | None = None) -> int:
         spent += result.attempts
         claude_runner.append_invocation(invocations_path, result)
 
-        after = outcome_ids(outcomes_path)
-        if order_id not in after and order_id not in before:
+        if order_id not in before and not wait_for_outcome(outcomes_path, order_id):
             append_json_line(
                 outcomes_path,
                 unscorable_row(
@@ -222,7 +260,12 @@ def main(argv: list[str] | None = None) -> int:
                     layer=args.layer,
                     batch_id=batch_id,
                     order_id=order_id,
-                    reason="the session wrote no outcome row: " + (result.reason or result.error),
+                    reason=(
+                        "the session wrote no outcome row within "
+                        + str(OUTCOME_WAIT_SEC)
+                        + "s of the cli exiting: "
+                        + (result.reason or result.error)
+                    ),
                 ),
             )
 
