@@ -1,8 +1,11 @@
 package razorpay
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -33,14 +36,32 @@ const (
 	MediumEmail = "email"
 )
 
-// ErrorSourcePendingFixture and ErrorStepPendingFixture are what the fake
-// reports in error.source and error.step. The real per-code values are not
-// documented in testdata, and guessing them would put a made-up fact in the
-// repository. Phase 1 captures a live test-mode failure and replaces these.
+// Error fields carried by a failed payment, observed against Razorpay test
+// mode on 2026-08-31 and recorded in docs/RAZORPAY-TEST-MODE-NOTES.md. They
+// replace the ErrorSourcePendingFixture and ErrorStepPendingFixture
+// placeholders the offline half shipped, which stood in for exactly this.
+//
+// Every failed payment the 2026-08-31 walk produced carried all three, with no
+// variation across the eight documented cards.
 const (
-	ErrorSourcePendingFixture = "pending_fixture_source"
-	ErrorStepPendingFixture   = "pending_fixture_step"
+	// ErrorClassBadRequest is the coarse class in error.code. Razorpay uses
+	// it for a declined payment as well as for a malformed request, which is
+	// why the classifier reads error.reason first.
+	ErrorClassBadRequest = "BAD_REQUEST_ERROR"
+	// ErrorSourceGateway is error.source on a payment the bank declined.
+	ErrorSourceGateway = "gateway"
+	// ErrorStepPaymentAuthorization is error.step on the same.
+	ErrorStepPaymentAuthorization = "payment_authorization"
+	// ReasonPaymentFailed is the only error.reason test mode produces for a
+	// declined card. It names no cause, which is why it classifies as
+	// unclassified rather than as a retry. DECISIONS.md has the reasoning.
+	ReasonPaymentFailed = "payment_failed"
 )
+
+// DescriptionMissingResource is the error.description Razorpay returns for a
+// resource that does not exist. It arrives with a 400 rather than a 404, which
+// is why mapNotFound has to read it.
+const DescriptionMissingResource = "The id provided does not exist"
 
 // Errors the port returns.
 var (
@@ -53,18 +74,65 @@ var (
 	ErrAmountNotPositive   = errors.New("razorpay: amount must be positive")
 )
 
+// Notes is Razorpay's free-form notes map.
+//
+// It is a named type with its own decoder because Razorpay does not always
+// send it as an object. An order created with notes comes back with a JSON
+// object, and an order created without them comes back with an empty JSON
+// array. Decoding straight into a map therefore failed the whole response for
+// exactly the orders that had nothing interesting in this field, which is the
+// worst place to fail: the order exists in Razorpay, the caller gets an error,
+// and nothing in the caller knows the id of what it just created.
+//
+// Observed on 2026-08-31 by the live contract harness, minutes after that
+// harness first ran. The fixture captures did not find it because every
+// captured order was created with notes on it.
+type Notes map[string]string
+
+// UnmarshalJSON accepts an object, an empty array, or null.
+//
+// A non-empty array stays an error. It is not an empty map with a different
+// spelling, and quietly dropping its contents would lose data that was on the
+// order.
+func (n *Notes) UnmarshalJSON(b []byte) error {
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		*n = nil
+		return nil
+	}
+
+	if trimmed[0] == '[' {
+		var items []json.RawMessage
+		if err := json.Unmarshal(trimmed, &items); err != nil {
+			return fmt.Errorf("razorpay: decode notes: %w", err)
+		}
+		if len(items) != 0 {
+			return fmt.Errorf("razorpay: notes arrived as an array of %d item(s), which is not a map", len(items))
+		}
+		*n = Notes{}
+		return nil
+	}
+
+	var m map[string]string
+	if err := json.Unmarshal(trimmed, &m); err != nil {
+		return fmt.Errorf("razorpay: decode notes: %w", err)
+	}
+	*n = m
+	return nil
+}
+
 // Order is a Razorpay order. Amounts are in paise.
 type Order struct {
-	ID          string            `json:"id"`
-	AmountPaise int64             `json:"amount"`
-	AmountPaid  int64             `json:"amount_paid"`
-	AmountDue   int64             `json:"amount_due"`
-	Currency    string            `json:"currency"`
-	Receipt     string            `json:"receipt"`
-	Status      string            `json:"status"`
-	Attempts    int               `json:"attempts"`
-	CreatedAt   int64             `json:"created_at"`
-	Notes       map[string]string `json:"notes,omitempty"`
+	ID          string `json:"id"`
+	AmountPaise int64  `json:"amount"`
+	AmountPaid  int64  `json:"amount_paid"`
+	AmountDue   int64  `json:"amount_due"`
+	Currency    string `json:"currency"`
+	Receipt     string `json:"receipt"`
+	Status      string `json:"status"`
+	Attempts    int    `json:"attempts"`
+	CreatedAt   int64  `json:"created_at"`
+	Notes       Notes  `json:"notes,omitempty"`
 }
 
 // Payment is a Razorpay payment. Amounts are in paise. The five error fields

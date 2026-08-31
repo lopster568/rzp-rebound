@@ -81,8 +81,16 @@ func TestFakeMagicCardInsufficientFundProducesFailedPaymentWithErrorCode(t *test
 	if payment.Status != razorpay.PaymentStatusFailed {
 		t.Errorf("status = %q, want %q", payment.Status, razorpay.PaymentStatusFailed)
 	}
-	if payment.ErrorCode != "insufficient_fund" {
-		t.Errorf("error_code = %q, want %q", payment.ErrorCode, "insufficient_fund")
+	// This assertion read error_code before PRD Q4 was settled, when the fake
+	// put the reason string in both fields. A real failed payment carries the
+	// coarse class in error_code and the reason in error_reason, observed on
+	// 2026-08-31, so the reason is read from the field that actually carries
+	// it and the class is checked in the field that actually carries that.
+	if payment.ErrorReason != "insufficient_fund" {
+		t.Errorf("error_reason = %q, want %q", payment.ErrorReason, "insufficient_fund")
+	}
+	if payment.ErrorCode != razorpay.ErrorClassBadRequest {
+		t.Errorf("error_code = %q, want %q", payment.ErrorCode, razorpay.ErrorClassBadRequest)
 	}
 	if payment.OrderID != order.ID {
 		t.Errorf("order_id = %q, want %q", payment.OrderID, order.ID)

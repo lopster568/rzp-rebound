@@ -81,6 +81,25 @@ type APIError struct {
 	Method     string
 	Path       string
 	Body       string
+	// Description is error.description out of the response envelope, when the
+	// body carried one. It is parsed rather than left in the body string
+	// because Razorpay answers a missing resource with a 400 and puts the
+	// only distinguishing information in this field: the status code alone
+	// cannot tell a missing order from a malformed request.
+	Description string
+	// Reason is error.reason out of the same envelope.
+	Reason string
+}
+
+// apiErrorEnvelope is the shape a Razorpay error body arrives in.
+type apiErrorEnvelope struct {
+	Error struct {
+		Code        string `json:"code"`
+		Description string `json:"description"`
+		Source      string `json:"source"`
+		Step        string `json:"step"`
+		Reason      string `json:"reason"`
+	} `json:"error"`
 }
 
 // Error renders the status, the call, and the truncated body.
@@ -293,24 +312,55 @@ func (c *Client) apiError(method, path string, status int, body []byte) *APIErro
 	// there into every log line that formats one. Measured on 2026-08-31 with
 	// the cut inside the secret: 11 of 22 characters survived.
 	scrubbed := redact.Value(c.Redact(string(body)))
+
+	// Parse before truncating, for the same reason redaction runs before it:
+	// the description can sit past the cut, and it is the field mapNotFound
+	// needs. A body that does not parse leaves both fields empty, which is
+	// the fail-closed answer.
+	var envelope apiErrorEnvelope
+	_ = json.Unmarshal([]byte(scrubbed), &envelope)
+
 	if len(scrubbed) > maxErrorBodyBytes {
 		// Truncation is on a byte boundary and can split a rune, so drop what
 		// it broke rather than putting invalid UTF-8 in an error.
 		scrubbed = strings.ToValidUTF8(scrubbed[:maxErrorBodyBytes], "") + "(truncated)"
 	}
 	return &APIError{
-		StatusCode: status,
-		Method:     method,
-		Path:       path,
-		Body:       scrubbed,
+		StatusCode:  status,
+		Method:      method,
+		Path:        path,
+		Body:        scrubbed,
+		Description: envelope.Error.Description,
+		Reason:      envelope.Error.Reason,
 	}
 }
 
-// mapNotFound turns a 404 into the port's own not-found error, so callers
-// match with errors.Is instead of reading a status code.
+// mapNotFound turns a missing resource into the port's own not-found error, so
+// callers match with errors.Is instead of reading a status code.
+//
+// Razorpay does not answer 404 for a resource that is not there. It answers
+// 400 with error.description set to DescriptionMissingResource, observed on
+// 2026-08-31 against both a missing order id and a missing payment link id.
+// The offline half only looked at the status code, so errors.Is against
+// ErrOrderNotFound was false for the exact case the sentinel exists to catch.
+//
+// The 404 branch is kept because it costs nothing and a gateway that starts
+// answering the documented way should not break this.
+//
+// Matching on a description string is fragile and is the honest option
+// available: a 400 is also what a malformed id and a rejected body produce, so
+// the status code cannot separate them and the description is the only field
+// that does. If Razorpay reword that string, this stops recognising a missing
+// resource and callers see a plain APIError, which fails toward reporting less
+// rather than toward reporting a resource absent that is not.
 func mapNotFound(err error, sentinel error, id string) error {
 	var apiErr *APIError
-	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	missing := apiErr.StatusCode == http.StatusNotFound ||
+		(apiErr.StatusCode == http.StatusBadRequest && apiErr.Description == DescriptionMissingResource)
+	if missing {
 		return fmt.Errorf("%w: %s: %w", sentinel, id, err)
 	}
 	return err
@@ -350,6 +400,13 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 		switch {
 		case status >= 200 && status < 300:
 			if out == nil {
+				return nil
+			}
+			// A 2xx with no body is not a decode failure. Nothing observed so
+			// far answers that way, and treating it as an error would turn a
+			// successful side effect into a reported failure, which is the
+			// wrong direction for a call that moves money.
+			if len(bytes.TrimSpace(respBody)) == 0 {
 				return nil
 			}
 			if err := json.Unmarshal(respBody, out); err != nil {
@@ -480,16 +537,33 @@ type createOrderBody struct {
 	Notes    map[string]string `json:"notes,omitempty"`
 }
 
-// createPaymentLinkBody is the POST body for the payment-links endpoint. Every
-// field here is pending fixture capture, as the doc comment on
-// CreatePaymentLinkRequest in port.go says.
+// createPaymentLinkBody is the POST body for the payment-links endpoint,
+// confirmed against test mode on 2026-08-31.
+//
+// The offline half sent flat notify_sms and notify_email fields. Test mode
+// rejected that body with a 400 and the description "extra fields sent": the
+// notification flags are a nested object. Razorpay validates this endpoint
+// strictly, so an invented field name is a failed call rather than an ignored
+// one, which is the good kind of strict.
 type createPaymentLinkBody struct {
-	Amount      int64  `json:"amount"`
-	Currency    string `json:"currency"`
-	Description string `json:"description,omitempty"`
-	ReferenceID string `json:"reference_id,omitempty"`
-	NotifySMS   bool   `json:"notify_sms"`
-	NotifyEmail bool   `json:"notify_email"`
+	Amount      int64                   `json:"amount"`
+	Currency    string                  `json:"currency"`
+	Description string                  `json:"description,omitempty"`
+	ReferenceID string                  `json:"reference_id,omitempty"`
+	Notify      createPaymentLinkNotify `json:"notify"`
+}
+
+// createPaymentLinkNotify is the nested notify object.
+type createPaymentLinkNotify struct {
+	SMS   bool `json:"sms"`
+	Email bool `json:"email"`
+}
+
+// notifyResponse is the body the resend endpoint answers with, confirmed on
+// 2026-08-31. Success is a pointer so a body carrying no such field stays
+// distinguishable from one carrying false.
+type notifyResponse struct {
+	Success *bool `json:"success"`
 }
 
 // paymentCollection is the list envelope the payments-for-order endpoint
@@ -590,8 +664,10 @@ func (c *Client) CreatePaymentLink(ctx context.Context, req CreatePaymentLinkReq
 		Currency:    currency,
 		Description: req.Description,
 		ReferenceID: req.ReferenceID,
-		NotifySMS:   req.NotifySMS,
-		NotifyEmail: req.NotifyEmail,
+		Notify: createPaymentLinkNotify{
+			SMS:   req.NotifySMS,
+			Email: req.NotifyEmail,
+		},
 	}, &out)
 	if err != nil {
 		return PaymentLink{}, err
@@ -612,19 +688,31 @@ func (c *Client) ResendPaymentLinkNotification(ctx context.Context, linkID, medi
 		return NotifyReceipt{}, fmt.Errorf("%w: no link id given", ErrPaymentLinkNotFound)
 	}
 
+	var out notifyResponse
 	path := fmt.Sprintf(pathPaymentLinkNotify, url.PathEscape(linkID), url.PathEscape(medium))
-	if err := c.do(ctx, http.MethodPost, path, nil, nil); err != nil {
+	if err := c.do(ctx, http.MethodPost, path, nil, &out); err != nil {
 		return NotifyReceipt{}, mapNotFound(err, ErrPaymentLinkNotFound, linkID)
 	}
 
-	// Accepted comes from the 2xx, not from a field in the body. The response
-	// shape is pending fixture capture, and a field name invented here would
-	// decode to false on a call that actually worked. What is observed is an
-	// HTTP status, which is what Accepted reports.
+	// Accepted comes from the success field when the body carries one, and
+	// from the 2xx when it does not. The field turned out to exist: the
+	// endpoint answered {"success":true} on 2026-08-31. Reading it makes a
+	// 200 that reports a refusal visible instead of being counted as an
+	// acceptance.
+	//
+	// What Accepted means has not widened. On 2026-08-31 a payment link with
+	// no contact on it at all still answered notify_by/sms with 200 and
+	// {"success":true}, so this reports that the notification API call
+	// succeeded and nothing more. Receipt.DeliveryConfirmed stays false.
+	accepted := true
+	if out.Success != nil {
+		accepted = *out.Success
+	}
+
 	return NotifyReceipt{
 		LinkID:      linkID,
 		Medium:      medium,
-		Accepted:    true,
+		Accepted:    accepted,
 		RequestedAt: c.clock.Now(),
 	}, nil
 }

@@ -247,14 +247,23 @@ func (f *Fake) AttemptPayment(_ context.Context, orderID, cardNumber string) (Pa
 		order.AmountDue = 0
 	} else {
 		payment.Status = PaymentStatusFailed
-		// magic_cards.json calls the column error_code and its values are
-		// reason strings. Which of the two API fields Razorpay populates for
-		// a given card is a phase 1 fixture question, so the fake fills both
-		// and nothing downstream has to guess which one to read.
-		payment.ErrorCode = card.ErrorCode
+		// PRD Q4 is settled. A real failed payment carries the coarse class in
+		// error.code and the specific reason in error.reason, observed on
+		// 2026-08-31, so the fake fills them the same way round. It used to
+		// put the reason string in both, because which field carried it was
+		// the open question, and a fake that answers a settled question the
+		// wrong way teaches the wrong shape to every offline test on it.
+		//
+		// The reason string here is the documented one from
+		// magic_cards.json, which live test mode does not actually produce:
+		// every card came back as ReasonPaymentFailed. The fake keeps the
+		// documented reasons on purpose, because it is what gives the
+		// classifier's six classes anything to be exercised against.
+		// DECISIONS.md has the entry.
+		payment.ErrorCode = ErrorClassBadRequest
 		payment.ErrorReason = card.ErrorCode
-		payment.ErrorSource = ErrorSourcePendingFixture
-		payment.ErrorStep = ErrorStepPendingFixture
+		payment.ErrorSource = ErrorSourceGateway
+		payment.ErrorStep = ErrorStepPaymentAuthorization
 		payment.ErrorDescription = "seeded by the fake gateway from " + testcards.DefaultPath
 		order.Status = OrderStatusAttempted
 	}
