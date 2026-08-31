@@ -90,10 +90,16 @@ which names itself in the audit row.
 
 What it cost beyond the fix: the unit tests did not catch it, because every one
 of them sets `ActionBudget` explicitly. A rule tested only with its value
-supplied does not test what happens when it is not. `DECISIONS.md` has the
-entry.
+supplied does not test what happens when it is not.
 
-Cost: 15 minutes.
+So the fix came with a test the plan did not name.
+`TestPolicyZeroConfigIsTheStandardPolicy` checks all five defaults and then
+that an ordinary retry through an unconfigured policy is allowed, and it was
+run against the old behaviour first to make sure it caught the bug rather than
+merely passing next to it. That takes the phase 2 Go count from the 37 at the
+red commit to 38. `DECISIONS.md` has the semantics entry.
+
+Cost: 15 minutes, plus 10 for the test.
 
 ## 2026-08-31: a quarter of the batch escalated on amount, and it swamped the escalation numbers
 

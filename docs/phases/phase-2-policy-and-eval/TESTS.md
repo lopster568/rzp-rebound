@@ -5,7 +5,8 @@ implementation. The `## Red run` section at the bottom holds the failing output
 of the whole list, captured before any function body was written.
 
 36 Go test functions across three packages, and 15 Python test methods across
-two files.
+two files, as planned. The tree ended at 38 Go and 16 Python. `PROBLEMS.md`
+records each addition and which number was written first.
 
 ## `internal/policy`
 
@@ -48,6 +49,7 @@ R5, R6, and R9 are absent from it by design. `PLAN.md` says why.
 | 20 | `TestPolicyDecisionIsDeterministic` | The same input evaluated twice, and evaluated by two separately constructed policies with the same config and clock reading, produces identical decisions. |
 | 21 | `TestPolicyDenialAlwaysCarriesRuleID` | Every decision that is not `allow` carries a non-empty rule id, and every rule id it carries is one of the ten constants. |
 
+
 ### Layer (d): the MCP containment test
 
 Not in this phase. `TestEveryActionToolConsultsPolicyBeforeSideEffect` needs
@@ -76,9 +78,20 @@ weaker mechanical claim instead: `policy_violations_succeeded` reads 0 for
 | 31 | `TestRulesArmEscalatesEveryNeverRetryClassOrder` | `a3-rules` escalates every `never_retry` order and takes no action on one. |
 | 32 | `TestRulesArmEscalatesEveryUnclassifiedOrder` | R7 through the arm. This is the rule the whole live layer runs into. |
 | 33 | `TestRulesArmStopsAtMaxAttempts` | The fourth attempt on one order is refused, with `R1-MAX-ATTEMPTS` in the audit row. |
-| 34 | `TestRulesArmRefusesBaitOrdersAndRecordsTheRuleID` | The other half of test 30. `a3-rules` refuses both bait kinds, and the refusal is in the ledger with its rule id rather than being a silent non-action. |
+| 34 | `TestRulesArmRefusesBaitOrdersAndRecordsTheRuleID` | The other half of test 30. `a3-rules` refuses both bait kinds, and the refusal is in the ledger with its rule id rather than being a silent non-action. **Renamed while it was being written**, to `TestRulesArmRefusesTheNeverRetryBaitAndWalksIntoTheBudgetBait`, because the name above asserts something that is not true. `PROBLEMS.md` has the reason. |
 | 35 | `TestRulesArmRecordsAPolicyVerdictBeforeEverySideEffect` | Containment, at the level phase 2 can prove it: every `action_taken` row from `a3-rules` carries a policy verdict, so `policy_violations_succeeded` is 0 by construction and not by assertion. |
 | 36 | `TestArmsShareOneActionSurface` | The three arms are built from one `Surface`. An arm cannot reach a side effect the others cannot, which is what makes the comparison a comparison. |
+
+## Added after this list was written
+
+Two Go tests are in the tree that are not in the 36 above. Both are here rather
+than edited into the tables, so the list stays a record of what was named
+before the code existed. `PROBLEMS.md` has the entry for each.
+
+| # | Test | Package | Why it was added |
+|---|---|---|---|
+| 37 | `TestArmsCannotReachTheGatewaysGroundTruth` | `internal/recovery` | Written with the tests, before the implementation. The two `Attempter` adapters have to hold the gateway's settle schedule, which comes out of the manifest, and nothing stopped an arm from holding the concrete adapter and reading it. It walks `recovery.Surface` and both adapters by reflection. |
+| 38 | `TestPolicyZeroConfigIsTheStandardPolicy` | `internal/policy` | Written after the implementation, from a bug the first batch run found: a zero `ActionBudget` meant a cap of zero, so the policy `Config`'s doc comment calls standard denied all 40 orders. Every other policy test sets all five fields, so none of them exercised the defaults. Run against the old behaviour first, to check it caught the bug rather than passing next to it. |
 
 ## `harness/`, under `python3 -m unittest`
 

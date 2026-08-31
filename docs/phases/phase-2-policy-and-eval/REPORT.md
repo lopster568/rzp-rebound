@@ -25,16 +25,17 @@ There is one per layer: `results/tables/sample-phase-2-fake.md` and
 
 ## Test counts
 
-37 new Go test functions and 16 Python test methods, 53 in all.
+38 new Go test functions and 16 Python test methods, 54 in all. `TESTS.md`
+named 36 and 15 before any of them existed, and records each addition.
 
 | Package | New in phase 2 |
 |---|---|
-| `internal/policy` | 21, of which 16 are per-rule tables, 1 is the golden matrix, and 4 are properties |
+| `internal/policy` | 22, of which 16 are per-rule tables, 1 is the golden matrix, 4 are properties, and 1 is a regression test for the zero-value config |
 | `internal/store` | 5 |
 | `internal/recovery` | 11, in `arms_test.go` |
 | `harness/` | 16 |
 
-Repository totals: 112 Go test functions across 12 packages, plus 16 Python.
+Repository totals: 113 Go test functions across 12 packages, plus 16 Python.
 `internal/policy/testdata/policy_matrix.golden` holds 576 serialized decisions.
 
 ```
@@ -46,9 +47,11 @@ $ make verify-phase-2
 exit 0
 ```
 
-The red run is in `TESTS.md`. 33 of the 37 Go tests failed against the
-declaration-only tree; the four that passed did so vacuously, and `TESTS.md`
-names all four rather than reporting 33 of 37 as an oversight.
+The red run is in `TESTS.md`. 33 of the 37 Go tests that existed at the red
+commit failed against the declaration-only tree; the four that passed did so
+vacuously, and `TESTS.md` names all four rather than reporting 33 of 37 as an
+oversight. The 38th was added later, from a bug a run found, and was verified
+failing against the old behaviour before being kept.
 
 ## Exit criteria
 
@@ -164,7 +167,10 @@ they had before.
 
 1. `Config.ActionBudget` zero meant a literal cap of zero, so
    `policy.New(policy.Config{}, clock)`, documented as the standard policy,
-   denied all 40 orders under R5. Zero now means the default.
+   denied all 40 orders under R5. Zero now means the default, and
+   `TestPolicyZeroConfigIsTheStandardPolicy` covers the gap that let it
+   through: every other policy test sets all five fields, so none of them
+   exercised the defaults.
 2. `DefaultAmountCeilingPaise` was 400000 against amounts spanning 50000 to
    500000, so it escalated a quarter of the batch on amount alone and swamped
    every escalation number. It is 450000.

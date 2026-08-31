@@ -524,3 +524,49 @@ func TestPolicyDenialAlwaysCarriesRuleID(t *testing.T) {
 		}
 	}
 }
+
+// TestPolicyZeroConfigIsTheStandardPolicy covers the gap that let the first
+// real batch run deny all 40 orders.
+//
+// Every other test in this file supplies a Config with all five fields set, so
+// none of them exercised what happens when one is left out. Config's doc
+// comment says the zero value is the standard policy and cmd/rzp/run.go takes
+// it at its word, and for one afternoon on 2026-08-31 the standard policy
+// permitted nothing because a zero ActionBudget meant a cap of zero.
+func TestPolicyZeroConfigIsTheStandardPolicy(t *testing.T) {
+	p := policy.New(policy.Config{}, clock.NewFake(start))
+
+	cfg := p.Config()
+	for _, tc := range []struct {
+		field string
+		got   any
+		want  any
+	}{
+		{"MaxAttemptsPerOrder", cfg.MaxAttemptsPerOrder, policy.DefaultMaxAttemptsPerOrder},
+		{"Cooldown", cfg.Cooldown, policy.DefaultCooldown},
+		{"NotifyWindow", cfg.NotifyWindow, policy.DefaultCooldown},
+		{"AmountCeilingPaise", cfg.AmountCeilingPaise, int64(policy.DefaultAmountCeilingPaise)},
+		{"ActionBudget", cfg.ActionBudget, policy.DefaultActionBudget},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("a zero Config left %s at %v, want the default %v", tc.field, tc.got, tc.want)
+		}
+	}
+	if cfg.KillSwitch {
+		t.Error("a zero Config engaged the kill switch")
+	}
+
+	// And the thing that actually broke: an ordinary retry on an ordinary
+	// order, through a policy nobody configured, has to be allowed.
+	req := policy.Request{
+		OrderID:     "order_zero_config",
+		Action:      policy.ActionRetrySameInstrument,
+		Class:       classify.TransientRetryEligible,
+		AmountPaise: 100000,
+		AttemptNo:   1,
+	}
+	if got := p.Evaluate(policy.State{AttemptsMade: 1}, req); got.Verdict != policy.VerdictAllow {
+		t.Errorf("the standard policy refused an ordinary retry: %s (%s), %s",
+			got.Verdict, got.RuleID, got.Reason)
+	}
+}
