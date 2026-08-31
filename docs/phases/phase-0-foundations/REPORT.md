@@ -128,8 +128,12 @@ $ go test ./... -count=1 -race
 $ make ci
 exit 0
 $ gh run list --limit 1
-completed  success  feat(config): env loading that fails fast and never prints a credential  ci  main  push  33423071666
+completed  success  docs(phases): repoint the commit citations at the SHAs that exist  ci  main  push  33438407103
 ```
+
+The run id above is the newest green `ci` run on `main` as of 2026-08-31,
+on commit `fb250b1`. The workflow and the Go version are unchanged from the
+run that first proved this phase green.
 
 CI runs on `ubuntu-latest` with `go-version: "1.25.x"`.
 
