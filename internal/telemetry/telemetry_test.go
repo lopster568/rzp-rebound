@@ -91,6 +91,29 @@ func TestTracerProviderUsesServiceNameFromConfig(t *testing.T) {
 	}
 }
 
+func TestConfiguredServiceNameBeatsTheEnvironment(t *testing.T) {
+	// FR-TEL-2 says every span carries the configured service name. It was not
+	// true: resource.WithFromEnv came last, so OTEL_SERVICE_NAME won against an
+	// explicit Config.ServiceName. Nothing in the suite had ever set the
+	// variable, so nothing caught it until a phase 3 run exported it to point
+	// the exporter at Jaeger and turned the test above red.
+	t.Setenv("OTEL_SERVICE_NAME", "whatever-the-operator-exported")
+
+	const want = "rzp-recovery-agent-explicit"
+	p := newProvider(t, telemetry.Config{ServiceName: want, Writer: &syncBuffer{}})
+	t.Cleanup(func() { _ = p.Shutdown(context.Background()) })
+
+	var got string
+	for _, attr := range p.Resource.Attributes() {
+		if string(attr.Key) == "service.name" {
+			got = attr.Value.AsString()
+		}
+	}
+	if got != want {
+		t.Errorf("resource service.name = %q, want %q: the environment beat the configuration", got, want)
+	}
+}
+
 func TestStdoutExporterIsUsedWhenOTLPEndpointIsUnset(t *testing.T) {
 	out := &syncBuffer{}
 

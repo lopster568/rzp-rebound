@@ -268,7 +268,7 @@ covers them today. Later components name the test that will.
 | ID | Requirement | Covering test |
 |---|---|---|
 | FR-TEL-1 | With no OTLP endpoint set, traces go to the stdout exporter instead of failing to connect. | `TestStdoutExporterIsUsedWhenOTLPEndpointIsUnset` |
-| FR-TEL-2 | Every span carries the configured service name on its resource. | `TestTracerProviderUsesServiceNameFromConfig` |
+| FR-TEL-2 | Every span carries the configured service name on its resource. | `TestTracerProviderUsesServiceNameFromConfig` and `TestConfiguredServiceNameBeatsTheEnvironment`. It was not true until 2026-09-01: `resource.WithFromEnv` came after `WithAttributes`, so `OTEL_SERVICE_NAME` beat an explicit config. Nothing caught it because nothing in the repository had ever set the variable, and the first phase 3 run that did turned the phase 0 test red. Phase 3 `PROBLEMS.md` 12. |
 | FR-TEL-3 | `Shutdown` returns no error and runs its work once. | `TestNewTracerProviderShutsDownCleanly` |
 | FR-TEL-4 | Every recovery decision is a span carrying order id, class, action, and policy verdict. | Met. `audit.Recorder` writes the same fields to the span and to the ledger line, and phase 2 filled the two policy fields. |
 

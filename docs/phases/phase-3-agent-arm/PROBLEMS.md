@@ -248,7 +248,41 @@ cannot be graded either way. That row stays unscorable, is counted, and is
 explained in `RESULTS.md`. Charging it to the arm would be charging the harness
 to the thing being measured.
 
-## 12. The test list grew by six Python methods
+## 12. `OTEL_SERVICE_NAME` beat the configured service name, and FR-TEL-2 was false
+
+Found by running `make verify-phase-3` in a shell that had exported
+`OTEL_SERVICE_NAME` to point the exporter at Jaeger.
+`TestTracerProviderUsesServiceNameFromConfig`, a phase 0 test that had been
+green for two phases, went red:
+`resource service.name = "rzp-recovery-agent", want "rzp-recovery-agent-phase-0"`.
+
+The test was right and the code was wrong. `telemetry.NewTracerProvider` built
+its resource with `resource.WithAttributes(serviceName)` and then
+`resource.WithFromEnv()`, and `resource.New` merges in order with the later
+option winning. So the environment beat an explicit `Config.ServiceName`, and
+FR-TEL-2, "every span carries the configured service name on its resource",
+was not true.
+
+Nothing had ever caught it because nothing in this repository had ever set the
+variable. The first thing that did was a phase 3 run that needed it for the
+OTLP exporter, and the failure it produced looked like the harness breaking a
+test rather than a test finding a bug.
+
+Both readings are on the record rather than only the one that shipped. The other reading
+is that the environment should win, which is the usual OTel precedence, and
+then the fix would have been to make the test hermetic and soften FR-TEL-2's
+wording. That was rejected: `internal/config` already reads
+`OTEL_SERVICE_NAME` into `Config.ServiceName` and every caller passes it
+through, so the environment is honoured on the way in. A second path that can
+disagree with the argument is not precedence, it is two sources of truth.
+
+`WithFromEnv` now comes first and `WithAttributes` last, so a caller that asked
+for a name gets it and the environment still supplies every other resource
+attribute. `TestConfiguredServiceNameBeatsTheEnvironment` sets the variable and
+asserts the configured name wins, and both it and the phase 0 test go red
+against the old order.
+
+## 13. The test list grew by six Python methods
 
 Named in `TESTS.md` under "Changes to this list while the tests were written",
 with what each one is for. The list stays a record of what was named before the

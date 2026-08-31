@@ -67,11 +67,26 @@ func NewTracerProvider(ctx context.Context, cfg Config) (*Provider, error) {
 		attrs = append(attrs, semconv.ServiceVersion(cfg.ServiceVersion))
 	}
 
+	// WithFromEnv comes before WithAttributes, and the order is the whole
+	// point: resource.New merges in order and the later option wins, so the
+	// name this function was configured with has to be last.
+	//
+	// It used to be the other way round, which made OTEL_SERVICE_NAME override
+	// an explicit Config.ServiceName and FR-TEL-2 false. Nothing showed until
+	// phase 3, because nothing had ever set the variable: the first thing that
+	// did was a run exporting it for Jaeger, and it turned
+	// TestTracerProviderUsesServiceNameFromConfig red.
+	//
+	// The environment is still read, and it is still the way an operator names
+	// a service: internal/config reads OTEL_SERVICE_NAME into Config.ServiceName
+	// and every caller passes that through. What it no longer does is win
+	// against a caller that asked for something else. WithFromEnv stays for the
+	// other resource attributes it supplies.
 	res, err := resource.New(ctx,
 		resource.WithSchemaURL(semconv.SchemaURL),
-		resource.WithAttributes(attrs...),
 		resource.WithTelemetrySDK(),
 		resource.WithFromEnv(),
+		resource.WithAttributes(attrs...),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: build resource: %w", err)
