@@ -49,11 +49,14 @@ if [ -n "$prose_files" ]; then
 	fi
 fi
 
-# 4. secrets in staged content, any file type. The three guardrail files are
-#    excluded because they have to contain the pattern they are looking for.
+# 4. secrets in staged content, any file type. The guardrail files are excluded
+#    because each one has to contain the pattern it is looking for.
+#    capture-fixtures.sh joined them in phase 1: it scans the fixtures it just
+#    wrote for the two key prefixes, so it carries both.
 secrets_diff() {
 	git diff --cached -U0 -- . \
 		':(exclude)scripts/check-docs.sh' \
+		':(exclude)scripts/capture-fixtures.sh' \
 		':(exclude)scripts/hooks/pre-commit' \
 		':(exclude)scripts/slop-patterns.txt'
 }
