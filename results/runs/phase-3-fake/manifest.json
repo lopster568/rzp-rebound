@@ -1,0 +1,677 @@
+{
+  "run_id": "phase-3-fake",
+  "started_at": "2026-08-31T23:20:16Z",
+  "seed": 42,
+  "arms": [
+    "a0-control",
+    "a1-naive",
+    "a2-agent",
+    "a3-rules"
+  ],
+  "batch_id": "b-1234-40",
+  "batch_path": "results/batches/b-1234-40.json",
+  "layer": "fake",
+  "git_sha": "1b877a7",
+  "prompt_sha256": "4798216ef1fc9e6c62e57ec06f589ec84498b248ac511b850964355eaeefb7c1",
+  "key_id_prefix": "",
+  "shuffled": true,
+  "cell_order": [
+    {
+      "arm": "a1-naive",
+      "order_id": "order_y86j8d93u68dum"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_1fsab2tcu0qpfb"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_bejvqya2i3rgur"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_tchcyaou5r2pu5"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_yw79d2ex1woqm5"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_f62ran7qswyy55"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_fixlsbucelwa8g"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_84by2mwwoppm90"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_juc3egf48g67ai"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_19z6il9c2d7gg6"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_q8sbbxfiwrksfv"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_htuqham31kyn01"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_qqht8o072b55d3"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_ai5apy8m9oreae"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_juc3egf48g67ai"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_lraeeq9s4lbmm5"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_lraeeq9s4lbmm5"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_tz6melli7vcllv"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_w0vq7ji3j9n6pe"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_tchcyaou5r2pu5"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_qftafnv3vvjlof"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_ou4x5eimpsvlyz"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_84by2mwwoppm90"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_ptn4514b32vryx"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_tchcyaou5r2pu5"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_f8s11egmrq8kxi"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_6iwuln61kvztz9"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_8ya3z4vp29tob5"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_sb3d8zzlmobqco"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_6iwuln61kvztz9"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_eqy8w2qgk6p9dv"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_f2n4lre396jkjn"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_qqht8o072b55d3"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_8ya3z4vp29tob5"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_y86j8d93u68dum"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_ptn4514b32vryx"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_ou4x5eimpsvlyz"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_eqy8w2qgk6p9dv"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_ptn4514b32vryx"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_djstewlelnuv5c"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_fixlsbucelwa8g"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_8ya3z4vp29tob5"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_yw79d2ex1woqm5"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_tz6melli7vcllv"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_1fsab2tcu0qpfb"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_qbw17unkx0ar1b"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_w0vq7ji3j9n6pe"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_ai5apy8m9oreae"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_bejvqya2i3rgur"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_juc3egf48g67ai"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_8ya3z4vp29tob5"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_wbgfnjgppnxblu"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_kmffxcxox8s4eu"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_qbw17unkx0ar1b"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_qftafnv3vvjlof"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_qbw17unkx0ar1b"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_fixlsbucelwa8g"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_y43coy7d6cq24l"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_bejvqya2i3rgur"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_y86j8d93u68dum"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_6iwuln61kvztz9"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_htuqham31kyn01"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_84by2mwwoppm90"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_sb3d8zzlmobqco"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_f2n4lre396jkjn"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_cvbdcw5vwoczlf"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_84by2mwwoppm90"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_gbud3strl4qgew"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_2n19c1ctkdbi4p"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_gbud3strl4qgew"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_d4jkrng03gdzj2"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_h5jazemqswddtt"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_y43coy7d6cq24l"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_w0vq7ji3j9n6pe"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_htuqham31kyn01"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_fhc1zbxibv5ndf"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_qbw17unkx0ar1b"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_0997q4kcywe841"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_qqht8o072b55d3"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_eqy8w2qgk6p9dv"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_y86j8d93u68dum"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_h5jazemqswddtt"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_1fsab2tcu0qpfb"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_tchcyaou5r2pu5"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_cvbdcw5vwoczlf"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_0997q4kcywe841"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_2n19c1ctkdbi4p"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_djstewlelnuv5c"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_htuqham31kyn01"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_wbgfnjgppnxblu"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_h5jazemqswddtt"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_6iwuln61kvztz9"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_cvbdcw5vwoczlf"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_7yzo240exow3tw"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_f62ran7qswyy55"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_f8s11egmrq8kxi"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_ou4x5eimpsvlyz"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_q8sbbxfiwrksfv"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_ai5apy8m9oreae"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_wbgfnjgppnxblu"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_2n19c1ctkdbi4p"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_qftafnv3vvjlof"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_wbgfnjgppnxblu"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_kmffxcxox8s4eu"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_bejvqya2i3rgur"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_7yzo240exow3tw"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_k5zgyhnwaknpz9"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_y43coy7d6cq24l"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_lraeeq9s4lbmm5"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_19z6il9c2d7gg6"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_fhc1zbxibv5ndf"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_fhc1zbxibv5ndf"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_kmffxcxox8s4eu"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_k5zgyhnwaknpz9"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_gbud3strl4qgew"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_d4jkrng03gdzj2"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_ai5apy8m9oreae"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_fixlsbucelwa8g"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_f62ran7qswyy55"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_yw79d2ex1woqm5"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_7yzo240exow3tw"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_fhc1zbxibv5ndf"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_2n19c1ctkdbi4p"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_ptn4514b32vryx"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_f62ran7qswyy55"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_w0vq7ji3j9n6pe"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_0997q4kcywe841"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_sb3d8zzlmobqco"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_7yzo240exow3tw"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_k5zgyhnwaknpz9"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_19z6il9c2d7gg6"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_y43coy7d6cq24l"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_tz6melli7vcllv"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_djstewlelnuv5c"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_q8sbbxfiwrksfv"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_lraeeq9s4lbmm5"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_h5jazemqswddtt"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_qqht8o072b55d3"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_cvbdcw5vwoczlf"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_juc3egf48g67ai"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_sb3d8zzlmobqco"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_ou4x5eimpsvlyz"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_kmffxcxox8s4eu"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_qftafnv3vvjlof"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_1fsab2tcu0qpfb"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_f8s11egmrq8kxi"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_gbud3strl4qgew"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_yw79d2ex1woqm5"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_djstewlelnuv5c"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_0997q4kcywe841"
+    },
+    {
+      "arm": "a2-agent",
+      "order_id": "order_d4jkrng03gdzj2"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_f2n4lre396jkjn"
+    },
+    {
+      "arm": "a3-rules",
+      "order_id": "order_f8s11egmrq8kxi"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_19z6il9c2d7gg6"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_eqy8w2qgk6p9dv"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_tz6melli7vcllv"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_f2n4lre396jkjn"
+    },
+    {
+      "arm": "a1-naive",
+      "order_id": "order_q8sbbxfiwrksfv"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_k5zgyhnwaknpz9"
+    },
+    {
+      "arm": "a0-control",
+      "order_id": "order_d4jkrng03gdzj2"
+    }
+  ],
+  "policy": {
+    "max_attempts_per_order": 3,
+    "cooldown": "30s",
+    "notify_window": "30s",
+    "amount_ceiling_paise": 450000,
+    "action_budget": 500,
+    "kill_switch": false
+  },
+  "agent": {
+    "server_binary": "/home/oni/rzp-recovery-agent/bin/rzp-mcp",
+    "prompt": "prompts/agent_system.md",
+    "model": "sonnet",
+    "max_budget_usd": 0.5,
+    "max_invocations": 44,
+    "action_budget": 0,
+    "timeout_sec": 0
+  }
+}

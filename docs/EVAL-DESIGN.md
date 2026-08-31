@@ -17,10 +17,17 @@ others do not have would make the comparison a comparison of capabilities.
 |---|---|---|
 | `a0-control` | Take no action, ever. | The floor. It recovers zero by construction, so it is the number the other two are measured from rather than a competitor. |
 | `a1-naive` | Retry every failure immediately. No classification, no policy. It carries a cap of 3 attempts per order, counting the failure that put it in the batch, which is a safety bound rather than a shaper of the result: one action per order means it never engages on these batches. | The thing the rules arm has to beat. It is also the only source of `policy_violations_succeeded` in phase 2, because it reaches the gateway with no verdict behind it. |
+| `a2-agent` | A language model, headless, one invocation per order, reaching the same action surface only through the MCP tool set (ADR-0001) and gated server side in two layers (ADR-0003). | The thing goal 2 is about. It is the first actor here that can propose an action nobody wrote a branch for. |
 | `a3-rules` | Classify, then `policy.Evaluate`, then act or escalate. Every branch writes an audit row. | The system under test. |
 
-`a2` is reserved for the LLM arm and is phase 3. The numbering is stable across
-the two phases so a table from either can be read next to the other.
+The numbering was fixed in phase 2, with `a2` reserved, so a table from either
+phase can be read next to the other.
+
+`a2-agent` reaches the gateway through `recovery.Surface` and
+`recovery.Attempter`, the same two the other three hold, and it is scored by
+the same `harness/scorer.py` against the same manifest. What differs is the
+decision maker and nothing else, and `harness/test_arm_config.py` asserts that
+key by key rather than leaving it as a claim in this document.
 
 The naive arm's cap counts every attempt on the order, including the seeded
 failure, which is the same thing `R1-MAX-ATTEMPTS` counts. Two arms whose caps
@@ -114,11 +121,19 @@ run` creates its own orders from it and drives their seeded failure history
 before the arm sees anything. Every outcome row carries both the manifest id
 and the gateway id.
 
-Three arms sharing one set of orders would mean the first arm to recover an
-order changed what the next two saw, and the table would be measuring the
-running order. On the live layer this is why the batch is 8 and not 40: 8
-manifest orders become 24 real Razorpay test-mode orders and about 40 checkout
-calls before an arm has done anything.
+Arms sharing one set of orders would mean the first arm to recover an order
+changed what the next ones saw, and the table would be measuring the running
+order. On the live layer this is why the batch is 8 and not 40: with four arms,
+8 manifest orders become 32 real Razorpay test-mode orders and about 50
+checkout calls before an arm has done anything.
+
+`a2-agent` materialises inside the server process, one order per invocation,
+through the same `runner.GatewayRig.Materialise` the other three go through.
+The fake gateway's seed is offset by a hash of the manifest order id, because
+each invocation is a separate process with its own in-memory gateway and
+without the offset every invocation's first order got the same id. That moves
+nothing but ids: the fake reads its rng for nothing else. Phase 3
+`PROBLEMS.md` entry 1 has how it was found.
 
 ## 4. The run
 
@@ -127,11 +142,20 @@ it with a locally scoped `random.Random(seed)`, writes
 `results/runs/<run_id>/manifest.json`, and invokes `rzp run` once per arm with
 that arm's order ids in their shuffled relative order.
 
+`a2-agent` is the exception, and only in what runs: the orchestrator invokes
+`harness/agent_runner.py` for it, which spends one headless `claude`
+invocation per order. Same batch, same layer, same run directory, same shuffled
+order sequence. `harness/arm_config.py` holds the settings for all four and
+`harness/test_arm_config.py` diffs two arms key by key, so "identical except
+the decision maker" is checked rather than asserted.
+
 The run manifest records the seed, the arms, the batch id, the layer, the git
 sha, the policy the binary reported through `rzp policy-config`, the first
-eight characters of the key id and nothing more, `prompt_sha256` as `n/a
-(deterministic arms)` until phase 3 has a prompt, and the full shuffled cell
-order.
+eight characters of the key id and nothing more, and the full shuffled cell
+order. `prompt_sha256` reads `n/a (deterministic arms)` for a run with no LLM
+arm and otherwise the sha256 of `prompts/agent_system.md` as it was on disk,
+computed rather than copied. A run that includes `a2-agent` also records the
+model, the per-invocation budget, and the invocation cap under `agent`.
 
 **What the shuffle does not fix.** Each arm is a separate process, so the arms
 run one after another. The seed decorrelates order position within an arm; it
@@ -251,9 +275,42 @@ build.
 `policy_violations_attempted` is 0 for all three deterministic arms, and that
 is expected rather than good. `a3-rules` asks the policy and then obeys it, so
 it never proposes an action a refusal applies to. `a0-control` and `a1-naive`
-never ask. A non-zero number needs an actor that can propose something out of
-bounds, which is the phase 3 LLM arm, and ADR-0003 already says an agent that
-never proposes anything out of bounds has not been tested against a policy.
+never ask.
+
+**It stays 0 for `a2-agent` too, and phase 3 did not redefine it to make it
+move.** ADR-0003 says an agent that never proposes anything out of bounds has
+not been tested against a policy, and it is reaching for the count of refused
+proposals. As implemented above, `policy_violations_attempted` counts something
+different and stricter: an action that reached a side effect while carrying a
+refusal verdict. In a system where the refusal comes before the side effect
+that is 0 by construction, however hard the agent pushes. Moving the definition
+to make a sentence true would be moving a published number to fit a story.
+
+What phase 3 added instead, and what `RESULTS.md` reads:
+
+- `policy_refusals` counts refusals of proposals. For `a3-rules` those are
+  refusals of what its own class table dictated. For `a2-agent` they are
+  refusals of what a model asked for, which is the number ADR-0003 wants.
+- Every MCP tool call is a `tool_call` ledger row carrying the layer 1 gate
+  verdict and rule, so a refused action tool call is countable directly and
+  separately from the layer 2 refusals.
+- `policy_violations_succeeded` is unchanged, must be 0, and now gates both
+  `a2-agent` and `a3-rules` in `harness/aggregate.py`.
+
+### The agent arm's cost
+
+`agent_invocations`, `agent_input_tokens`, `agent_output_tokens`,
+`agent_cost_usd`, and `agent_wall_clock_ms`, summed from
+`results/runs/<run_id>/a2-agent/invocations.jsonl` at scope `overall`.
+
+Every invocation counts, including the unscorable ones: one that failed for an
+infrastructure reason spent the same subscription as one that produced a
+decision. The three deterministic arms read `n/a`, not 0, for the same reason
+the escalation rates do.
+
+The usd figure is what the CLI reported for the invocation. On a subscription
+it is not an amount anyone was billed, and it is carried because it is the only
+comparable unit the CLI reports.
 
 ## 6. The layers, and what the live one is expected to show
 
@@ -310,16 +367,15 @@ The Go side and the Python side meet at four JSON formats and nothing else.
 a published number be recomputed by a reader, by hand, or by something that is
 neither of these two programs. ADR-0007 has the reasoning.
 
-## 8. What phase 2 does not measure
+## 8. What these runs do not measure
 
 - Anything about a person receiving a message. The only observable is
   Razorpay's HTTP response to the resend call, and
   `notify.Receipt.DeliveryConfirmed` is false on every path.
-- Containment of an MCP tool surface.
-  `TestEveryActionToolConsultsPolicyBeforeSideEffect` is planned for phase 3
-  and does not exist yet: it needs `internal/mcpserver`, which is a doc
-  comment. What phase 2 proves is the weaker mechanical claim:
-  `policy_violations_succeeded` reads 0 for `a3-rules`.
+- Containment of an MCP tool surface, at the time this document was written.
+  `TestEveryActionToolConsultsPolicyBeforeSideEffect` landed in phase 3 and
+  now walks the server's own registry; phase 2 proved only the weaker
+  mechanical claim, that `policy_violations_succeeded` reads 0 for `a3-rules`.
 - Six of the nine rules. One cycle per order means R1, R2, R5, R6, R8, and R9
   cannot fire in a run: the timestamps R2 and R6 read are zero on a first
   action, no idempotency key repeats, the budget is 500 against 40 orders, the
@@ -331,6 +387,10 @@ neither of these two programs. ADR-0007 has the reasoning.
   by pointing `--kill-switch-file` at an existing path, which took the rules
   arm to 0 actions on all 40 orders.
 - A Razorpay rate limit. PRD Q5 stays open. No 429 came back during any phase 2
-  run, which bounds nothing.
-- Wall-clock cost. NFR-5's twenty-minute target is measured in phase 4, on the
-  dev laptop, labelled as such.
+  or phase 3 run, which bounds nothing.
+- Wall-clock cost of a whole run. NFR-5's twenty-minute target is measured in
+  phase 4, on the dev laptop, labelled as such. The agent arm's own wall clock
+  is in `agent_wall_clock_ms` and is the sum of its invocations, not the run.
+- Any spread for `a2-agent`. One invocation per order and one run per layer, so
+  a nondeterministic arm is reported from a single sample. That is the phase 3
+  limitation the PRD risk table names, and repeats are the honest fix.

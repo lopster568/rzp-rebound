@@ -19,6 +19,12 @@ __pycache__/
 # under it would not work.
 results/runs/*
 !results/runs/sample-phase-2-fake/
+!results/runs/phase-3-fake/
+# The generated mcp configs carry an absolute binary path and this machine's
+# collector address. They are inputs the harness rewrites on every run, not
+# evidence, and they would go stale in the tree the moment anyone moved the
+# checkout.
+results/runs/phase-3-fake/a2-agent/mcp/
 results/batches/*
 !results/batches/b-1234-40.json
 
