@@ -40,7 +40,6 @@ type Card struct {
 // drift, and a drift there means the gateway fails a payment one way while the
 // ground-truth manifest records another.
 type Table struct {
-	failures    []Card
 	byNumber    map[string]Card
 	byErrorCode map[string]Card
 	success     string
@@ -69,7 +68,6 @@ func Load(path string) (*Table, error) {
 	}
 
 	t := &Table{
-		failures:    f.FailureCards,
 		byNumber:    make(map[string]Card, len(f.FailureCards)),
 		byErrorCode: make(map[string]Card, len(f.FailureCards)),
 		success:     PendingSuccessCard,
@@ -148,10 +146,3 @@ func (t *Table) CardForErrorCode(code string) (Card, bool) {
 // SuccessCard returns the card number that forces a successful authorization,
 // or PendingSuccessCard while the table documents none.
 func (t *Table) SuccessCard() string { return t.success }
-
-// FailureCards returns every documented failure card, in file order.
-func (t *Table) FailureCards() []Card {
-	out := make([]Card, len(t.failures))
-	copy(out, t.failures)
-	return out
-}

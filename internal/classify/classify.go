@@ -3,7 +3,6 @@ package classify
 import (
 	"encoding/json"
 	"fmt"
-	"maps"
 	"slices"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/testcards"
@@ -152,12 +151,6 @@ func ParseClass(name string) (Class, bool) {
 	}
 	return Unclassified, false
 }
-
-// Reasons returns a copy of the error.reason table.
-func Reasons() map[string]Class { return maps.Clone(reasons) }
-
-// ErrorClasses returns a copy of the error.code table.
-func ErrorClasses() map[string]Class { return maps.Clone(errorClasses) }
 
 // ReasonsFor returns the error.reason strings that map to c, sorted. The batch
 // seeder uses it to pick a failure to seed for a requested class.
