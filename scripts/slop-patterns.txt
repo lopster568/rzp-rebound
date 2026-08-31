@@ -1,6 +1,6 @@
-# Literal slop phrases banned in this repo's prose, curated from
-# ~/.claude/skills/no-ai-slop/SKILL.md. Matched case-insensitively as fixed
-# strings by scripts/check-docs.sh (grep -F -i), one per line.
+# Literal slop phrases banned in this repo's prose, curated by hand. Matched
+# case-insensitively as fixed strings by scripts/check-docs.sh (grep -F -i),
+# one per line.
 #
 # Rule for adding a line: it must be a phrase no honest technical sentence in
 # this repo would contain. Single words that appear in real engineering prose

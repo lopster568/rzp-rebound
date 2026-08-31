@@ -77,9 +77,10 @@ Cost: 20 minutes.
 
 ## 2026-08-31: a hostile review of the offline half found two more leaks and four bugs
 
-After the packages were green, the diff went through a review agent briefed to
-construct concrete leaks rather than list suspicions. It ran probes rather than
-reading. Six findings were real and are fixed; the ones worth writing down:
+After the packages were green, the diff went through a hostile review pass
+briefed to construct concrete leaks rather than list suspicions. It ran probes
+rather than reading. Six findings were real and are fixed; the ones worth
+writing down:
 
 **The error body was truncated before it was redacted.** `Client.apiError` cut
 the body at 512 bytes and then ran the replacer over the result. A credential

@@ -21,7 +21,7 @@ RUN_WITH_ENV = bash -c '. scripts/lib.sh; load_dotenv .env; exec "$$@"' --
 help: ## Show this help
 	@grep -hE '^[a-z0-9-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | expand -t20
 
-hooks: ## Point git at scripts/hooks so the pre-commit gate runs
+hooks: ## Point git at scripts/hooks so the pre-commit and commit-msg gates run
 	@git config core.hooksPath scripts/hooks && echo "core.hooksPath = scripts/hooks"
 
 preflight: ## Check toolchain, docker, and credentials

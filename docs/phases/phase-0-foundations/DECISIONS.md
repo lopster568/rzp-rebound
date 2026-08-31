@@ -17,7 +17,7 @@ reads their go.mod files, so `go build ./...`, `go vet ./...`, and `go test
 switch to a 1.25 toolchain, and `GOPROXY=off go mod download` already fails
 with `requires go >= 1.25.0 (running go 1.24.6)`.
 
-So the first agent to import otel or the MCP SDK has to pick one:
+So the first change to import otel or the MCP SDK has to pick one:
 
 1. Install go1.25 and set `go 1.25` in go.mod and `go-version: "1.25.x"` in
    `.github/workflows/ci.yml`.
@@ -37,8 +37,8 @@ phase said not to write 1.25.
 The six requires are written into go.mod by hand and left there. `go mod tidy`
 would delete all of them, since no file imports anything yet, and `go mod
 download` fails for the toolchain reason above. There is therefore no go.sum
-in this commit. The implementation agent runs tidy once real imports exist,
-after resolving the toolchain question.
+in this commit. Tidy runs once real imports exist, after resolving the
+toolchain question.
 
 ## 2026-08-31: cmd binaries are stubs that exit 1
 

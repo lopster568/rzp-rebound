@@ -18,8 +18,8 @@ now exits 0. Cost: 10 minutes.
 
 ## 2026-08-31: the pre-commit hook will not let a compile-error red run be committed
 
-Symptom: the TDD rule in `CLAUDE.md` wants the failing tests committed before
-the implementation, and the plainest way there is tests written against
+Symptom: the repo's TDD rule wants the failing tests committed before the
+implementation, and the plainest way there is tests written against
 packages that hold nothing. The pre-commit hook runs `go vet ./...`, which
 type-checks `_test.go` files, so every symbol those tests name is undefined and
 vet exits non-zero. The commit is refused. `--no-verify` was not an option.

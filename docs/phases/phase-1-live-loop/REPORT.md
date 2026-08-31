@@ -160,9 +160,10 @@ this phase.
 
 ## The review round
 
-The offline half went through a review agent after the packages were green,
-briefed to construct concrete leaks rather than list suspicions. It found six
-real defects. Two were credential leaks the green suite was not asking about:
+The offline half went through a hostile review pass after the packages were
+green, briefed to construct concrete leaks rather than list suspicions. It
+found six real defects. Two were credential leaks the green suite was not
+asking about:
 `Client.apiError` truncated the error body before redacting it, so a secret
 straddling the 512-byte cut left up to a character short of the whole thing in
 every error message, measured at 11 of 22 characters; and the card pattern was

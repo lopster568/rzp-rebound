@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Blocks a commit whose message carries a development-attribution trailer, and
+# any commit not authored by the repo owner. Enable with: make hooks
+#
+# The patterns are deliberately narrow. This project runs the `claude` CLI as
+# its model engine, so prose about that component has to pass: "claude runner
+# harness", "the claude CLI is a preflight hard failure", and the like are all
+# fine. What is blocked is tooling attribution: session trailers, generator
+# footers, and co-author lines naming a model vendor.
+set -uo pipefail
+
+ROOT=$(git rev-parse --show-toplevel) || exit 1
+# shellcheck source=../lib.sh
+. "$ROOT/scripts/lib.sh"
+
+OWNER_EMAIL="rosh.s568@gmail.com"
+
+msg_file=${1:-}
+[ -n "$msg_file" ] || die "commit-msg: no message file given"
+[ -f "$msg_file" ] || die "commit-msg: $msg_file does not exist"
+
+# Comment lines are stripped by git before the message is stored, and the
+# verbose diff below the scissors line is not part of the message either.
+msg=$(sed -e '/^[[:space:]]*#/d' "$msg_file")
+
+status=0
+
+reject() {
+	# reject <why> <grep output>
+	printf 'commit-msg: %s\n' "$1" >&2
+	printf '%s\n' "$2" >&2
+	status=1
+}
+
+check() {
+	# check <why> <extended regex>
+	local hits
+	hits=$(printf '%s\n' "$msg" | grep -niE "$2")
+	[ -n "$hits" ] && reject "$1" "$hits"
+	return 0
+}
+
+check "session trailer, delete the line" \
+	'claude-session'
+check "co-author trailer naming a model vendor, delete the line" \
+	'co-authored-by:.*(claude|anthropic)'
+check "session URL, delete it" \
+	'claude\.ai'
+check "generator footer, delete it (rephrase prose as \"generated using\")" \
+	'generated with'
+
+author_ident=$(git var GIT_AUTHOR_IDENT) || exit 1
+author_email=${author_ident##*<}
+author_email=${author_email%%>*}
+if [ "$author_email" != "$OWNER_EMAIL" ]; then
+	reject "author email is <$author_email>, expected <$OWNER_EMAIL>" \
+		"fix it with: git config user.email $OWNER_EMAIL"
+fi
+
+if [ "$status" -ne 0 ]; then
+	say ""
+	die "commit blocked. This repository publishes under one identity and carries no tooling attribution."
+fi
+
+say "commit-msg: ok"

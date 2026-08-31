@@ -315,8 +315,8 @@ and `docs/RAZORPAY-TEST-MODE-NOTES.md` is the full table with its own dates.
 
 ### 9.2 Honesty rules
 
-These come from `CLAUDE.md` and apply to every document, span, and report this
-project produces.
+These are standing repository rules and apply to every document, span, and
+report this project produces.
 
 - Label test mode. Every number produced against Razorpay test mode says so.
   A test-mode recovery rate is not evidence about real customers.
