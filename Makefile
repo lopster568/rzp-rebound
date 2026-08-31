@@ -1,6 +1,12 @@
 .DEFAULT_GOAL := help
-.PHONY: help hooks preflight test lint docs-check ci verify-phase-0 \
-	verify-offline jaeger-up jaeger-down seed
+.PHONY: help hooks preflight test test-integration lint docs-check ci \
+	verify-phase-0 verify-offline verify-live jaeger-up jaeger-down seed \
+	auth-probe capture demo
+
+# Live targets read .env so a run does not depend on the caller having
+# exported the key pair by hand. .env is gitignored and chmod 600, and nothing
+# here echoes what it loaded.
+RUN_WITH_ENV = set -a; . ./.env; set +a;
 
 help: ## Show this help
 	@grep -hE '^[a-z0-9-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | expand -t20
@@ -14,8 +20,11 @@ preflight: ## Check toolchain, docker, and credentials
 test: ## Run the Go tests
 	@go test ./...
 
-lint: ## gofmt and go vet
-	@test -z "$$(gofmt -l . | tee /dev/stderr)" && go vet ./...
+test-integration: ## Run the live test-mode tests. Spends real API calls.
+	@$(RUN_WITH_ENV) RZP_CONTRACT_HARNESSES=live go test -tags=integration -count=1 ./internal/razorpay/
+
+lint: ## gofmt and go vet, including the integration-tagged files
+	@test -z "$$(gofmt -l . | tee /dev/stderr)" && go vet ./... && go vet -tags=integration ./...
 
 docs-check: ## Run the prose gate over every tracked .md and .txt
 	@bash scripts/check-docs.sh
@@ -23,13 +32,22 @@ docs-check: ## Run the prose gate over every tracked .md and .txt
 ci: lint test docs-check ## What CI runs
 
 jaeger-up: ## Start Jaeger and wait for its query API
-	@bash scripts/jaeger-up.sh
+	@$(RUN_WITH_ENV) bash scripts/jaeger-up.sh
 
 jaeger-down: ## Stop Jaeger and remove its volumes
-	@bash scripts/jaeger-down.sh
+	@$(RUN_WITH_ENV) bash scripts/jaeger-down.sh
 
 seed: ## Seed a batch and write its manifest (pending the cmd/rzp subcommand)
 	@bash scripts/seed-batch.sh
+
+auth-probe: ## Prove the test-mode credentials reach Razorpay
+	@$(RUN_WITH_ENV) go run ./cmd/rzp auth-probe
+
+capture: ## Capture real test-mode responses into testdata/recorded/
+	@$(RUN_WITH_ENV) bash scripts/capture-fixtures.sh
+
+demo: ## Run the recovery loop end to end against Razorpay test mode
+	@$(RUN_WITH_ENV) go run ./cmd/rzp demo
 
 verify-phase-0: ## Phase 0 gate: preflight is advisory here, tests and docs are not
 	@bash scripts/preflight.sh || echo "preflight reported problems, continuing (phase 0 needs no docker and no keys)"
@@ -38,3 +56,8 @@ verify-phase-0: ## Phase 0 gate: preflight is advisory here, tests and docs are 
 verify-offline: ## Phase 1 offline gate: whole suite, no keys, no docker
 	@bash scripts/preflight.sh || echo "preflight reported problems, continuing (the offline half needs no docker and no keys)"
 	@env -u RAZORPAY_KEY_ID -u RAZORPAY_KEY_SECRET $(MAKE) --no-print-directory lint test docs-check
+
+verify-live: ## Phase 1 live gate: preflight hard, offline suite, then the live tests
+	@bash scripts/preflight.sh
+	@$(MAKE) --no-print-directory ci
+	@$(MAKE) --no-print-directory test-integration
