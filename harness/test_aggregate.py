@@ -289,7 +289,10 @@ class TestAggregate(unittest.TestCase):
         never_retry = row_for(rows, "a1-naive", "never_retry")
         self.assertEqual(2, never_retry["n_scorable"])
         self.assertEqual(0, never_retry["ground_truth_recoverable"])
-        self.assertEqual(0.0, never_retry["recovery_rate"])
+        # Nothing in this class was recoverable, so there is no rate to state.
+        # 0.0 would read as a failure to recover orders that were never
+        # recoverable, which is the opposite of what the row shows.
+        self.assertEqual(aggregate.UNDEFINED, never_retry["recovery_rate"])
         self.assertEqual(1, never_retry["recovered_orders"])
 
     def test_modeled_cost_states_its_assumptions(self):
@@ -342,8 +345,12 @@ class TestAggregate(unittest.TestCase):
 
     def test_an_empty_arm_does_not_divide_by_zero(self):
         # a0-control takes no action, and on a batch where the gateway returned
-        # nothing at all it produces no outcomes either. Every rate is 0.0 and
-        # nothing raises.
+        # nothing at all it produces no outcomes either. Every rate reads
+        # UNDEFINED rather than 0.0, and nothing raises.
+        #
+        # 0.0 was the old answer and it is a lie in the place it matters most:
+        # an arm that never escalates has 0 over 0 precision, and 0.000 reads
+        # as "every escalation it made was wrong".
         orders = [order("o1", "transient_retry_eligible", True, "retry_same_instrument")]
         b = batch(orders)
         rows = aggregate.aggregate(
@@ -359,12 +366,19 @@ class TestAggregate(unittest.TestCase):
 
         self.assertEqual(2 * (1 + len(aggregate._class_scopes(b))), len(rows))
         for r in rows:
-            self.assertEqual(0.0, r["recovery_rate"], r["arm"] + "/" + r["scope"])
-            self.assertEqual(0.0, r["escalation_precision"])
-            self.assertEqual(0.0, r["escalation_recall"])
-            self.assertEqual(0.0, r["classification_accuracy"])
+            self.assertEqual(aggregate.UNDEFINED, r["recovery_rate"], r["arm"] + "/" + r["scope"])
+            self.assertEqual(aggregate.UNDEFINED, r["escalation_precision"])
+            self.assertEqual(aggregate.UNDEFINED, r["escalation_recall"])
+            self.assertEqual(aggregate.UNDEFINED, r["classification_accuracy"])
             self.assertEqual(0, r["modeled_false_action_cost_paise"])
             self.assertEqual(0, r["recovered_amount_paise"])
+
+        # And the specific case the change was made for: an arm with real
+        # scorable orders that escalated none of them reports an undefined
+        # precision, not a perfect failure.
+        naive = row_for(rows, "a1-naive", aggregate.SCOPE_OVERALL)
+        self.assertEqual(0, naive["escalations"])
+        self.assertEqual(aggregate.UNDEFINED, naive["escalation_precision"])
 
         control = row_for(rows, "a0-control", aggregate.SCOPE_OVERALL)
         self.assertEqual(0, control["n_orders"])

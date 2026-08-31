@@ -39,7 +39,7 @@ Repository totals: 113 Go test functions across 12 packages, plus 16 Python.
 `internal/policy/testdata/policy_matrix.golden` holds 576 serialized decisions.
 
 ```
-$ go test ./... -count=1 -race
+$ make test-race
 12 packages ok, 0 failures
 $ python3 -m unittest discover -s harness -t .
 Ran 16 tests, OK
@@ -97,16 +97,16 @@ Trimmed. `RESULTS.md` has the reading and the per-class breakdown.
 
 | arm | recovered | rate | actions | FA-1 | FA-2 | escalations | precision | recall | class acc | violations succeeded |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `a0-control` | 0 | 0.000 | 0 | 0 | 0 | 0 | 0.000 | 0.000 | 1.000 | 0 |
-| `a1-naive` | 21 | 0.568 | 40 | 3 | 16 | 0 | 0.000 | 0.000 | 1.000 | 40 |
+| `a0-control` | 0 | 0.000 | 0 | 0 | 0 | 0 | n/a | 0.000 | 1.000 | 0 |
+| `a1-naive` | 21 | 0.568 | 40 | 3 | 16 | 0 | n/a | 0.000 | 1.000 | 40 |
 | `a3-rules` | 18 | 0.486 | 31 | 1 | 0 | 9 | 0.222 | 0.667 | 1.000 | 0 |
 
 ### Live, n=8, Razorpay TEST MODE
 
 | arm | recovered | rate | actions | FA-1 | FA-2 | escalations | precision | recall | class acc | violations succeeded |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `a0-control` | 0 | 0.000 | 0 | 0 | 0 | 0 | 0.000 | 0.000 | 0.000 | 0 |
-| `a1-naive` | 4 | 0.667 | 8 | 2 | 2 | 0 | 0.000 | 0.000 | 0.000 | 8 |
+| `a0-control` | 0 | 0.000 | 0 | 0 | 0 | 0 | n/a | 0.000 | 0.000 | 0 |
+| `a1-naive` | 4 | 0.667 | 8 | 2 | 2 | 0 | n/a | 0.000 | 0.000 | 8 |
 | `a3-rules` | 0 | 0.000 | 0 | 0 | 0 | 8 | 0.250 | 1.000 | 0.000 | 0 |
 
 No row is summed across the two tables, per ADR-0004.
@@ -183,6 +183,62 @@ they had before.
    order. `AttemptRecord.GatewayCalls` fixes it and both layers now count
    materialisation the same way.
 
+## The review round
+
+The phase 2 diff went through a hostile review on 2026-08-31, after the tables
+were first committed. It found eleven things. Two changed a published number
+and one was a real ground-truth leak.
+
+**`escalation_precision` printed 0.000 for an arm that escalated nothing.** A
+zero denominator was rendered as a rate on 12 rows of the two committed tables,
+which reads as "every escalation it made was wrong" about `a0-control` and
+`a1-naive`, neither of which escalates at all. It also falsified this project's
+own stated reason for reporting both rates: `EVAL-DESIGN.md` said precision goes
+to 1.0 by never escalating, and as implemented it went to 0.0. Every rate with
+an empty denominator now prints `n/a`.
+
+**`Receipt` encoded the seeded class.** It was `rcpt_%04d` off a counter, and
+`batch.Generate` walks the classes in sorted order and appends bait last, so
+`rcpt_0001` to `rcpt_0013` were every transient failure and `rcpt_0038` to
+`rcpt_0040` were the bait. `Receipt` is one of the four fields on
+`AgentVisibleOrder`, so a rule of "ordinal at least 38, escalate" would have
+scored a near-perfect table with no classifier at all.
+
+The leak test did not catch it because it looked for ground-truth values
+appearing verbatim, and `rcpt_0007` contains none of them. What leaked was the
+ordering. `TestManifestGroundTruthNeverLeaksIntoAgentVisibleFields` now also
+checks that sorting the batch by receipt does not reproduce the manifest order,
+which fails against the old receipt on the first assertion it reaches.
+
+The receipt is now derived from the order id rather than drawn from the rng.
+That was deliberate: a fresh draw would have consumed rng state and changed
+every amount and id after it, so fixing the leak would have silently reseeded
+every batch. With the derivation, the ids and amounts are byte-identical to
+before and every published number is unchanged except the four `n/a` cells.
+
+**`policy_violations_succeeded` could be cleared by the arm being measured.**
+It was counted from a `side_effect` string the arm wrote into its own detail
+map, on rows filed by a kind the arm also chose, so an arm that omitted the key
+or returned `ActionNone` after reaching the gateway scored zero violations.
+Unreachable from the three deterministic arms, and precisely reachable by the
+phase 3 LLM arm this metric exists for. The orchestrator now writes the flag
+from its own view of the `ActionResult` after merging the arm's detail, files
+the row by whether a side effect happened, and the scorer counts a violation on
+any row with a side effect and no verdict whatever its kind.
+
+The other eight: the store's concurrency comment gave the wrong reason for a
+safety that holds for a different reason, `Snapshot` inserted into the map it
+read, a mid-loop failure dropped buffered outcome rows without a word, a missing
+`max_legit_attempts` silently made every retry a false action instead of marking
+the row unscorable, `make report` picked a run by modification time and could
+overwrite a committed table, an unguarded `. lib.sh` would have let a live run
+proceed with no credentials and surface a 401 instead of the cause, the bait
+counts printed in map order in a command whose contract is reproducibility, and
+three dead fields and stale comments. All fixed.
+
+Two of the reviewer's findings were already fixed before it reported, and one
+was stale: the test counts it flagged had been corrected in an earlier commit.
+
 ## Still not done
 
 - `internal/mcpserver` is a doc comment, so
@@ -199,6 +255,18 @@ they had before.
 - `policy_violations_attempted` is 0 for all three arms, which is expected and
   is not evidence of anything. It needs an actor that can propose an
   out-of-bounds action.
+- Six of the nine rules never fire in a run. One cycle per order rules out R1,
+  R2, R5, R6, R8, and R9, so the tables exercise R0, R3, R4, and R7 and nothing
+  else. The other six are covered by the per-rule tables and the golden matrix,
+  and R8 was driven end to end separately by pointing `--kill-switch-file` at an
+  existing path, which took the rules arm to 0 actions across all 40 orders.
+  `RESULTS.md` limitation 9 has the per-rule evaluation counts.
+- The naive arm's attempt cap never engages, for the same reason. It is a
+  safety bound, not a shaper of these numbers.
+- `internal/store` is safe under the sequential runner and not under a parallel
+  one: Snapshot, Evaluate, and Commit are three separate lock acquisitions, so
+  R1 and R5 could both be breached by two goroutines on one order. The doc
+  comment says so rather than claiming a safety the code does not have.
 - One run per layer. No repeats, so no spread.
 - PRD Q5 stays open. No 429 at concurrency 2, which bounds nothing.
 

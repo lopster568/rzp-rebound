@@ -66,7 +66,6 @@ var (
 // state, because state is read back from the gateway by the orchestrator.
 type AttemptRecord struct {
 	PaymentID string
-	Card      string
 	// GatewayCalls is how many requests the attempt made.
 	//
 	// It is reported by the adapter rather than counted by a wrapper around
@@ -101,9 +100,9 @@ func NewFakeAttempter(f *razorpay.Fake) *FakeAttempter { return &FakeAttempter{f
 func (a *FakeAttempter) Attempt(ctx context.Context, order batch.AgentVisibleOrder, card string) (AttemptRecord, error) {
 	payment, err := a.fake.AttemptPayment(ctx, order.OrderID, card)
 	if err != nil {
-		return AttemptRecord{Card: card, GatewayCalls: 1}, err
+		return AttemptRecord{GatewayCalls: 1}, err
 	}
-	return AttemptRecord{PaymentID: payment.ID, Card: card, GatewayCalls: 1}, nil
+	return AttemptRecord{PaymentID: payment.ID, GatewayCalls: 1}, nil
 }
 
 // LiveAttempter drives an attempt against Razorpay test mode through the
@@ -149,7 +148,6 @@ func (a *LiveAttempter) Attempt(ctx context.Context, order batch.AgentVisibleOrd
 	// failed to decode is a request that was paid for.
 	return AttemptRecord{
 		PaymentID:    got.PaymentID,
-		Card:         card,
 		GatewayCalls: len(got.Steps),
 	}, err
 }

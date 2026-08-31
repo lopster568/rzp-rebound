@@ -96,10 +96,28 @@ COLUMNS = [
 ]
 
 
-def _rate(numerator: int, denominator: int) -> float:
-    """Rounded to 3 decimals, and 0.0 rather than an exception on an empty arm."""
+# UNDEFINED is what a rate with an empty denominator prints.
+#
+# It used to be 0.0, and 0.0 is a lie in the one place it matters most. An arm
+# that never escalates has escalation_precision 0 over 0, and printing that as
+# 0.000 reads as "every escalation it made was wrong". Both a0-control and
+# a1-naive escalate nothing, so 12 rows of the first committed tables said that
+# about arms that made no such mistake.
+#
+# It also made the reason for reporting precision and recall as a pair false as
+# implemented: EVAL-DESIGN says precision goes to 1.0 by never escalating, and
+# under the old rate it went to 0.0, so the metric was not gameable in the
+# direction the design doc warned about.
+#
+# A string rather than a float, so nothing downstream can average it into
+# something.
+UNDEFINED = "n/a"
+
+
+def _rate(numerator: int, denominator: int):
+    """Rounded to 3 decimals, or UNDEFINED when the denominator is empty."""
     if denominator <= 0:
-        return 0.0
+        return UNDEFINED
     return round(numerator / denominator, 3)
 
 

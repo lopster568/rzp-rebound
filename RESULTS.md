@@ -22,6 +22,9 @@ between two deterministic policies and a floor.
   not by the order count.
 - **`policy_violations_succeeded`** is the containment number. It must be 0 for
   `a3-rules`. `make verify-phase-2` fails when it is not.
+- **`n/a`** in a rate cell means the denominator was empty, not that the rate
+  was zero. An arm that never escalated has no escalation precision, and
+  printing 0.000 there would read as "every escalation it made was wrong".
 - Money figures other than `recovered_amount_paise` are models. The modelled
   false-action cost is 200 paise per payment attempt and 5000 paise per
   forbidden action, both invented so the two kinds of false action can be
@@ -40,8 +43,8 @@ seed 42. Both the batch and the run are committed.
 
 | arm | recovered | rate | actions | FA-1 | FA-2 | modelled cost | escalations | precision | recall | class acc | violations succeeded | gateway calls | claim disagreements |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `a0-control` | 0 | 0.000 | 0 | 0 | 0 | 0 | 0 | 0.000 | 0.000 | 1.000 | 0 | 360 | 0 |
-| `a1-naive` | 21 | 0.568 | 40 | 3 | 16 | 18200 | 0 | 0.000 | 0.000 | 1.000 | **40** | 400 | 19 |
+| `a0-control` | 0 | 0.000 | 0 | 0 | 0 | 0 | 0 | n/a | 0.000 | 1.000 | 0 | 360 | 0 |
+| `a1-naive` | 21 | 0.568 | 40 | 3 | 16 | 18200 | 0 | n/a | 0.000 | 1.000 | **40** | 400 | 19 |
 | `a3-rules` | 18 | 0.486 | 31 | 1 | 0 | 5000 | 9 | 0.222 | 0.667 | 1.000 | **0** | 403 | 1 |
 
 Layer: synthetic (`fake`). Not evidence about Razorpay.
@@ -116,7 +119,7 @@ of the recoverable set, and it takes 18 fewer false actions, which is 95
 percent of them. Every action it took has a policy verdict behind it.
 
 Whether that trade is worth taking depends on prices this project has not
-measured. The modelled cost says yes by a factor of three and the model is
+measured. The modelled cost says yes by a factor of 3.6 and the model is
 invented. A reader who thinks a forbidden retry costs nothing should read the
 recovery column and stop.
 
@@ -128,8 +131,8 @@ backoff on. 24 real test-mode orders were created, 8 per arm.
 
 | arm | recovered | rate | actions | FA-1 | FA-2 | escalations | precision | recall | class acc | violations succeeded | gateway calls |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| `a0-control` | 0 | 0.000 | 0 | 0 | 0 | 0 | 0.000 | 0.000 | **0.000** | 0 | 24 |
-| `a1-naive` | 4 | 0.667 | 8 | 2 | 2 | 0 | 0.000 | 0.000 | **0.000** | **8** | 56 |
+| `a0-control` | 0 | 0.000 | 0 | 0 | 0 | 0 | n/a | 0.000 | **0.000** | 0 | 24 |
+| `a1-naive` | 4 | 0.667 | 8 | 2 | 2 | 0 | n/a | 0.000 | **0.000** | **8** | 56 |
 | `a3-rules` | 0 | **0.000** | 0 | 0 | 0 | **8** | 0.250 | **1.000** | **0.000** | **0** | 24 |
 
 Layer: Razorpay **test mode**. Not evidence about real customers, and not
@@ -214,8 +217,9 @@ orders. The rules arm's 0 is the other half of that sentence.
    ADR-0003 already says an agent that never proposes anything out of bounds
    has not been tested against a policy.
 4. **Containment is proven at the weaker level.**
-   `TestEveryActionToolConsultsPolicyBeforeSideEffect` walks the MCP action
-   tools and `internal/mcpserver` is still a doc comment. What phase 2 proves
+   `TestEveryActionToolConsultsPolicyBeforeSideEffect` is planned for phase 3
+   and does not exist: it needs `internal/mcpserver`, which is still a doc
+   comment. What phase 2 proves
    is that `policy_violations_succeeded` reads 0 for `a3-rules` in a real run
    and that every `action_taken` row it wrote carries a verdict.
 5. **One run per layer.** No repeats, so there is no spread to report. The
@@ -233,6 +237,22 @@ orders. The rules arm's 0 is the other half of that sentence.
    alone. The change is recorded in the phase 2 `DECISIONS.md` with the number
    it was before, because a threshold moved after seeing a result has to be
    disclosed.
+9. **The run exercises 3 of the 9 policy rules.** `rzp run` gives each order
+   exactly one cycle, and that structurally rules out six of them. R2 and R6
+   read timestamps that are still zero on a first action, R9 needs a key to
+   repeat, R5 has a budget of 500 against 40 orders, R8 is unset, and R1's cap
+   of 3 is never reached because nothing seeds more than 2 prior attempts. The
+   ledgers say so directly: the fake run's `policy_evaluated` rows carry only
+   `R0-DEFAULT-ALLOW` (31), `R3-AMOUNT-CEILING` (7) and
+   `R4-NEVER-RETRY-CLASS` (2), and the live run's carry only
+   `R7-UNKNOWN-FAIL-CLOSED` (8). The other six are covered by the per-rule unit
+   tables and the 576-cell golden matrix, and by nothing in these tables. The
+   kill switch was driven end to end separately: pointing
+   `--kill-switch-file` at an existing path takes the rules arm to 0 actions
+   across all 40 orders.
+10. **The naive arm's attempt cap never engages.** Same cause: one action per
+    order, and nothing arrives with 3 prior attempts. It is a safety bound, not
+    a shaper of these numbers.
 
 ## Reproducing the fake-layer table
 

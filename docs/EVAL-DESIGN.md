@@ -16,7 +16,7 @@ others do not have would make the comparison a comparison of capabilities.
 | Arm | Decision rule | What it is for |
 |---|---|---|
 | `a0-control` | Take no action, ever. | The floor. It recovers zero by construction, so it is the number the other two are measured from rather than a competitor. |
-| `a1-naive` | Retry every failure immediately, up to a cap of 3 attempts on an order, counting the failure that put it in the batch. No classification, no policy. | The thing the rules arm has to beat. It is also the only source of `policy_violations_succeeded` in phase 2, because it reaches the gateway with no verdict behind it. |
+| `a1-naive` | Retry every failure immediately. No classification, no policy. It carries a cap of 3 attempts per order, counting the failure that put it in the batch, which is a safety bound rather than a shaper of the result: one action per order means it never engages on these batches. | The thing the rules arm has to beat. It is also the only source of `policy_violations_succeeded` in phase 2, because it reaches the gateway with no verdict behind it. |
 | `a3-rules` | Classify, then `policy.Evaluate`, then act or escalate. Every branch writes an audit row. | The system under test. |
 
 `a2` is reserved for the LLM arm and is phase 3. The numbering is stable across
@@ -24,7 +24,8 @@ the two phases so a table from either can be read next to the other.
 
 The naive arm's cap counts every attempt on the order, including the seeded
 failure, which is the same thing `R1-MAX-ATTEMPTS` counts. Two arms whose caps
-counted different things would not be comparable.
+counted different things would not be comparable. Neither cap is reached in a
+phase 2 run: see section 8.
 
 ## 2. The batch
 
@@ -207,9 +208,16 @@ Razorpay would recognise.
 - `escalation_rules` = the escalation count split by the policy rule that
   produced it.
 
-Both rates are reported because each is trivially gamed alone: precision goes
-to 1.0 by never escalating and recall goes to 1.0 by escalating everything. The
-live layer produces the second case for real, which is section 6.
+Both rates are reported because each is trivially gamed alone: an arm that
+escalates one order and gets it right has precision 1.0, and an arm that
+escalates everything has recall 1.0. The live layer produces the second case
+for real, which is section 6.
+
+An arm that escalates nothing at all has no precision, and the cell reads
+`n/a` rather than 0.000. It said 0.000 in the first committed tables, which
+reads as "every escalation it made was wrong" about an arm that made none, on
+12 rows. Every rate in these tables prints `n/a` when its denominator is
+empty.
 
 The split by rule is there because precision cannot tell one escalation from
 another. An order above the amount ceiling escalates under `R3-AMOUNT-CEILING`
@@ -308,10 +316,20 @@ neither of these two programs. ADR-0007 has the reasoning.
   Razorpay's HTTP response to the resend call, and
   `notify.Receipt.DeliveryConfirmed` is false on every path.
 - Containment of an MCP tool surface.
-  `TestEveryActionToolConsultsPolicyBeforeSideEffect` walks
-  `internal/mcpserver`, which is a doc comment until phase 3. What phase 2
-  proves is the weaker mechanical claim: `policy_violations_succeeded` reads 0
-  for `a3-rules`.
+  `TestEveryActionToolConsultsPolicyBeforeSideEffect` is planned for phase 3
+  and does not exist yet: it needs `internal/mcpserver`, which is a doc
+  comment. What phase 2 proves is the weaker mechanical claim:
+  `policy_violations_succeeded` reads 0 for `a3-rules`.
+- Six of the nine rules. One cycle per order means R1, R2, R5, R6, R8, and R9
+  cannot fire in a run: the timestamps R2 and R6 read are zero on a first
+  action, no idempotency key repeats, the budget is 500 against 40 orders, the
+  kill switch is unset, and R1's cap of 3 is never reached because nothing
+  arrives with more than 2 attempts. The fake run's evaluations are
+  `R0-DEFAULT-ALLOW` 31, `R3-AMOUNT-CEILING` 7, `R4-NEVER-RETRY-CLASS` 2; the
+  live run's are `R7-UNKNOWN-FAIL-CLOSED` 8. The other six live in the per-rule
+  unit tables and the golden matrix, and R8 was additionally driven end to end
+  by pointing `--kill-switch-file` at an existing path, which took the rules
+  arm to 0 actions on all 40 orders.
 - A Razorpay rate limit. PRD Q5 stays open. No 429 came back during any phase 2
   run, which bounds nothing.
 - Wall-clock cost. NFR-5's twenty-minute target is measured in phase 4, on the

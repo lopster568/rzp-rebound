@@ -85,7 +85,7 @@ type OutcomeRow struct {
 }
 
 // runRun runs one arm over one batch and writes its outcomes and its ledger.
-func runRun(ctx context.Context, args []string) error {
+func runRun(ctx context.Context, args []string) (runErr error) {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	armID := fs.String("arm", recovery.ArmRules, "which arm: a0-control, a1-naive, or a3-rules")
 	layer := fs.String("layer", layerFake, "which gateway: fake or live")
@@ -129,7 +129,11 @@ func runRun(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("create the ledger: %w", err)
 	}
-	defer func() { _ = ledger.Close() }()
+	defer func() {
+		if err := ledger.Close(); err != nil && runErr == nil {
+			runErr = fmt.Errorf("close the ledger: %w", err)
+		}
+	}()
 
 	// The fake layer runs on a fake clock started at a fixed instant, so a
 	// seed reproduces a run exactly. The live layer runs on the wall clock,
@@ -212,8 +216,20 @@ func runRun(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("create the outcomes file: %w", err)
 	}
-	defer func() { _ = outFile.Close() }()
 	out := bufio.NewWriter(outFile)
+	// Flush before close, and let a failure in either reach the caller. The
+	// deferred close alone discarded its error, so a run that stopped
+	// mid-loop shipped a truncated outcomes.jsonl and said nothing: up to a
+	// buffer's worth of rows were still in memory and the scorer would have
+	// read the file as a shorter run. Review finding, 2026-08-31.
+	defer func() {
+		if err := out.Flush(); err != nil && runErr == nil {
+			runErr = fmt.Errorf("flush the outcomes file: %w", err)
+		}
+		if err := outFile.Close(); err != nil && runErr == nil {
+			runErr = fmt.Errorf("close the outcomes file: %w", err)
+		}
+	}()
 
 	fmt.Printf("run      %s\n", runID)
 	fmt.Printf("arm      %s\n", *armID)
@@ -286,10 +302,6 @@ func runRun(ctx context.Context, args []string) error {
 		fmt.Printf("  %-18s %-24s %-22s %-9s %s\n",
 			o.manifestID, row.Class, row.ActionKind, status, verdictLabel(row))
 	}
-	if err := out.Flush(); err != nil {
-		return fmt.Errorf("flush the outcomes file: %w", err)
-	}
-
 	fmt.Println()
 	// Two call counts, because they answer different questions. The arm's is
 	// what the arm cost and is what the report's cost column carries. The
@@ -595,8 +607,9 @@ func (r *gatewayRig) materialise(ctx context.Context, orders []batch.Order) ([]m
 // cost column in the report is a count of requests rather than an estimate.
 //
 // It wraps the port rather than the transport because the checkout sequence
-// does not go through Port at all: those four calls per attempt are added by
-// the attempter adapters, which is why Add is exported on this type.
+// does not go through Port at all. Those four calls per attempt are reported
+// by the Attempter adapter as AttemptRecord.GatewayCalls and added to the row
+// total in the run loop, which is why this type has no exported adder.
 type countingPort struct {
 	inner razorpay.Port
 	calls *int

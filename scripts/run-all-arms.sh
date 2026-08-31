@@ -14,8 +14,16 @@
 set -uo pipefail
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+# Sourcing lib.sh is the one command here whose failure has to stop the script.
+# These scripts run without `set -e`, so an unguarded source that failed left
+# `die` an unknown command whose exit 127 is discarded, `require_env` and
+# `load_dotenv` silent no-ops, and a live run proceeding with no credentials to
+# surface a 401 instead of the real cause. Review finding, 2026-08-31.
 # shellcheck source=scripts/lib.sh
-. "$ROOT/scripts/lib.sh"
+. "$ROOT/scripts/lib.sh" || {
+	printf 'error: cannot source %s/scripts/lib.sh\n' "$ROOT" >&2
+	exit 1
+}
 cd "$ROOT" || die "cannot cd to $ROOT"
 
 BATCH=""
@@ -58,7 +66,7 @@ fi
 go build -o "$ROOT/bin/rzp" ./cmd/rzp || die "the runner did not build"
 
 set -- --batch "$BATCH" --arms "$ARMS" --layer "$LAYER" --seed "$SEED" --rzp-bin "$ROOT/bin/rzp"
-[ -n "$RUN_ID" ] && set -- "$@" --run-id "$RUN_ID"
-[ -n "$EXTRA" ] && set -- "$@" "$EXTRA"
+if [ -n "$RUN_ID" ]; then set -- "$@" --run-id "$RUN_ID"; fi
+if [ -n "$EXTRA" ]; then set -- "$@" "$EXTRA"; fi
 
 python3 -m harness.orchestrator "$@" || die "the run did not finish"

@@ -11,8 +11,16 @@
 set -uo pipefail
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+# Sourcing lib.sh is the one command here whose failure has to stop the script.
+# These scripts run without `set -e`, so an unguarded source that failed left
+# `die` an unknown command whose exit 127 is discarded, `require_env` and
+# `load_dotenv` silent no-ops, and a live run proceeding with no credentials to
+# surface a 401 instead of the real cause. Review finding, 2026-08-31.
 # shellcheck source=scripts/lib.sh
-. "$ROOT/scripts/lib.sh"
+. "$ROOT/scripts/lib.sh" || {
+	printf 'error: cannot source %s/scripts/lib.sh\n' "$ROOT" >&2
+	exit 1
+}
 cd "$ROOT" || die "cannot cd to $ROOT"
 
 ARM=""
@@ -31,7 +39,7 @@ while [ $# -gt 0 ]; do
 	--order-sequence) SEQUENCE=${2:-}; shift 2 ;;
 	--kill-switch-file) KILL_SWITCH=${2:-}; shift 2 ;;
 	-h | --help)
-		sed -n '2,12p' "$0"
+		sed -n '2,11p' "$0"
 		exit 0
 		;;
 	*) die "unknown argument: $1" ;;
@@ -56,7 +64,7 @@ BIN="$ROOT/bin/rzp"
 go build -o "$BIN" ./cmd/rzp || die "the runner did not build"
 
 set -- run -arm "$ARM" -layer "$LAYER" -batch "$BATCH" -run-dir "$RUN_DIR"
-[ -n "$SEQUENCE" ] && set -- "$@" -order-sequence "$SEQUENCE"
-[ -n "$KILL_SWITCH" ] && set -- "$@" -kill-switch-file "$KILL_SWITCH"
+if [ -n "$SEQUENCE" ]; then set -- "$@" -order-sequence "$SEQUENCE"; fi
+if [ -n "$KILL_SWITCH" ]; then set -- "$@" -kill-switch-file "$KILL_SWITCH"; fi
 
 "$BIN" "$@" || die "the $ARM arm did not finish"

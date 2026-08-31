@@ -27,3 +27,7 @@ results/batches/*
 # in the tree and a diff on every gate run.
 results/tables/verify-phase-2.csv
 results/tables/verify-phase-2.md
+
+# A pointer to the run that finished last, so scripts/report.sh does not have
+# to guess from modification times. Local state, not an artefact.
+results/runs/LAST_RUN

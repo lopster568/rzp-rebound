@@ -14,8 +14,6 @@ type OrderState struct {
 	// Attempts is every payment attempt on the order, including the ones the
 	// gateway reported from before this run started. Observe primes it.
 	Attempts int
-	// Notifications is how many notifications this run sent on the order.
-	Notifications int
 	// LastActionAt is when this run last acted on the order. It stays zero
 	// until this run commits an action.
 	//
@@ -38,8 +36,19 @@ type OrderState struct {
 // state that survives a restart; this is the in-memory half, and the phase 2
 // report says so rather than letting a green suite imply the durable one.
 //
-// Safe for concurrent use, because the batch runner drives orders under a
-// concurrency cap.
+// Every method holds the mutex, which makes each one safe on its own and does
+// not make the sequence safe. An arm does Snapshot, then Evaluate, then
+// Commit, across three separate acquisitions, so two goroutines could both
+// read AttemptsMade at 2 against a cap of 3 and both commit, putting 4
+// attempts on an order under R1. R9 survives that, because Commit rechecks the
+// key set under the lock, but R1 and R5 do not.
+//
+// It is unreachable today because cmd/rzp/run.go processes orders one at a
+// time. The comment used to say the concurrency cap made it safe, which was
+// the wrong reason: liveMaxConcurrent caps HTTP requests inside the Razorpay
+// client, not order processing. The day an arm runs orders in parallel this
+// needs a Decide method that holds the lock across the evaluation. Review
+// finding, 2026-08-31.
 type Store struct {
 	mu      sync.Mutex
 	clock   clock.Clock
@@ -93,11 +102,18 @@ func (s *Store) Observe(orderID string, attemptsSeen int) {
 }
 
 // Snapshot builds the policy input for one proposed action.
+//
+// It reads without inserting. A snapshot used to go through the same
+// creating accessor Commit does, so asking about an order allocated a row for
+// it and len(s.orders) stopped meaning "orders this run touched".
 func (s *Store) Snapshot(orderID, idempotencyKey string, killSwitchEngaged bool) policy.State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	st := s.order(orderID)
+	var st OrderState
+	if existing, ok := s.orders[orderID]; ok {
+		st = *existing
+	}
 	return policy.State{
 		AttemptsMade:       st.Attempts,
 		LastActionAt:       st.LastActionAt,
@@ -137,7 +153,6 @@ func (s *Store) Commit(orderID, idempotencyKey, action string) bool {
 	s.actions++
 
 	if policy.IsNotifyAction(action) {
-		st.Notifications++
 		st.LastNotifyAt = now
 		return false
 	}

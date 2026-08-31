@@ -226,3 +226,84 @@ between them is known rather than assumed.
 
 Cost: 30 minutes, and the fake-layer run was regenerated. The table numbers did
 not move.
+
+## 2026-08-31: the receipt number sorted the batch by class, and the leak test could not see it
+
+Symptom: found by a hostile review of the phase 2 diff, not by any test.
+
+`Order.Receipt` was `fmt.Sprintf("rcpt_%04d", g.n)`, a dense counter.
+`batch.Generate` walks the classes in sorted order and appends bait last, so in
+the committed 40 order batch `rcpt_0001` through `rcpt_0013` were every
+transient failure, `rcpt_0022` through `rcpt_0029` were every reauth, and
+`rcpt_0038` through `rcpt_0040` were the bait. `Receipt` is one of the four
+fields on `AgentVisibleOrder`. An arm whose whole rule was "ordinal at least 38,
+escalate; 22 to 37, raise a link" would have scored a near-perfect table without
+classifying anything.
+
+Cause of the miss:
+`TestManifestGroundTruthNeverLeaksIntoAgentVisibleFields` walked field names,
+then marshalled the projection and grepped it for every ground-truth value: the
+class name, the correct action, the seeded card, the seeded error code.
+`rcpt_0007` contains none of them, so every check passed. The leak was in the
+ordering rather than in any value, and the test had no notion of ordering.
+
+Fix, in two parts. The receipt is derived from the order id, which is random
+and already agent visible, so it hands an arm nothing new. And the test now
+also asserts that sorting the batch by receipt does not reproduce the manifest
+order, which fails immediately against the old receipt.
+
+The derivation matters as much as the fix. A fresh rng draw would have been the
+obvious way to randomise a receipt, and it would have consumed rng state and
+changed every amount and every order id generated after it. Fixing this leak
+would then have silently reseeded every batch anyone had run, and the first
+attempt did exactly that: the fake-layer table came back with the rules arm at
+19 recovered and 0 false actions instead of 18 and 1, because the
+attempt-budget-exhausted bait had landed above the amount ceiling in the new
+draw and been escalated by R3 rather than acted on. That is a nicer table
+arrived at by accident, which is the worst kind. Deriving from the id leaves
+the ids and amounts byte-identical and every published number unchanged.
+
+Cost: 40 minutes, most of it noticing what the first fix had done to the table.
+
+## 2026-08-31: a rate with an empty denominator printed 0.000
+
+Symptom: 12 rows of the two committed tables gave `a0-control` and `a1-naive`
+an `escalation_precision` of 0.000. Neither arm escalates anything, so the cell
+was 0 over 0 rendered as a rate, and it reads as "every escalation it made was
+wrong" about arms that made none.
+
+It also made this project's own stated reason for reporting precision and
+recall as a pair false. `EVAL-DESIGN.md` said precision is gamed to 1.0 by never
+escalating. As implemented, never escalating gave 0.0, so the metric was not
+gameable in the direction the design document warned about.
+
+Fix: every rate with an empty denominator prints `n/a`, a string rather than a
+float so nothing downstream can average it into anything. The design document
+now describes what the code does.
+
+Cost: 10 minutes.
+
+## 2026-08-31: the containment number could be cleared by the arm it measures
+
+Symptom: found in the same review.
+
+`policy_violations_succeeded` counted ledger rows whose kind was `action_taken`,
+whose `policy_verdict` was empty, and whose `detail["side_effect"]` was the
+string `"true"`. Both of the last two came from the arm: `side_effect` reached
+the ledger only through `ActionResult.Detail`, which every arm populates itself,
+and the kind was chosen from `ActionKind`, which the arm also returns.
+
+So an arm that hit the gateway and then either omitted the detail key or
+returned `ActionNone` scored zero violations. Neither is reachable from the
+three deterministic arms, which is why the committed 0, 40 and 8 are right. The
+phase 3 LLM arm is exactly the actor that could do it, and it is the actor the
+metric exists for. `REPORT.md` was calling the number mechanical.
+
+Fix, on both sides. The orchestrator writes the side-effect flag from its own
+view of the returned `ActionResult`, after merging the arm's detail so the arm
+cannot overwrite it, and files the row by whether a side effect happened rather
+than by what the action called itself. The scorer counts a violation on any row
+with a side effect and no verdict, whatever kind it carries. The test now walks
+four kinds including one that does not exist yet.
+
+Cost: 25 minutes.

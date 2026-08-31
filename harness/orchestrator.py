@@ -274,6 +274,14 @@ def main(argv: list[str] | None = None) -> int:
             )
             return completed.returncode
 
+    # Record which run finished last, by name rather than by mtime.
+    #
+    # scripts/report.sh used to pick the newest directory under results/runs/,
+    # so touching an older run made `make report` score the wrong one and
+    # overwrite that run's committed table in place. Review finding,
+    # 2026-08-31.
+    Path(args.out_root).joinpath("LAST_RUN").write_text(run_id + "\n", encoding="utf-8")
+
     print("run complete: " + str(run_dir), file=sys.stderr)
     return 0
 

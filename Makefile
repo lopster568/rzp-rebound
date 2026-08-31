@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help hooks preflight test test-go test-python test-integration lint \
+.PHONY: help hooks preflight test test-go test-race test-python test-integration lint \
 	docs-check ci verify-phase-0 verify-offline verify-live verify-phase-2 \
 	jaeger-up jaeger-down seed run-arm run-all report auth-probe capture demo
 
@@ -31,6 +31,9 @@ test: test-go test-python ## Run the Go and the Python tests
 
 test-go: ## Run the Go tests
 	@go test ./...
+
+test-race: ## Run the Go tests under the race detector, uncached
+	@go test ./... -count=1 -race
 
 test-python: ## Run the harness tests, standard library only, no install
 	@python3 -m unittest discover -s harness -t . -q

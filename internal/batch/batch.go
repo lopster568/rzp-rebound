@@ -5,6 +5,7 @@ import (
 	"maps"
 	"math/rand"
 	"slices"
+	"strings"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/classify"
 	"github.com/lopster568/rzp-recovery-agent/internal/testcards"
@@ -240,11 +241,12 @@ func (g *generator) order(class classify.Class) (Order, error) {
 	}
 
 	g.n++
+	id := g.id()
 	return Order{
-		OrderID:                  g.id(),
+		OrderID:                  id,
 		AmountPaise:              g.amount(),
 		Currency:                 g.currency,
-		Receipt:                  fmt.Sprintf("rcpt_%04d", g.n),
+		Receipt:                  receiptFor(id),
 		SeededFailureClass:       class,
 		SeededErrorCode:          reason,
 		SeededCard:               seededCard,
@@ -280,13 +282,47 @@ func (g *generator) bait(kind BaitKind) (Order, error) {
 	return order, nil
 }
 
-func (g *generator) id() string {
+func (g *generator) id() string { return "order_" + g.token(14) }
+
+// receiptFor derives a merchant receipt from an order id.
+//
+// The receipt used to be fmt.Sprintf("rcpt_%04d", g.n), a dense ordinal, and
+// Generate walks the classes in sorted order and appends bait last. So in a 40
+// order batch rcpt_0001 through rcpt_0013 were every transient failure and
+// rcpt_0038 through rcpt_0040 were the bait, and an arm reading nothing but
+// that number could have scored a perfect table without classifying anything.
+// Receipt is one of the four fields on AgentVisibleOrder, so the ordinal went
+// straight to the arm.
+//
+// The leak test walked field names and ground-truth values and found nothing,
+// because "rcpt_0007" contains none of them. What leaked was the ordering,
+// which is why TestManifestGroundTruthNeverLeaksIntoAgentVisibleFields now
+// also checks that sorting the batch by receipt does not reproduce the
+// manifest order. Review finding, 2026-08-31.
+//
+// It is derived from the order id rather than drawn from the rng, and that is
+// deliberate. A fresh draw would consume rng state and change every amount and
+// every id after it, so fixing this leak would silently reseed every batch
+// anyone had already run. The order id is agent visible in its own right, so
+// deriving from it hands an arm nothing it did not already have.
+func receiptFor(orderID string) string {
+	const want = 10
+	body := strings.TrimPrefix(orderID, "order_")
+	if len(body) > want {
+		body = body[:want]
+	}
+	return "rcpt_" + body
+}
+
+// token returns n characters drawn from the seeded rng, so the whole batch
+// stays reproducible from the seed.
+func (g *generator) token(n int) string {
 	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
-	b := make([]byte, 14)
+	b := make([]byte, n)
 	for i := range b {
 		b[i] = alphabet[g.rng.Intn(len(alphabet))]
 	}
-	return "order_" + string(b)
+	return string(b)
 }
 
 func (g *generator) amount() int64 {

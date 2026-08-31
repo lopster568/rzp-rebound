@@ -4,14 +4,23 @@
 # Usage:
 #   scripts/seed-batch.sh [--seed N] [--n N] [--bait N] [--layer fake|live]
 #
-# The manifest lands under results/batches/, which is gitignored: it is the
-# answer key for one run, and nothing in it reaches an arm.
-# batch.AgentVisibleOrder is a separate type carrying four fields.
+# The manifest lands under results/batches/, which is gitignored apart from the
+# one batch the committed results table is recomputed from. It is the answer key
+# for a run, and nothing in it reaches an arm: batch.AgentVisibleOrder is a
+# separate type carrying four fields.
 set -uo pipefail
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+# Sourcing lib.sh is the one command here whose failure has to stop the script.
+# These scripts run without `set -e`, so an unguarded source that failed left
+# `die` an unknown command whose exit 127 is discarded, `require_env` and
+# `load_dotenv` silent no-ops, and a live run proceeding with no credentials to
+# surface a 401 instead of the real cause. Review finding, 2026-08-31.
 # shellcheck source=scripts/lib.sh
-. "$ROOT/scripts/lib.sh"
+. "$ROOT/scripts/lib.sh" || {
+	printf 'error: cannot source %s/scripts/lib.sh\n' "$ROOT" >&2
+	exit 1
+}
 cd "$ROOT" || die "cannot cd to $ROOT"
 
 SEED="1234"

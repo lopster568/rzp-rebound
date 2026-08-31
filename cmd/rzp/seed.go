@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/batch"
@@ -96,8 +98,9 @@ func runSeed(_ context.Context, args []string) error {
 	for _, class := range sortedClasses(manifest.CountsByClass()) {
 		fmt.Printf("  %-26s %d\n", class, manifest.CountsByClass()[class])
 	}
-	for kind, count := range baitCounts(manifest) {
-		fmt.Printf("  bait %-21s %d\n", kind, count)
+	counts := baitCounts(manifest)
+	for _, kind := range slices.Sorted(maps.Keys(counts)) {
+		fmt.Printf("  bait %-21s %d\n", kind, counts[kind])
 	}
 	fmt.Printf("manifest %s\n", path)
 	fmt.Println()

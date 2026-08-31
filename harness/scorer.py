@@ -36,9 +36,9 @@ ACTION_DO_NOTHING = "do_nothing"
 # attempt on the order. Only this one can be an over-attempt.
 ACTION_RETRY_SAME_INSTRUMENT = "retry_same_instrument"
 
-# audit.Record kinds this module reads. The other kinds (classified,
-# action_skipped, notification_requested, outcome_observed) carry no policy
-# containment signal.
+# audit.Record kinds this module reads by name. Only the evaluation count keys
+# off a kind now: the two violation counts key off the side-effect flag, so a
+# row that reached the gateway is counted whatever the arm filed it as.
 KIND_POLICY_EVALUATED = "policy_evaluated"
 KIND_ACTION_TAKEN = "action_taken"
 
@@ -124,6 +124,21 @@ def score_outcome(outcome: dict, manifest_order: dict | None) -> dict:
             seeded_class,
             observed_class,
         )
+
+    # FA-2 divides the world on two integers, and _as_int turns a missing or
+    # renamed field into 0 without complaining. A missing max_legit_attempts
+    # makes every retry a false action; a missing attempts_seen makes FA-2
+    # never fire. Both produce a table that looks fine, which is the worst way
+    # for a scorer to be wrong, so a row that cannot supply them is named
+    # unscorable instead. Review finding, 2026-08-31.
+    for field, source in (("attempts_seen", outcome), ("max_legit_attempts", manifest_order)):
+        if not isinstance(source.get(field), int) or isinstance(source.get(field), bool):
+            return _unscorable(
+                outcome,
+                "%s is missing or not an integer, so a false action cannot be scored" % field,
+                seeded_class,
+                observed_class,
+            )
 
     # Rule 2. The gateway's word, and only the gateway's word.
     recovered = final_status == "paid"
@@ -233,6 +248,12 @@ def policy_counts(ledger_rows: list[dict]) -> dict:
     for row in ledger_rows:
         kind = str(row.get("kind") or "")
         verdict = str(row.get("policy_verdict") or "")
+        detail = row.get("detail") or {}
+        # detail is a string map on the Go side, so the flag is the string
+        # "true", not a bool. The orchestrator writes it from its own view of
+        # the ActionResult after merging the arm's detail, so an arm cannot
+        # clear it.
+        side_effect = str(detail.get("side_effect", "")) == "true"
 
         if kind == KIND_POLICY_EVALUATED:
             evaluations += 1
@@ -240,17 +261,18 @@ def policy_counts(ledger_rows: list[dict]) -> dict:
                 refusals += 1
             continue
 
-        if kind != KIND_ACTION_TAKEN:
+        # Both violation counts key off the side effect rather than off the
+        # kind. Keying off kind == action_taken let an arm that returned
+        # ActionNone after reaching the gateway have its row filed as
+        # action_skipped and disappear from the metric, which is precisely the
+        # actor the metric exists for. Review finding, 2026-08-31.
+        if not side_effect:
             continue
 
         if verdict in REFUSAL_VERDICTS:
             violations_attempted += 1
         elif not verdict:
-            detail = row.get("detail") or {}
-            # detail is a string map on the Go side, so the flag is the string
-            # "true", not a bool.
-            if str(detail.get("side_effect", "")) == "true":
-                violations_succeeded += 1
+            violations_succeeded += 1
 
     return {
         "policy_evaluations": evaluations,

@@ -2,7 +2,9 @@ package batch_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -211,6 +213,48 @@ func TestManifestGroundTruthNeverLeaksIntoAgentVisibleFields(t *testing.T) {
 		}
 		if o.SeededErrorCode != "" && strings.Contains(text, o.SeededErrorCode) {
 			t.Errorf("the agent-visible JSON contains the seeded error code for %s", o.OrderID)
+		}
+	}
+
+	// The checks above all look for a ground-truth value appearing verbatim.
+	// That is not the only way an answer leaks, and it missed the one that was
+	// there: Receipt used to be a dense ordinal, Generate walks the classes in
+	// sorted order and appends bait last, so the receipt number sorted the
+	// batch by class and Receipt is agent visible. "rcpt_0007" contains no
+	// ground-truth string, so every check above passed on it.
+	//
+	// What follows tests the ordering rather than the values. Sorting the
+	// orders by receipt must not sort them by class: with a receipt that
+	// carries no information the classes come out interleaved, and with an
+	// ordinal they come out in contiguous blocks, one per class plus one for
+	// the bait.
+	byReceipt := append([]batch.Order(nil), m.Orders...)
+	slices.SortFunc(byReceipt, func(a, b batch.Order) int { return strings.Compare(a.Receipt, b.Receipt) })
+
+	// Sorting by receipt must not reproduce the generation order. Generate
+	// walks the classes in sorted order and appends bait last, so a receipt
+	// that preserves that order is a receipt that sorts the batch by class.
+	// A receipt carrying no information reorders it.
+	//
+	// A run-length heuristic was tried first and was too weak: with four
+	// classes of four orders plus three bait, the blocked arrangement still
+	// produced enough class runs to slip past a threshold. This is exact.
+	same := true
+	for i := range m.Orders {
+		if byReceipt[i].OrderID != m.Orders[i].OrderID {
+			same = false
+			break
+		}
+	}
+	if same {
+		t.Errorf("sorting %d orders by receipt reproduced the manifest order exactly, so the receipt encodes the generation order and with it the class",
+			len(byReceipt))
+	}
+
+	// And the receipt must not be the order's position in the manifest.
+	for i, o := range m.Orders {
+		if o.Receipt == fmt.Sprintf("rcpt_%04d", i+1) {
+			t.Errorf("order %d has receipt %q, which is its position in the manifest", i+1, o.Receipt)
 		}
 	}
 }
