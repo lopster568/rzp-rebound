@@ -1,14 +1,21 @@
 package razorpay
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/clock"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -73,7 +80,20 @@ type APIError struct {
 }
 
 // Error renders the status, the call, and the truncated body.
-func (e *APIError) Error() string { return "" }
+func (e *APIError) Error() string {
+	return fmt.Sprintf("razorpay: %s %s returned %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
+}
+
+// redactedError carries a scrubbed message and still unwraps to the original,
+// so errors.Is and errors.As keep working while the printed text does not
+// carry a credential.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.err }
 
 // RawResponse is one line of the raw capture stream. It holds no request
 // header, so the Authorization header cannot reach a fixture file.
@@ -123,6 +143,7 @@ type ClientOptions struct {
 // every error path, and an optional raw capture hook.
 type Client struct {
 	baseURL     string
+	basePath    string
 	keyID       string
 	keySecret   string
 	basicToken  string
@@ -141,33 +162,379 @@ type Client struct {
 var _ Port = (*Client)(nil)
 
 // NewClient returns a Client.
-func NewClient(opts ClientOptions) (*Client, error) { return &Client{}, nil }
+func NewClient(opts ClientOptions) (*Client, error) {
+	if opts.KeyID == "" || opts.KeySecret == "" {
+		return nil, ErrMissingCredentials
+	}
+	return newClient(opts)
+}
+
+// newClient builds a Client without demanding credentials, which is what the
+// replay client needs: it answers from disk and has no gateway to authenticate
+// to.
+func newClient(opts ClientOptions) (*Client, error) {
+	baseURL := strings.TrimRight(opts.BaseURL, "/")
+	if baseURL == "" {
+		baseURL = DefaultBaseURL
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("razorpay: base url %q: %w", baseURL, err)
+	}
+
+	base := opts.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	var traceOpts []otelhttp.Option
+	if opts.TracerProvider != nil {
+		traceOpts = append(traceOpts, otelhttp.WithTracerProvider(opts.TracerProvider))
+	}
+
+	c := &Client{
+		baseURL:     baseURL,
+		basePath:    strings.TrimRight(parsed.Path, "/"),
+		keyID:       opts.KeyID,
+		keySecret:   opts.KeySecret,
+		http:        &http.Client{Transport: otelhttp.NewTransport(base, traceOpts...)},
+		maxAttempts: opts.MaxAttempts,
+		baseBackoff: opts.BaseBackoff,
+		maxBackoff:  opts.MaxBackoff,
+		wait:        opts.Wait,
+		clock:       opts.Clock,
+		capture:     opts.RawCapture,
+	}
+
+	// The base64 token is held so redaction can scrub it. A gateway that
+	// echoes the Authorization header into an error body leaks the pair in a
+	// form that scrubbing the two halves separately would not catch.
+	if c.keyID != "" || c.keySecret != "" {
+		c.basicToken = base64.StdEncoding.EncodeToString([]byte(c.keyID + ":" + c.keySecret))
+	}
+
+	if c.maxAttempts <= 0 {
+		c.maxAttempts = DefaultMaxAttempts
+	}
+	if c.baseBackoff <= 0 {
+		c.baseBackoff = DefaultBaseBackoff
+	}
+	if c.maxBackoff <= 0 {
+		c.maxBackoff = DefaultMaxBackoff
+	}
+	if c.maxBackoff < c.baseBackoff {
+		c.maxBackoff = c.baseBackoff
+	}
+	if c.wait == nil {
+		c.wait = sleepWait
+	}
+	if c.clock == nil {
+		c.clock = clock.Real()
+	}
+
+	concurrency := opts.MaxConcurrent
+	if concurrency <= 0 {
+		concurrency = DefaultMaxConcurrent
+	}
+	c.sem = make(chan struct{}, concurrency)
+
+	return c, nil
+}
+
+// sleepWait is the default backoff: a timer that gives up when the context
+// does.
+func sleepWait(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
 
 // BaseURL returns the API root the client sends to.
-func (c *Client) BaseURL() string { return "" }
+func (c *Client) BaseURL() string { return c.baseURL }
 
 // Redact replaces every configured credential in s. It runs on every error
 // message and every captured body before either leaves the package.
-func (c *Client) Redact(s string) string { return "" }
+func (c *Client) Redact(s string) string {
+	// Longest and most sensitive first. An empty credential is skipped,
+	// because replacing the empty string would put the marker between every
+	// character in the message.
+	for _, secret := range []string{c.keySecret, c.basicToken, c.keyID} {
+		if secret == "" {
+			continue
+		}
+		s = strings.ReplaceAll(s, secret, Redacted)
+	}
+	return s
+}
+
+func (c *Client) redactErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := c.Redact(err.Error())
+	if msg == err.Error() {
+		return err
+	}
+	return &redactedError{msg: msg, err: err}
+}
+
+func (c *Client) apiError(method, path string, status int, body []byte) *APIError {
+	trimmed := string(body)
+	if len(trimmed) > maxErrorBodyBytes {
+		trimmed = trimmed[:maxErrorBodyBytes] + "(truncated)"
+	}
+	return &APIError{
+		StatusCode: status,
+		Method:     method,
+		Path:       path,
+		Body:       c.Redact(trimmed),
+	}
+}
+
+// mapNotFound turns a 404 into the port's own not-found error, so callers
+// match with errors.Is instead of reading a status code.
+func mapNotFound(err error, sentinel error, id string) error {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("%w: %s: %w", sentinel, id, err)
+	}
+	return err
+}
+
+// do runs one API call, retrying only on 429.
+//
+// A 4xx other than 429 is not retried: the same request gets the same refusal,
+// and a retry spends a call and a rate-limit slot on a certainty. A 5xx is not
+// retried either, which is the conservative choice for a system that moves
+// money: three of the six port calls have a side effect, and nothing here knows
+// yet whether a Razorpay 5xx means the call did not happen or means the answer
+// was lost on the way back. The live half observes one and this comment gets a
+// decision instead of a caveat.
+func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
+	var payload []byte
+	if body != nil {
+		var err error
+		payload, err = json.Marshal(body)
+		if err != nil {
+			return c.redactErr(fmt.Errorf("razorpay: encode %s %s: %w", method, path, err))
+		}
+	}
+
+	backoff := c.baseBackoff
+	var last error
+
+	for attempt := 1; attempt <= c.maxAttempts; attempt++ {
+		status, respBody, err := c.roundTrip(ctx, method, path, payload)
+		if err != nil {
+			return c.redactErr(err)
+		}
+		if err := c.captureResponse(method, path, status, respBody); err != nil {
+			return c.redactErr(err)
+		}
+
+		switch {
+		case status >= 200 && status < 300:
+			if out == nil {
+				return nil
+			}
+			if err := json.Unmarshal(respBody, out); err != nil {
+				return c.redactErr(fmt.Errorf("razorpay: decode %s %s: %w", method, path, err))
+			}
+			return nil
+
+		case status == http.StatusTooManyRequests:
+			last = c.apiError(method, path, status, respBody)
+			if attempt == c.maxAttempts {
+				return c.redactErr(fmt.Errorf("%w after %d attempt(s): %w", ErrRetryBudgetExhausted, attempt, last))
+			}
+			if err := c.wait(ctx, backoff); err != nil {
+				return c.redactErr(fmt.Errorf("razorpay: backoff on %s %s: %w", method, path, err))
+			}
+			backoff = min(backoff*2, c.maxBackoff)
+
+		default:
+			return c.redactErr(c.apiError(method, path, status, respBody))
+		}
+	}
+
+	return c.redactErr(last)
+}
+
+// roundTrip holds a concurrency slot for the whole request, including reading
+// the body. The slot is released before any backoff, so a retrying call does
+// not sit on a socket budget it is not using.
+func (c *Client) roundTrip(ctx context.Context, method, path string, payload []byte) (int, []byte, error) {
+	select {
+	case c.sem <- struct{}{}:
+	case <-ctx.Done():
+		return 0, nil, fmt.Errorf("razorpay: waiting for a concurrency slot on %s %s: %w", method, path, ctx.Err())
+	}
+	defer func() { <-c.sem }()
+
+	var reader io.Reader
+	if payload != nil {
+		reader = bytes.NewReader(payload)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
+	if err != nil {
+		return 0, nil, fmt.Errorf("razorpay: build %s %s: %w", method, path, err)
+	}
+	req.SetBasicAuth(c.keyID, c.keySecret)
+	req.Header.Set("Accept", "application/json")
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("razorpay: %s %s: %w", method, path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return resp.StatusCode, nil, fmt.Errorf("razorpay: read the response to %s %s: %w", method, path, err)
+	}
+	return resp.StatusCode, respBody, nil
+}
+
+// captureResponse appends one JSON line per response.
+//
+// A failed write fails the call. A fixture run that quietly wrote nothing looks
+// exactly like a fixture run that worked, and the live half depends on this
+// stream being the record of what Razorpay sent.
+func (c *Client) captureResponse(method, path string, status int, body []byte) error {
+	if c.capture == nil {
+		return nil
+	}
+
+	line := RawResponse{
+		CapturedAt: c.clock.Now().UTC().Format(time.RFC3339Nano),
+		Method:     method,
+		Path:       c.basePath + path,
+		Status:     status,
+	}
+	if json.Valid(body) {
+		line.Body = json.RawMessage(body)
+	} else {
+		line.Body = c.Redact(string(body))
+	}
+
+	encoded, err := json.Marshal(line)
+	if err != nil {
+		return fmt.Errorf("razorpay: encode the capture of %s %s: %w", method, path, err)
+	}
+
+	c.captureMu.Lock()
+	defer c.captureMu.Unlock()
+	if _, err := c.capture.Write(append(encoded, '\n')); err != nil {
+		return fmt.Errorf("razorpay: write the capture of %s %s: %w", method, path, err)
+	}
+	return nil
+}
+
+// createOrderBody is the POST body for the orders endpoint. The field names
+// come from the json tags on Order in port.go and have not been checked against
+// a live request. Pending fixture capture.
+type createOrderBody struct {
+	Amount   int64             `json:"amount"`
+	Currency string            `json:"currency"`
+	Receipt  string            `json:"receipt,omitempty"`
+	Notes    map[string]string `json:"notes,omitempty"`
+}
+
+// createPaymentLinkBody is the POST body for the payment-links endpoint. Every
+// field here is pending fixture capture, as the doc comment on
+// CreatePaymentLinkRequest in port.go says.
+type createPaymentLinkBody struct {
+	Amount      int64  `json:"amount"`
+	Currency    string `json:"currency"`
+	Description string `json:"description,omitempty"`
+	ReferenceID string `json:"reference_id,omitempty"`
+	NotifySMS   bool   `json:"notify_sms"`
+	NotifyEmail bool   `json:"notify_email"`
+}
+
+// paymentCollection is the list envelope the payments-for-order endpoint
+// answers with. The envelope shape is pending fixture capture; the items decode
+// through the same Payment tags every other call uses.
+type paymentCollection struct {
+	Count int       `json:"count"`
+	Items []Payment `json:"items"`
+}
 
 // CreateOrder posts a new order.
 func (c *Client) CreateOrder(ctx context.Context, req CreateOrderRequest) (Order, error) {
-	return Order{}, nil
+	if req.AmountPaise <= 0 {
+		return Order{}, fmt.Errorf("%w: got %d paise", ErrAmountNotPositive, req.AmountPaise)
+	}
+
+	currency := req.Currency
+	if currency == "" {
+		currency = "INR"
+	}
+
+	var out Order
+	err := c.do(ctx, http.MethodPost, pathOrders, createOrderBody{
+		Amount:   req.AmountPaise,
+		Currency: currency,
+		Receipt:  req.Receipt,
+		Notes:    req.Notes,
+	}, &out)
+	if err != nil {
+		return Order{}, err
+	}
+	return out, nil
 }
 
 // FetchOrder reads one order.
 func (c *Client) FetchOrder(ctx context.Context, orderID string) (Order, error) {
-	return Order{}, nil
+	if orderID == "" {
+		return Order{}, fmt.Errorf("%w: no order id given", ErrOrderNotFound)
+	}
+
+	var out Order
+	path := fmt.Sprintf(pathOrderByID, url.PathEscape(orderID))
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return Order{}, mapNotFound(err, ErrOrderNotFound, orderID)
+	}
+	return out, nil
 }
 
 // ListPaymentsForOrder reads every payment attempt on an order.
 func (c *Client) ListPaymentsForOrder(ctx context.Context, orderID string) ([]Payment, error) {
-	return nil, nil
+	if orderID == "" {
+		return nil, fmt.Errorf("%w: no order id given", ErrOrderNotFound)
+	}
+
+	var out paymentCollection
+	path := fmt.Sprintf(pathOrderPayments, url.PathEscape(orderID))
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, mapNotFound(err, ErrOrderNotFound, orderID)
+	}
+	if out.Items == nil {
+		return []Payment{}, nil
+	}
+	return out.Items, nil
 }
 
 // FetchPayment reads one payment.
 func (c *Client) FetchPayment(ctx context.Context, paymentID string) (Payment, error) {
-	return Payment{}, nil
+	if paymentID == "" {
+		return Payment{}, fmt.Errorf("%w: no payment id given", ErrPaymentNotFound)
+	}
+
+	var out Payment
+	path := fmt.Sprintf(pathPaymentByID, url.PathEscape(paymentID))
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return Payment{}, mapNotFound(err, ErrPaymentNotFound, paymentID)
+	}
+	return out, nil
 }
 
 // CreatePaymentLink posts a new payment link.
@@ -176,7 +543,28 @@ func (c *Client) FetchPayment(ctx context.Context, paymentID string) (Payment, e
 // capture, as the doc comments on CreatePaymentLinkRequest and PaymentLink in
 // port.go already say.
 func (c *Client) CreatePaymentLink(ctx context.Context, req CreatePaymentLinkRequest) (PaymentLink, error) {
-	return PaymentLink{}, nil
+	if req.AmountPaise <= 0 {
+		return PaymentLink{}, fmt.Errorf("%w: got %d paise", ErrAmountNotPositive, req.AmountPaise)
+	}
+
+	currency := req.Currency
+	if currency == "" {
+		currency = "INR"
+	}
+
+	var out PaymentLink
+	err := c.do(ctx, http.MethodPost, pathPaymentLinks, createPaymentLinkBody{
+		Amount:      req.AmountPaise,
+		Currency:    currency,
+		Description: req.Description,
+		ReferenceID: req.ReferenceID,
+		NotifySMS:   req.NotifySMS,
+		NotifyEmail: req.NotifyEmail,
+	}, &out)
+	if err != nil {
+		return PaymentLink{}, err
+	}
+	return out, nil
 }
 
 // ResendPaymentLinkNotification asks Razorpay to send a payment link again.
@@ -185,5 +573,26 @@ func (c *Client) CreatePaymentLink(ctx context.Context, req CreatePaymentLinkReq
 // whether a person received or read anything, and neither does anything
 // downstream of it.
 func (c *Client) ResendPaymentLinkNotification(ctx context.Context, linkID, medium string) (NotifyReceipt, error) {
-	return NotifyReceipt{}, nil
+	if medium != MediumSMS && medium != MediumEmail {
+		return NotifyReceipt{}, fmt.Errorf("%w: %q", ErrUnsupportedMedium, medium)
+	}
+	if linkID == "" {
+		return NotifyReceipt{}, fmt.Errorf("%w: no link id given", ErrPaymentLinkNotFound)
+	}
+
+	path := fmt.Sprintf(pathPaymentLinkNotify, url.PathEscape(linkID), url.PathEscape(medium))
+	if err := c.do(ctx, http.MethodPost, path, nil, nil); err != nil {
+		return NotifyReceipt{}, mapNotFound(err, ErrPaymentLinkNotFound, linkID)
+	}
+
+	// Accepted comes from the 2xx, not from a field in the body. The response
+	// shape is pending fixture capture, and a field name invented here would
+	// decode to false on a call that actually worked. What is observed is an
+	// HTTP status, which is what Accepted reports.
+	return NotifyReceipt{
+		LinkID:      linkID,
+		Medium:      medium,
+		Accepted:    true,
+		RequestedAt: c.clock.Now(),
+	}, nil
 }
