@@ -128,9 +128,13 @@ func runCapture(ctx context.Context, args []string) error {
 		return fmt.Errorf("list payments on the untouched order: %w", err)
 	}
 
-	// 2. The order a payment is actually attempted on. Its creation is not
-	// captured, because POST /v1/orders is one path and the untouched order
-	// already recorded it.
+	// 2. The order a payment is actually attempted on. No fixture is written
+	// for its creation, because POST /v1/orders is one path and the untouched
+	// order already recorded it. It still gets its own label: leaving the
+	// previous one set filed this response under list_payments_empty, which
+	// only wrote the right fixture because writeFixtures takes the first
+	// response per label. Review finding, 2026-08-31.
+	capture.setLabel("create_order_to_fail")
 	failed, err := rig.client.CreateOrder(ctx, razorpay.CreateOrderRequest{
 		AmountPaise: amountPaise,
 		Currency:    "INR",

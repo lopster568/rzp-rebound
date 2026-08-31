@@ -33,17 +33,41 @@ require_env() {
 # that printed what it loaded would put a credential in every terminal
 # scrollback and CI log it ever ran in.
 load_dotenv() {
-	local file=${1:-$ROOT/.env} name value
+	local file=${1:-$ROOT/.env} line name value
 	[ -f "$file" ] || return 0
-	while IFS= read -r line; do
+	# The `|| [ -n "$line" ]` keeps a final line with no trailing newline,
+	# which read otherwise drops. Losing the last variable in .env is a
+	# credential that is silently unset, and the resulting 401 looks like a
+	# wrong key rather than a missing one.
+	while IFS= read -r line || [ -n "$line" ]; do
+		line=${line%$'\r'}
+		line=${line#"${line%%[![:space:]]*}"}
 		case "$line" in
 		'' | '#'*) continue ;;
+		esac
+		# `export NAME=value` is a valid .env line and used to be skipped in
+		# silence, which is the same failure as dropping the last line.
+		case "$line" in
+		'export '*) line=${line#export } ;;
 		esac
 		name=${line%%=*}
 		value=${line#*=}
 		[ "$name" = "$line" ] && continue
+		# Trim spaces around the name, so `NAME = value` is read rather than
+		# silently ignored.
+		name=${name%"${name##*[![:space:]]}"}
+		name=${name#"${name%%[![:space:]]*}"}
 		case "$name" in
 		*[!A-Za-z0-9_]* | '') continue ;;
+		esac
+		value=${value#"${value%%[![:space:]]*}"}
+		value=${value%"${value##*[![:space:]]}"}
+		# Strip one matched pair of surrounding quotes. Keeping them meant a
+		# quoted secret authenticated with the quotes included, producing a
+		# 401 an operator cannot explain. Review finding, 2026-08-31.
+		case "$value" in
+		'"'*'"') value=${value#\"} value=${value%\"} ;;
+		"'"*"'") value=${value#\'} value=${value%\'} ;;
 		esac
 		if [ -z "${!name:-}" ]; then
 			export "$name=$value"
@@ -100,7 +124,17 @@ docker_reachable() {
 # that should be describing what came up.
 compose_run() {
 	if [ -n "${DOCKER_SSH_HOST:-}" ]; then
-		docker_ssh "docker compose -p $COMPOSE_PROJECT -f - $*" <"$COMPOSE_FILE"
+		# ssh takes one command string, so each argument is quoted for the
+		# remote shell rather than flattened with $*. Today's callers pass no
+		# argument with a space or a glob in it, and the two branches of this
+		# function should not have different argument semantics waiting for
+		# the first caller that does.
+		local quoted=""
+		local arg
+		for arg in "$@"; do
+			quoted="$quoted $(printf '%q' "$arg")"
+		done
+		docker_ssh "docker compose -p $COMPOSE_PROJECT -f -$quoted" <"$COMPOSE_FILE"
 	elif docker compose version >/dev/null 2>&1; then
 		docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" "$@"
 	elif command -v docker-compose >/dev/null 2>&1; then

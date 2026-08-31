@@ -41,8 +41,11 @@ go run ./cmd/rzp capture -out "$OUT_DIR" || die "the capture run failed"
 # has no shape a pattern can find and the only way to look for one is to
 # already know it.
 say "capture-fixtures: scanning $OUT_DIR for anything credential shaped"
+[ -d "$OUT_DIR" ] || die "capture-fixtures: $OUT_DIR does not exist, so nothing was captured"
 leaks=0
+scanned=0
 while IFS= read -r file; do
+	scanned=$((scanned + 1))
 	if grep -qE 'rzp_test_[A-Za-z0-9]{8,}|rzp_live_' "$file"; then
 		say "  LEAK  $file carries something shaped like a Razorpay key"
 		leaks=$((leaks + 1))
@@ -58,5 +61,12 @@ if [ "$leaks" -gt 0 ]; then
 	die "capture-fixtures: $leaks file(s) carry credentials. Do not commit them. Fix the redaction path first."
 fi
 
-say "capture-fixtures: no credential found in any captured file"
-say "capture-fixtures: $(find "$OUT_DIR" -name '*.json' -type f | wc -l) file(s) in $OUT_DIR"
+# A control that reports success without having inspected anything is worse
+# than no control. set -uo pipefail has no -e, and the loop above reads from a
+# process substitution nothing checks, so a find that matched nothing used to
+# print a clean result and exit 0. Review finding, 2026-08-31.
+if [ "$scanned" -eq 0 ]; then
+	die "capture-fixtures: scanned 0 files in $OUT_DIR. The scan proves nothing, so this is a failure."
+fi
+
+say "capture-fixtures: no credential found in any of the $scanned file(s) scanned in $OUT_DIR"

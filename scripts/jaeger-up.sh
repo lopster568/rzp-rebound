@@ -24,6 +24,7 @@ ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 # shellcheck source=scripts/lib.sh
 . "$ROOT/scripts/lib.sh"
 cd "$ROOT" || die "cannot cd to $ROOT"
+load_dotenv
 
 COMPOSE_FILE=compose/docker-compose.yml
 UI_PORT=${JAEGER_UI_PORT:-16686}

@@ -17,7 +17,9 @@ package razorpay_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -169,7 +171,7 @@ func TestLiveFailedPaymentCarriesTheObservedReason(t *testing.T) {
 	order, err := h.client.CreateOrder(ctx, razorpay.CreateOrderRequest{
 		AmountPaise: 100000,
 		Currency:    "INR",
-		Receipt:     "rcpt_live_q4",
+		Receipt:     "rcpt_live_q4_" + time.Now().UTC().Format("20060102150405.000000000"),
 	})
 	if err != nil {
 		t.Fatalf("CreateOrder: %v", err)
@@ -225,7 +227,7 @@ func TestLiveSecondAttemptCanPayAnAttemptedOrder(t *testing.T) {
 	order, err := h.client.CreateOrder(ctx, razorpay.CreateOrderRequest{
 		AmountPaise: 100000,
 		Currency:    "INR",
-		Receipt:     "rcpt_live_second_attempt",
+		Receipt:     "rcpt_live_second_" + time.Now().UTC().Format("20060102150405.000000000"),
 	})
 	if err != nil {
 		t.Fatalf("CreateOrder: %v", err)
@@ -295,27 +297,86 @@ func TestLiveResendReportsAnAPICallAndNothingAboutAPerson(t *testing.T) {
 		"which is why Receipt.DeliveryConfirmed is a false constant (link %s)", link.ID)
 }
 
+// statusCounter counts response codes underneath the client's retry loop.
+//
+// Counting at the call boundary instead was a review finding on 2026-08-31:
+// the probe reported a rate limit only through ErrRetryBudgetExhausted, which
+// do returns after four attempts, so a 429 that the backoff then retried
+// successfully was counted as an ordinary answer. The instrument could report
+// zero 429s while every call had been throttled three times, which is exactly
+// the claim it exists to support.
+type statusCounter struct {
+	base http.RoundTripper
+	mu   sync.Mutex
+	seen map[int]int
+}
+
+func (t *statusCounter) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	resp, err := base.RoundTrip(req)
+	if resp != nil {
+		t.mu.Lock()
+		if t.seen == nil {
+			t.seen = make(map[int]int)
+		}
+		t.seen[resp.StatusCode]++
+		t.mu.Unlock()
+	}
+	return resp, err
+}
+
+func (t *statusCounter) count(status int) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.seen[status]
+}
+
+func (t *statusCounter) total() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	n := 0
+	for _, c := range t.seen {
+		n += c
+	}
+	return n
+}
+
 // TestLiveRateLimitObservation is PRD Q5, and it is a measurement rather than
 // an assertion. It sends a burst of the cheapest read the API has and reports
-// whether a 429 came back.
+// how many 429s came back.
 //
 // It asserts nothing about the limit, because a number from one burst on one
 // day is not a limit. What it does assert is that the client survives the
 // burst without corrupting a response, and what it produces is a log line for
 // docs/RAZORPAY-TEST-MODE-NOTES.md.
+//
+// The 429 count comes from a transport underneath the retry loop, so a
+// throttle that the backoff absorbed is still counted.
 func TestLiveRateLimitObservation(t *testing.T) {
 	if os.Getenv("RZP_RATE_LIMIT_PROBE") == "" {
 		t.Skip("set RZP_RATE_LIMIT_PROBE=1 to spend the calls this needs")
 	}
 
-	ctx := context.Background()
-	c := liveClient(t)
+	cfg := requireLive(t)
+	counter := &statusCounter{}
+	c, err := razorpay.NewClient(razorpay.ClientOptions{
+		KeyID:     cfg.RazorpayKeyID,
+		KeySecret: cfg.RazorpayKeySecret,
+		Transport: counter,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
 
+	ctx := context.Background()
 	const burst = 40
 	var (
-		notFound int
-		other    int
-		limited  int
+		notFound  int
+		other     int
+		exhausted int
 	)
 
 	start := time.Now()
@@ -325,7 +386,7 @@ func TestLiveRateLimitObservation(t *testing.T) {
 		case errors.Is(err, razorpay.ErrOrderNotFound):
 			notFound++
 		case errors.Is(err, razorpay.ErrRetryBudgetExhausted):
-			limited++
+			exhausted++
 		default:
 			other++
 			t.Logf("call %d returned %v", i, err)
@@ -333,10 +394,19 @@ func TestLiveRateLimitObservation(t *testing.T) {
 	}
 	elapsed := time.Since(start)
 
-	t.Logf("%d sequential calls in %s (%.1f/s): %d reported missing, %d exhausted the retry budget on 429, %d other",
-		burst, elapsed.Round(time.Millisecond), float64(burst)/elapsed.Seconds(), notFound, limited, other)
+	throttled := counter.count(http.StatusTooManyRequests)
+	t.Logf("%d calls in %s (%.1f calls/s, %d HTTP requests): %d reported missing, %d exhausted the retry budget, %d other. "+
+		"429 responses seen beneath the retry loop: %d",
+		burst, elapsed.Round(time.Millisecond), float64(burst)/elapsed.Seconds(),
+		counter.total(), notFound, exhausted, other, throttled)
 
-	if notFound+limited+other != burst {
-		t.Errorf("the calls do not add up: %d + %d + %d != %d", notFound, limited, other, burst)
+	if notFound+exhausted+other != burst {
+		t.Errorf("the calls do not add up: %d + %d + %d != %d", notFound, exhausted, other, burst)
+	}
+	// The counter has to have seen something, or the log line above is a
+	// measurement of nothing.
+	if counter.total() < burst {
+		t.Errorf("the transport saw %d request(s) for %d call(s), so the 429 count is not trustworthy",
+			counter.total(), burst)
 	}
 }

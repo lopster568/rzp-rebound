@@ -323,6 +323,9 @@ func readLedger(path string) ([]audit.Record, error) {
 
 	var rows []audit.Record
 	scanner := bufio.NewScanner(f)
+	// A detail value can hold an error string, so a row is not bounded by the
+	// 64KB default. Review finding, 2026-08-31.
+	scanner.Buffer(make([]byte, 0, 64<<10), 4<<20)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -350,9 +353,13 @@ func openLedger(path string) (*os.File, string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, "", fmt.Errorf("make %s: %w", filepath.Dir(path), err)
 	}
-	f, err := os.Create(path)
+	// O_EXCL rather than os.Create. A run whose ledger path already exists is
+	// a run about to destroy the evidence from an earlier one, and the default
+	// path carries a unix timestamp precisely so it never collides. Review
+	// finding, 2026-08-31.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
-		return nil, "", fmt.Errorf("create %s: %w", path, err)
+		return nil, "", fmt.Errorf("create %s (a ledger is never overwritten): %w", path, err)
 	}
 	return f, path, nil
 }
