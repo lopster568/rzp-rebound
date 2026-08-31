@@ -334,3 +334,221 @@ It used to return the receipt and a nil error, with `APICallSucceeded` false. A
 caller that checks the error first, which is most of them, read that as a
 message having gone out. Given this package exists to be careful about exactly
 that claim, the quiet version was the wrong default.
+
+# Live half, 2026-08-31
+
+## 2026-08-31: docker runs on another machine, over ssh, behind one variable
+
+The machine the live half ran on has no docker CLI at all. The build machine
+next to it has Docker 29.6.1 and Compose v5.3.0 and answers `ssh` without a
+password.
+
+`DOCKER_SSH_HOST` is the seam. Empty means the local docker CLI, which is what
+every earlier phase assumed and what a fresh clone still gets. Set to an ssh
+destination, `scripts/jaeger-up.sh` and `scripts/jaeger-down.sh` pipe the
+compose file over stdin to `docker compose -f -` on that host, and the health
+wait curls that host's published ports instead of localhost.
+`scripts/preflight.sh` checks ssh reachability and a remote daemon instead of a
+local one, so a machine with no docker stops reporting a hard failure about a
+daemon nothing was going to use.
+
+The compose file is piped rather than copied. The build machine has no checkout
+of this repository, and putting one there would mean two compose files that can
+drift, with the one under version control not necessarily the one describing
+what came up.
+
+`COMPOSE_PROJECT` is fixed to `rzp` in `scripts/lib.sh` rather than derived
+from the working directory. With the file arriving on stdin, docker would name
+the project after whatever directory the ssh session landed in, and a teardown
+that guessed a different name would find nothing to tear down.
+
+The cost is that the Jaeger UI is not on localhost, which is why
+`RZP_JAEGER_UI_URL` exists in the configuration and why `Config.TraceURL` takes
+a root rather than building one.
+
+## 2026-08-31: PRD Q1 is answered, and the answer is undocumented surface
+
+`razorpay.Attempter` drives a test-mode payment attempt through four checkout
+calls. `docs/RAZORPAY-TEST-MODE-NOTES.md` has the sequence and
+`PROBLEMS.md` has the spike.
+
+It is deliberately not a method on `Client` and deliberately not on `Port`:
+
+- `Client` is the documented server API and authenticates with the key pair
+  over HTTP Basic. The attempter's four calls take the key id alone, as a form
+  field or a query parameter, and two of them answer with HTML pages that have
+  to be parsed for a form. Putting both behind one type would tell a caller the
+  whole surface carries the same support promise.
+- `Port` is what the fake, the replay client, and the live client all satisfy.
+  Adding an attempt to it would mean the replay client had to pretend to make
+  one, and the phase 2 policy gate sits in front of actions on `Port`.
+
+The HTML parsing is regexp rather than a parser. These are two pages of a
+handful of hidden inputs each, the project has no other reason to carry an HTML
+dependency, and a page whose shape changed enough to break a regexp has changed
+enough that the sequence needs re-checking anyway.
+`ErrAttemptSequenceBroke` is the error that says so, kept distinct from a
+decode failure further down.
+
+Form actions on those pages are absolute URLs pointing at `api.razorpay.com`.
+Only their path and query are followed, resolved against the configured API
+root, so a page cannot send a run to a host it was not pointed at and a test
+server sees its own address.
+
+## 2026-08-31: the attempter has no otelhttp, and its spans are better for it
+
+`razorpay.Client` keeps its `otelhttp` transport. `razorpay.Attempter` has a
+plain one and opens its own span per step.
+
+The reason is a leak that was found in a real trace and is written up in
+`PROBLEMS.md`: `otelhttp` records `url.full`, two of the four checkout calls
+carry `key_id` as a query parameter, and the callback the last one redirects to
+carries it as a path segment. Six span attributes of one demo run held half a
+credential pair.
+
+The alternative was to keep the instrumentation and scrub afterwards. That was
+rejected because there is no clean seam for it: `otelhttp` sets the attribute
+from the request URL at span start, and every place to intervene is either a
+wrapper that has to un-rewrite what it rewrote or a span processor that would
+need the credentials passed into the telemetry package. Not giving the span the
+URL is simpler and cannot be got wrong later.
+
+What replaced it is better telemetry, not a compromise.
+`razorpay.checkout.create_payment`, `.authenticate`, `.gateway`, and `.settle`
+say which of four undocumented calls a run stopped on. `HTTP POST` did not.
+
+## 2026-08-31: PRD Q4 is settled, and the fake was corrected to match
+
+A real failed payment carries the coarse class in `error.code`
+(`BAD_REQUEST_ERROR`) and the specific reason in `error.reason`
+(`payment_failed`), with `error.source` `gateway` and `error.step`
+`payment_authorization`. Both fields are populated, which is what the
+classifier's "reason wins over code" rule assumed and can now rely on.
+
+`razorpay.Fake` used to put the reason string in both fields, because which one
+carried it was the open question. It now splits them the same way round. A fake
+that answers a settled question the wrong way teaches the wrong shape to every
+offline test built on it, and `internal/batch` seeds ground truth through that
+fake.
+
+The fake keeps the eight **documented** reason strings rather than the one
+observed string. That looks inconsistent and is not: the fake exists to give
+the classifier's six classes something to be exercised against, and a fake that
+only ever produced `payment_failed` would make every offline test assert the
+same fail-closed answer. The card table now records that the documented
+reasons are unverified, which is where a reader is told.
+
+`ErrorSourcePendingFixture` and `ErrorStepPendingFixture` are gone, replaced by
+`ErrorSourceGateway` and `ErrorStepPaymentAuthorization`. They were placeholders
+for exactly this fact.
+
+## 2026-08-31: `payment_failed` classifies as unclassified, on purpose
+
+The only failure reason Razorpay test mode was observed producing names no
+cause. Nothing in `payment_failed` says whether a balance, a disabled card, or
+a gateway hiccup stopped the charge.
+
+Three options were on the table:
+
+1. Map it to a retry class so the demo shows a retry decision with a reason
+   behind it. Rejected: that is inventing a fact, and it is the exact
+   dishonesty this project exists to avoid. A retry recommendation traceable to
+   a made-up mapping is worse than no recommendation.
+2. Map it to `NeverRetry`. Rejected: also a claim. Nothing observed says this
+   failure is permanent, and the payments that recovered on a second attempt
+   during this phase all started from this reason.
+3. Leave it out of the reasons table so it falls to the fail-closed
+   `Unclassified` default. Taken.
+
+The cost is visible and was accepted: every live demo run classifies as
+unclassified, which reads worse than a green retry decision would. It is the
+true answer for a reason string that carries no cause.
+
+What was added rather than left implicit: `payment_failed` is now listed in
+`testdata/error_codes.json` with `_meta.pending` and a `pending_reason`, and
+`TestClassifierLeavesTheObservedLiveReasonUnclassified` asserts the behaviour.
+A reader of that file finds the live reason and the reasoning, instead of a
+table of eight documented reasons and no hint that live mode produces none of
+them.
+
+The eight-entry reason table stays. It is exercised by the fake and by the
+batch seeder, and phase 2's policy work needs a spread of classes to gate.
+
+## 2026-08-31: `NotifyReceipt.Accepted` reads the response body now, and means no more than it did
+
+The resend endpoint answers `{"success":true}`. The offline half inferred
+acceptance from the 2xx because the body shape was unknown, and documented that
+as a deliberate refusal to invent a field name. The field turned out to exist,
+so it is read, with a fallback to the status code when a body carries no
+`success` at all.
+
+This makes the observation narrower, not the claim wider. A 200 whose body
+reports a refusal is now visible instead of being counted as an acceptance.
+
+What did not change, and will not: a payment link created with no contact on it
+and notification off still answered `notify_by/sms` with 200 and
+`{"success":true}`. Razorpay's response reports that an API call succeeded. It
+does not report that a message was sent, and it certainly does not report that
+a person read one. `notify.Receipt.DeliveryConfirmed` stays a false constant
+and the audit phrase stays "notification API call succeeded".
+
+## 2026-08-31: `Order.Notes` is a named type with its own decoder
+
+Razorpay sends `notes` as an object when there are notes and as an empty array
+when there are none. `PROBLEMS.md` has how that was found.
+
+A named `Notes` type with an `UnmarshalJSON` was chosen over the alternatives:
+
+- `json.RawMessage` plus a helper: pushes the problem to every call site, and
+  the call sites are the ones that would forget.
+- `map[string]any`: loses the string typing the audit trail relies on, for a
+  field whose values are strings.
+
+A non-empty array stays an error. It is not an empty map with a different
+spelling, and quietly returning an empty map would drop data that was on the
+order without anything saying so.
+
+## 2026-08-31: the demo prints what it is not evidence of, every run
+
+`make demo` ends with a paragraph saying the outcome of each payment attempt
+was chosen by the command and sent to the mock bank in one form field, and that
+no recovery rate from this layer is evidence that the agent's decision caused a
+recovery.
+
+It is printed on every run rather than kept in a document, because the run
+output is what gets pasted into a chat, a slide, or a submission, and a caveat
+that lives only in `docs/` is a caveat that travels separately from the number
+it qualifies.
+
+What the run genuinely establishes is on the line above it: the final order
+state was read back from Razorpay after the action rather than reported by the
+action. That distinction is the whole point of `Orchestrator.ProcessOrder`
+re-fetching, and it survives the fact that the attempt outcome was selected.
+
+## 2026-08-31: the `live` contract harness lives behind the build tag, with the harness registration
+
+`RZP_CONTRACT_HARNESSES` narrows the harness set, and `live` is registered from
+`internal/razorpay/live_test.go`, which carries `//go:build integration`.
+
+Registering it in `contract_test.go` and having it skip on missing credentials
+was the other option. Putting the registration behind the tag is better: a name
+that only exists behind the tag cannot be selected by accident from an untagged
+run, and `make ci` cannot reach for a credential even by mistyping a variable.
+
+`make lint` runs `go vet -tags=integration ./...` as well as the untagged vet,
+so the tagged file is still type-checked in CI. A test that only compiles on
+the one machine that runs it rots.
+
+## 2026-08-31: fixtures are captured through `cmd/rzp`, and the script scans them afterwards
+
+`scripts/capture-fixtures.sh` runs `go run ./cmd/rzp capture` and then greps
+every file it wrote for the two key prefixes and for the two configured
+credentials.
+
+The grep is not redundant with the client's redaction or with the pre-commit
+hook. The hook matches the two key prefixes, which would miss a base64 basic
+auth token, and it only sees a staged diff. The client's redaction is the real
+control and this is the check on the control, run at the moment the files are
+written rather than at the moment somebody remembers to stage them. It looks
+for the configured secret by value, which is the only way to look for a key
+secret at all: it is a bare alphanumeric string with no shape to match.

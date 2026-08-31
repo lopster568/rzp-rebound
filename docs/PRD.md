@@ -173,7 +173,7 @@ covers them today. Later components name the test that will.
 | ID | Requirement | Covering test |
 |---|---|---|
 | FR-CARDS-1 | One card table in the tree. The fake gateway and the batch seeder read the same `testdata/magic_cards.json` through this package. | No direct test. Covered through both callers, per `docs/phases/phase-0-foundations/REPORT.md`. |
-| FR-CARDS-2 | A card stays `"verified": false` until a live test-mode run observes its documented code. | Planned, phase 1 |
+| FR-CARDS-2 | A card stays `"verified": false` until a live test-mode run observes its documented code. | Met. The 2026-08-31 live walk observed none of the eight documented codes, so all eight are still `false` and each row records what came back instead. `docs/RAZORPAY-TEST-MODE-NOTES.md` has the walk. |
 | FR-CARDS-3 | Undocumented facts are exported as pending constants shaped so they cannot pass for Razorpay values (`PendingSuccessCard`, `PendingRiskBlockCode`). | `TestClassifierMapsRiskBlockToNeverRetry`, `TestFakeSuccessCardOnSecondAttemptMarksOrderPaid` |
 
 **`internal/razorpay`**
@@ -183,13 +183,13 @@ covers them today. Later components name the test that will.
 | FR-RZP-1 | A created order comes back with status `created` and a non-empty id. | `TestFakeCreateOrderReturnsCreatedStatus` |
 | FR-RZP-2 | An order created through the port is returned by `FetchOrder` with the same id, amount, and currency. | `TestPortContract_CreateOrderThenFetchOrderRoundTrips` |
 | FR-RZP-3 | A failed payment exposes the error code and its source as typed fields, so nothing downstream parses a description string. | `TestPortContract_FailedPaymentCarriesErrorCodeAndSource` |
-| FR-RZP-4 | A documented failure card produces a failed payment carrying that card's documented error code. | `TestFakeMagicCardInsufficientFundProducesFailedPaymentWithErrorCode` |
+| FR-RZP-4 | A documented failure card produces a failed payment carrying that card's documented error code. | `TestFakeMagicCardInsufficientFundProducesFailedPaymentWithErrorCode`. The code lands in `error_reason`, which is where Razorpay puts a reason (Q4). This is a property of the fake: live test mode reproduced no documented code. |
 | FR-RZP-5 | A failed attempt followed by a success-card attempt moves the order to `paid`. | `TestFakeSuccessCardOnSecondAttemptMarksOrderPaid` |
 | FR-RZP-6 | An attempt on a paid order returns `ErrOrderAlreadyPaid` instead of charging again. | `TestFakeRejectsAttemptOnAlreadyPaidOrder` |
 | FR-RZP-7 | Two fakes built with the same seed produce identical outcomes for identical call sequences. | `TestFakeIsDeterministicForSameSeed` |
-| FR-RZP-8 | The live client satisfies `Port` and passes the two contract tests with no assertion copied, as a second entry in `contractHarnesses`. | Planned, phase 1 |
-| FR-RZP-9 | Every live call emits an `otelhttp` span, backs off on 429, and never puts a credential in a span attribute or a log line. | Planned, phase 1 |
-| FR-RZP-10 | Every live call can be captured as a fixture under `testdata/recorded/` and replayed offline. | Planned, phase 1 |
+| FR-RZP-8 | The live client satisfies `Port` and passes the two contract tests with no assertion copied, as a second entry in `contractHarnesses`. | `TestPortContract_*` under the `client_httptest` harness, and under the `live` harness with `make test-integration`. |
+| FR-RZP-9 | Every live call emits an `otelhttp` span, backs off on 429, and never puts a credential in a span attribute or a log line. | `TestClientEmitsClientSpanPerRequest`, `TestClientRetriesOn429WithBackoffUpToCap`, `TestClientRedactsSecretFromErrorMessages`, `TestAttempterKeepsTheKeyIDOutOfEverySpanAttribute`. The checkout calls in `razorpay.Attempter` deliberately do not use `otelhttp` and emit named spans instead, because `url.full` on those endpoints carries the key id. |
+| FR-RZP-10 | Every live call can be captured as a fixture under `testdata/recorded/` and replayed offline. | `TestClientCapturesRawResponseBody`, `TestReplayServesRecordedFailedPaymentPayload`, `TestClassifierHandlesEveryRecordedErrorPayload`. Nine real captures were taken on 2026-08-31 by `scripts/capture-fixtures.sh`. |
 
 **`internal/classify`**
 
@@ -286,31 +286,32 @@ covers them today. Later components name the test that will.
 |---|---|---|
 | NFR-1 | A seed and a spec reproduce a batch and a gateway run exactly. | Met. `TestGeneratorIsDeterministicForSameSeed`, `TestFakeIsDeterministicForSameSeed`. |
 | NFR-2 | The full unit suite runs offline with no credentials and no docker. | Met. `make verify-phase-0` passed on 2026-08-31 with both key variables unset and the docker daemon unreachable; output is in the phase 0 report. |
-| NFR-3 | No secret in git, logs, spans, or the ledger. | Partly met. `Config.String` redacts both credentials, the pre-commit hook blocks key-shaped strings in any staged file, and `.env` is gitignored. The span and ledger halves land with phases 2 and 3. |
-| NFR-4 | Live calls run under a concurrency cap with 429 backoff. | Planned, phase 1. |
+| NFR-3 | No secret in git, logs, spans, or the ledger. | Met, and it took three fixes to get there. `Config.String` redacts both credentials, `razorpay.Client.Redact` scrubs every error and every captured body, `internal/audit` redacts both sinks, the pre-commit hook blocks key-shaped strings in any staged file, `scripts/capture-fixtures.sh` scans what it writes, and `.env` is gitignored. Phase 1 found and fixed three real leaks: two in the offline review round and one in a live Jaeger trace. `docs/phases/phase-1-live-loop/PROBLEMS.md` has all three. |
+| NFR-4 | Live calls run under a concurrency cap with 429 backoff. | Met in code, unmeasured in the field. `TestClientCapsConcurrencyAtConfiguredLimit` and `TestClientRetriesOn429WithBackoffUpToCap` cover both. No 429 was observed on 2026-08-31 at 1.4 requests per second, so the four constants remain a starting point rather than a measurement (Q5). |
 | NFR-5 | A full three-arm run finishes in under 20 minutes. | Target. Measured in phase 4, on the dev laptop, labelled as such. |
 
 ## 9. Constraints
 
 ### 9.1 What is verified and what is not, as of 2026-08-31
 
-Nothing in this project has touched a live Razorpay API. Every row below marked
-documented means read from Razorpay documentation on 2026-08-31 and written
-into `testdata/`, not observed coming back from a request.
+The phase 1 live half ran against Razorpay test mode on 2026-08-31.
+"Documented" below still means read from Razorpay documentation and written
+into `testdata/`. "Observed" means seen coming back from a request that day,
+and `docs/RAZORPAY-TEST-MODE-NOTES.md` is the full table with its own dates.
 
 | Fact | Where it lives | Status |
 |---|---|---|
-| 8 failure card numbers and their error codes | `testdata/magic_cards.json` | Documented. All eight carry `"verified": false`. Phase 1 flips the ones a live run confirms. |
-| 2 UPI VPAs, `success@razorpay` and `failure@razorpay` | `magic_cards.json`, `upi_vpas` | Documented, unverified. |
-| 10 Razorpay error codes and classes | `testdata/error_codes.json` | Documented. The classifier is total over all ten (`TestClassifierIsTotalOverKnownRazorpayErrorCodes`). |
-| The card that forces a successful authorization | `magic_cards.json`, `_meta.open_question` | Not documented. `testcards.PendingSuccessCard` stands in. |
-| The risk-block error code | `error_codes.json`, `_meta.gap` | Not documented. `testcards.PendingRiskBlockCode` stands in, and it is deliberately not shaped like a Razorpay code. |
-| `error.source` and `error.step` per failure | Not documented per card | The fake reports `ErrorSourcePendingFixture` and `ErrorStepPendingFixture`. Phase 1 captures the real values. |
-| Whether the reason string arrives in `error.code`, `error.reason`, or both | `magic_cards.json` names its column `error_code` but its values are reason strings | Unsettled. The fake fills both fields. Phase 1 settles it from a captured failure. |
-| `PaymentLink` fields and the `CreatePaymentLinkRequest` body | `internal/razorpay/port.go` doc comments | Never checked against a live response. |
-| Notification delivery | `razorpay.NotifyReceipt.Accepted` | Only the API call result is observable. Nothing in this system observes a person reading a message. |
-| Razorpay rate limits | Nothing in this repo documents any | Unknown. Phase 1 finds the ceiling by hitting it under backoff. |
-| How a second attempt is made on a failed order against the live API | `AttemptPayment` is on the fake, not on `Port` | Open. A real attempt happens in checkout. Phase 1 spike. |
+| 8 failure card numbers and their error codes | `testdata/magic_cards.json` | Documented, and all eight **contradicted** by observation. Driven live on 2026-08-31, every one produced `payment_failed` rather than its documented reason, so all eight still carry `"verified": false` with the observed value recorded next to them. |
+| 2 UPI VPAs, `success@razorpay` and `failure@razorpay` | `magic_cards.json`, `upi_vpas` | Documented, unverified, and not drivable. The UPI creation endpoint could not be reached server side on 2026-08-31. |
+| 11 Razorpay error codes and classes | `testdata/error_codes.json` | Ten documented, one observed. The classifier is total over all of them (`TestClassifierIsTotalOverKnownRazorpayErrorCodes`). The observed one, `payment_failed`, is listed under `_meta.pending`: it names no cause, so it classifies as unclassified on purpose. |
+| The card that forces a successful authorization | `magic_cards.json`, `_meta.open_question` | **There is no such card.** The outcome of a test-mode attempt is chosen at the last step of the checkout sequence, and the same card produced both a capture and a failure. `testcards.PendingSuccessCard` stays because `Table.SuccessCard` has to return something. |
+| The risk-block error code | `error_codes.json`, `_meta.gap` | Not documented and not observed. Nothing in the 2026-08-31 run produced a risk block. `testcards.PendingRiskBlockCode` stands in, and it is deliberately not shaped like a Razorpay code. |
+| `error.source` and `error.step` per failure | `internal/razorpay/port.go` | **Observed.** `gateway` and `payment_authorization`, on every failed payment in the 2026-08-31 walk. The two pending constants are gone, replaced by `ErrorSourceGateway` and `ErrorStepPaymentAuthorization`. |
+| Whether the reason string arrives in `error.code`, `error.reason`, or both | `testdata/recorded/fetch_failed_payment.json` | **Observed: both, with different content.** `error.code` carries the coarse class (`BAD_REQUEST_ERROR`) and `error.reason` carries the specific reason. The fake now splits them the same way. |
+| `PaymentLink` fields and the `CreatePaymentLinkRequest` body | `testdata/recorded/create_payment_link.json` | **Observed.** The response fields were all correct. The request body was not: the notification flags are a nested `notify` object, and the flat fields were rejected with a 400. |
+| Notification delivery | `razorpay.NotifyReceipt.Accepted` | Only the API call result is observable, and the live run made that sharper rather than softer: a payment link with no contact on it at all still had its resend answered with `{"success":true}`. Nothing in this system observes a person reading a message. |
+| Razorpay rate limits | Nothing in this repo documents any | Still unknown. No 429 came back from 40 sequential calls at 1.4 per second on 2026-08-31, nor from roughly 60 further calls that day. That rules out a limit low enough to matter at this pace and is not a measurement. |
+| How a second attempt is made on a failed order against the live API | `internal/razorpay/attempt.go` | **Answered.** Four checkout calls, no browser, implemented as `razorpay.Attempter`. It stays off `Port` because none of it is documented and none of it exists in live mode. |
 
 ### 9.2 Honesty rules
 
@@ -389,15 +390,15 @@ Detail lives in `docs/phases/README.md` and in each phase directory.
 
 Each one has a trigger that closes it. All opened 2026-08-31.
 
-| # | Question | Decision trigger |
-|---|---|---|
-| Q1 | How is a second payment attempt made on a failed order against the live API, given that a real attempt happens in checkout? | Phase 1 spike: one test-mode order driven from `created` to `paid`, with the call sequence written into `docs/phases/phase-1-live-loop/DECISIONS.md`. |
-| Q2 | What is the real Razorpay risk-block error code? | Phase 1 fixture capture. Until then `testcards.PendingRiskBlockCode` holds the slot and the fail-closed default covers an unrecognised block. |
-| Q3 | Which test card forces a successful authorization? | Phase 1 card-table run. `testcards.PendingSuccessCard` holds the slot, and the fake treats whatever `SuccessCard()` returns as the card that authorizes, so replacing the constant changes nothing else. |
-| Q4 | Does Razorpay put the reason string in `error.code`, `error.reason`, or both? | Phase 1 fixture capture of one failed payment. The fake fills both until then. |
-| Q5 | What rate limit does test mode enforce? | Phase 1 measures it: the first 429 under backoff, recorded with the request rate that produced it. |
-| Q6 | Are the four attempt budgets in `batch.MaxLegitAttemptsFor` (3, 2, 1, 0) right? They are an eval choice made without data. | Phase 2 rescores a batch against observed outcomes and either keeps the numbers or moves them with a reason. |
-| Q7 | Does `RZP_LAYER` mean the measurement layer (live, replay, fake), as this PRD and ADR-0004 use it, or the "recovery layer" its doc comment in `internal/config` names? | Phase 2, when the batch runner becomes the first code to write the value. The doc comment moves to whichever meaning the runner uses. |
+| # | Question | Decision trigger | Outcome |
+|---|---|---|---|
+| Q1 | How is a second payment attempt made on a failed order against the live API, given that a real attempt happens in checkout? | Phase 1 spike: one test-mode order driven from `created` to `paid`, with the call sequence written into `docs/phases/phase-1-live-loop/DECISIONS.md`. | **Closed 2026-08-31.** Four checkout calls, server side, no browser. `razorpay.Attempter`, and `docs/RAZORPAY-TEST-MODE-NOTES.md` has the sequence. |
+| Q2 | What is the real Razorpay risk-block error code? | Phase 1 fixture capture. Until then `testcards.PendingRiskBlockCode` holds the slot and the fail-closed default covers an unrecognised block. | **Open.** Nothing in the 2026-08-31 run produced a risk block. |
+| Q3 | Which test card forces a successful authorization? | Phase 1 card-table run. `testcards.PendingSuccessCard` holds the slot, and the fake treats whatever `SuccessCard()` returns as the card that authorizes, so replacing the constant changes nothing else. | **Closed 2026-08-31, and there is no such card.** The outcome is chosen at the last checkout call by one form field. The constant stays as a value that cannot pass for a card number. |
+| Q4 | Does Razorpay put the reason string in `error.code`, `error.reason`, or both? | Phase 1 fixture capture of one failed payment. The fake fills both until then. | **Closed 2026-08-31.** Both, with different content: the coarse class in `error.code` and the specific reason in `error.reason`. The fake now splits them the same way. |
+| Q5 | What rate limit does test mode enforce? | Phase 1 measures it: the first 429 under backoff, recorded with the request rate that produced it. | **Open.** No 429 at 1.4 requests per second over 40 sequential calls on 2026-08-31. The probe is `TestLiveRateLimitObservation`, behind `RZP_RATE_LIMIT_PROBE`. A real ramp is phase 2. |
+| Q6 | Are the four attempt budgets in `batch.MaxLegitAttemptsFor` (3, 2, 1, 0) right? They are an eval choice made without data. | Phase 2 rescores a batch against observed outcomes and either keeps the numbers or moves them with a reason. | Open, phase 2. |
+| Q7 | Does `RZP_LAYER` mean the measurement layer (live, replay, fake), as this PRD and ADR-0004 use it, or the "recovery layer" its doc comment in `internal/config` names? | Phase 2, when the batch runner becomes the first code to write the value. The doc comment moves to whichever meaning the runner uses. | Open, phase 2. |
 
 ## 14. Glossary
 

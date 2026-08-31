@@ -323,3 +323,297 @@ Unchanged from the phase 0 report, plus:
   those. Those rows get their covering tests filled in when phase 1 closes,
   which is also when the PRD freezes, and not before: half of FR-RZP-9 and all
   of FR-RZP-10 need the live half.
+
+# Phase 1 report, live half
+
+Written 2026-08-31, the same day as the offline half. The live half was pulled
+forward from its 2026-09-01 date because both blockers cleared: test-mode
+credentials landed in `.env`, and a docker daemon became reachable on another
+machine over ssh.
+
+Everything below ran against Razorpay test mode with real credentials. Nothing
+below involves live mode, real money, or a message sent to a person.
+
+## The checklist, item by item
+
+The offline report handed this half ten numbered steps. All ten ran.
+
+**0. Unblock.** Done. `.env` gained the test-mode key pair, and
+`DOCKER_SSH_HOST` moved the docker check to the build machine. `make preflight`
+reports zero hard failures and zero warnings:
+
+```
+preflight: toolchain
+  ok    go go1.25.0
+  ok    jq jq-1.7
+  ok    claude CLI at /home/oni/.local/bin/claude
+  ok    docker daemon reachable on <build machine> (Docker version 29.6.1, build 8900f1d)
+preflight: credentials (test mode)
+  ok    RAZORPAY_KEY_ID is set
+  ok    RAZORPAY_KEY_SECRET is set
+
+preflight: passed with 0 warning(s)
+```
+
+Jaeger came up on the build machine through `make jaeger-up`, and a span from
+`internal/telemetry` landed in it and was read back by trace id before any
+other work started.
+
+**1. Prove the credentials.** Done, as `rzp auth-probe` and `make auth-probe`.
+It found the first real fact of the phase immediately: the checklist expected a
+404 for an order that does not exist and test mode answers 400. `PROBLEMS.md`
+has the entry and `mapNotFound` was fixed for it.
+
+**2. Confirm the endpoint paths and the order wire shape.** Done. All six
+endpoint paths in `client.go` were correct. The `Order` json tags were correct.
+`paymentCollection` was correct. `createPaymentLinkBody` was not, and neither
+was `Order.Notes`, and both are below.
+
+**3. `scripts/capture-fixtures.sh`.** Done. Nine real fixtures in
+`testdata/recorded/`, listed further down, plus a credential scan the script
+runs over what it just wrote.
+
+**4. The PRD Q1 spike, timeboxed to 90 minutes.** Done in 6 minutes 41 seconds
+of wall clock, 19:21:57 to 19:28:38 UTC. It is the star entry in `PROBLEMS.md`
+and it produced `docs/RAZORPAY-TEST-MODE-NOTES.md`.
+
+**5. Capture one failed payment and settle PRD Q4.** Done. Q4 is settled:
+`error_code` carries the coarse class and `error_reason` carries the specific
+reason, both populated. `ErrorSourcePendingFixture` and
+`ErrorStepPendingFixture` are gone.
+
+**6. Walk the card table.** Done, all eight, one order each. Zero flipped to
+verified, which is the finding rather than an unfinished job.
+
+**7. Capture a payment link.** Done. The request body was wrong and is fixed.
+The response field set was right. The resend response turned out to carry a
+`success` field, which `NotifyReceipt.Accepted` now reads.
+
+**8. Measure the rate limit.** Attempted and unmeasured. No 429 at 1.4 requests
+per second over 40 sequential calls, and none across roughly 60 further calls
+that day. PRD Q5 stays open, and the client's four retry constants are
+unchanged.
+
+**9. The `live` contract harness.** Done. Both `TestPortContract_*` functions
+run against Razorpay test mode with no assertion copied, behind the
+`integration` build tag.
+
+**10. `make demo` and `AUDIT-TRACE-SCHEMA.md`.** Both done, and the schema
+document is written from a run rather than from the test assertions.
+
+## What shipped
+
+| Piece | What it is |
+|---|---|
+| `internal/razorpay.Attempter` | The PRD Q1 answer. Drives a test-mode payment attempt to a settled state in four checkout calls, with its own spans and no `otelhttp`. |
+| `internal/razorpay.Notes` | A named map type that decodes `notes` whether Razorpay sends an object, an empty array, or null. |
+| `APIError.Description` and `.Reason` | Parsed out of the error envelope, so `mapNotFound` can recognise the 400 that means a resource is missing. |
+| `cmd/rzp` | Three subcommands: `auth-probe`, `capture`, `demo`. The phase 0 scaffold that printed "not implemented yet" is gone. |
+| `scripts/capture-fixtures.sh` | Captures fixtures and then scans them for credentials. |
+| Remote docker in `scripts/` | `DOCKER_SSH_HOST` in `jaeger-up.sh`, `jaeger-down.sh`, `preflight.sh`, and `lib.sh`. |
+| `config.JaegerUIURL` and `TraceURL` | So a run can print a link to its own trace when the UI is on another machine. |
+| `docs/RAZORPAY-TEST-MODE-NOTES.md` | The verified and unverified table for test mode. |
+| `docs/AUDIT-TRACE-SCHEMA.md` | The span and ledger schema, from a real run. |
+
+## Test counts
+
+| | Offline half | Live half |
+|---|---|---|
+| Test functions, default build | 52 | 64 |
+| Test functions, integration tag | 0 | 5 |
+| Packages with tests | 10 | 10 |
+
+The twelve new default-build functions are 1 config, 5 attempter, 4 live wire
+shape, 1 fake, and 1 classify. Every one runs with no credential, no container,
+and no network, because a fact learned from Razorpay only keeps holding if it
+becomes an offline assertion.
+
+The five integration functions plus the two contract functions under the `live`
+harness are what spend real API calls.
+
+## Fixture inventory
+
+Nine real captures, none of them hand written, all scrubbed on the way out by
+the client's capture hook and scanned afterwards.
+
+| File | Call | Status |
+|---|---|---|
+| `create_order.json` | `POST /v1/orders` | 200 |
+| `fetch_order.json` | `GET /v1/orders/{id}` | 200 |
+| `list_payments_empty.json` | `GET /v1/orders/{id}/payments` | 200 |
+| `fetch_failed_payment.json` | `GET /v1/payments/{id}` | 200 |
+| `list_payments_after_failure.json` | `GET /v1/orders/{id}/payments` | 200 |
+| `fetch_order_after_failure.json` | `GET /v1/orders/{id}` | 200 |
+| `create_payment_link.json` | `POST /v1/payment_links` | 200 |
+| `resend_payment_link_notification.json` | `POST /v1/payment_links/{id}/notify_by/email` | 200 |
+| `fetch_missing_order.json` | `GET /v1/orders/{id}` | 400 |
+
+`synthetic_failed_payment_insufficient_fund.json` is still there, still named
+and marked synthetic, and still excluded from every measuring test.
+
+`TestClassifierHandlesEveryRecordedErrorPayload` stopped skipping. It now reads
+the real failed payment and logs the finding: the reason and code on it
+classify as unclassified, so the table is missing an entry, which is exactly
+the report it should give.
+
+The checkout responses are captured during a capture run and no file is written
+for them. Two of those pages carry the key id in a form action, and a fixture
+built from an HTML page serves nothing the replay client can use.
+
+## The spike verdict
+
+A payment attempt is fully drivable server side in Razorpay test mode, in four
+HTTP calls, with no browser. The full write-up is in `PROBLEMS.md` and the
+sequence is in `docs/RAZORPAY-TEST-MODE-NOTES.md`.
+
+The finding that matters more than the mechanism: the outcome of an attempt is
+chosen at the last call by one form field carrying `S` or `F`, and the card
+number never reaches it. All eight documented magic cards produced the
+identical failure. `error_reason` `payment_failed`, `error_code`
+`BAD_REQUEST_ERROR`, `error_source` `gateway`, `error_step`
+`payment_authorization`, with no variation.
+
+So zero cards carry `"verified": true`. Each row in
+`testdata/magic_cards.json` now records what came back instead, with the date.
+The two `upi_vpas` rows are unverified too, with the reason: the UPI creation
+endpoint could not be reached server side at all.
+
+## `make demo`
+
+```
+rzp demo, against Razorpay TEST MODE
+  gateway  live test mode
+  traces   otlp
+  ledger   results/runs/demo-1788205925.jsonl
+
+1. created  order_TWUzLYqCv75Ji3  100000 paise  status=created
+2. attempt  pay_TWUzMUNPkjt3iL  card ****0001  mock bank told: decline
+3. loop     poll, classify, act, then read the order back out of the gateway
+   -> link    plink_TWV00SXTYlbemP created
+   -> notify  notification API call succeeded (delivery_confirmed=false)
+   -> retry   pay_TWV02Lh6yabti2  mock bank told: authorize
+4. class    the failure classified as unclassified
+5. acted    retry_same_instrument
+6. outcome  order order_TWUzLYqCv75Ji3 reads paid from the gateway, recovered=true (the action claimed true)
+
+audit rows written: 4, every one carrying trace_id 84775a556f3c0aec9fcd504d00fb77b4
+   1 classified               unclassified
+   2 notification_requested   unclassified
+   3 action_taken             unclassified
+   4 outcome_observed         unclassified
+
+What this run is and is not evidence of:
+  The order state above was read back from Razorpay after the action, not
+  reported by the action. That part is real.
+  The outcome of each attempt was chosen by this command and sent to the mock
+  bank as a single form field (first attempt: decline, second attempt: authorize).
+  Test mode has no other mechanism, so no recovery rate from this layer is
+  evidence that the agent's decision was the reason a payment recovered.
+  See docs/RAZORPAY-TEST-MODE-NOTES.md and ADR-0004.
+
+trace: http://<build machine>:16686/trace/84775a556f3c0aec9fcd504d00fb77b4
+```
+
+That trace holds 30 spans under one root: the order creation, both attempts
+with their four named checkout steps each, the poll, the payment link, the
+resend, and the read-back. All four ledger rows carry that trace id, and the
+demo checks that before printing rather than printing a link the rows might not
+belong to.
+
+The class reading `unclassified` is not a defect in the run. It is the only
+honest answer to the only reason string test mode produces, and
+`DECISIONS.md` has the three options that were weighed.
+
+## Exit criteria
+
+`PLAN.md` wrote its exit criteria for the offline half only, and listed the
+live half as a scope boundary rather than a criterion list. Each of those
+boundary items is taken here as the criterion it became.
+
+**Integration tests behind a build tag, running against test mode.** Met.
+`internal/razorpay/live_test.go` carries `//go:build integration`, and
+`make test-integration` runs it.
+
+```
+--- PASS: TestPortContract_CreateOrderThenFetchOrderRoundTrips/live (0.83s)
+--- PASS: TestPortContract_FailedPaymentCarriesErrorCodeAndSource/live (8.12s)
+--- PASS: TestLiveMissingOrderIsReportedAsNotFound (0.89s)
+--- PASS: TestLiveFailedPaymentCarriesTheObservedReason (7.26s)
+--- PASS: TestLiveSecondAttemptCanPayAnAttemptedOrder (14.43s)
+--- PASS: TestLiveResendReportsAnAPICallAndNothingAboutAPerson (1.36s)
+--- SKIP: TestLiveRateLimitObservation (0.00s)
+ok  	github.com/lopster568/rzp-recovery-agent/internal/razorpay	32.891s
+```
+
+**`scripts/capture-fixtures.sh` and a run of it.** Met. Nine fixtures, zero
+credentials found by the scan.
+
+**`scripts/verify-razorpay-auth.sh` and a run of it.** Met in substance and not
+in form. It is `rzp auth-probe` and `make auth-probe` rather than a shell
+script, because the checklist asked for the probe to go through
+`razorpay.Client` and a shell script wrapping a Go program to do that is a
+wrapper with nothing in it. `scripts/capture-fixtures.sh` is a script because
+it has real work of its own after the Go run: the credential scan.
+
+**The 90-minute spike on PRD Q1.** Met, in 6 minutes 41 seconds.
+
+**Flipping any `"verified": false` in `testdata/magic_cards.json`.** Not met,
+and correctly not met. Zero cards reproduced their documented code, so zero
+were flipped. Every row records what came back instead.
+
+**`make demo` end to end.** Met, output above.
+
+**`AUDIT-TRACE-SCHEMA.md`.** Met, written from trace
+`84775a556f3c0aec9fcd504d00fb77b4` and the ledger it wrote.
+
+**`make ci` still green with no keys and no docker.** Met. The live half added
+no test that needs either.
+
+```
+check-docs: 26 file(s) clean
+```
+
+## The PRD questions
+
+| Question | State |
+|---|---|
+| Q1: how a second payment attempt is made on a failed order | **Answered.** Four checkout calls, `razorpay.Attempter`. |
+| Q2: the risk-block error code | Still open. Nothing in the run produced a risk block. `testcards.PendingRiskBlockCode` stands. |
+| Q3: the card that forces a success | **Answered, and the answer is that there is no such card.** The outcome is chosen at the last call. `PendingSuccessCard` stays, with its doc comment rewritten from an open question into a finding. |
+| Q4: whether the reason is in `error.code`, `error.reason`, or both | **Answered.** Both, with the coarse class in one and the specific reason in the other. |
+| Q5: the rate limit | Still open. No 429 was seen at the rates used, which is not a measurement. |
+
+## Still unverified
+
+- All eight magic cards and both UPI VPAs. Every row now says what came back
+  instead and on what date.
+- PRD Q2 and Q5.
+- Whether a Razorpay 5xx means the call did not happen. No 5xx was observed at
+  all across the whole day, so the conservative no-retry rule in `Client.do` is
+  untested rather than confirmed.
+- Whether the documented card reasons are producible through the hosted
+  Checkout widget. This project has not driven that widget and says nothing
+  about it.
+- The orders-list envelope. It was probed and answers with the same
+  `entity`/`count`/`items` shape as the payments collection, and it has no
+  fixture because `Client` has no method that calls it. Adding untested client
+  surface to produce a fixture would have been the wrong trade.
+
+`results/` now has runs in it for the first time, under `results/runs/`, which
+is gitignored. No number in this report is a recovery rate.
+
+## What phase 2 inherits
+
+Unchanged from the offline half, plus:
+
+- Jaeger is left **running** on the build machine, as the brief asked. `make
+  jaeger-up` and `make jaeger-down` both honour `DOCKER_SSH_HOST`.
+- `razorpay.Attempter` is the seam a batch run drives attempts through. It is
+  not on `Port` and not behind the policy gate, and `recovery.ActionFunc` is
+  still where ADR-0003's gate plugs in.
+- The classifier's eight documented reasons are exercised by the fake and by
+  nothing live. Any phase 2 scoring that mixes fake-layer and live-layer
+  numbers would be summing across ADR-0004's layers, which the ADR forbids.
+- `internal/policy` and `internal/store` are still doc comments.
+- `scripts/seed-batch.sh` still needs the `rzp seed` subcommand. `cmd/rzp` now
+  has a subcommand dispatcher for it to slot into.

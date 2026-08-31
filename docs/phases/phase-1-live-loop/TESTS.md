@@ -222,3 +222,176 @@ ok  	github.com/lopster568/rzp-recovery-agent/internal/telemetry	(cached)
 ?   	github.com/lopster568/rzp-recovery-agent/internal/testcards	[no test files]
 FAIL
 ```
+
+# Phase 1 tests, live half
+
+Written 2026-08-31, the same day as the offline half. Seven new test functions,
+taking the suite from 52 to 59.
+
+Six of the seven pin a wire shape or a behaviour that the offline half had
+guessed and that a live call corrected. They all run against `httptest` or a
+fake, so they stay in `make ci` with no credential: a fact learned from
+Razorpay becomes an offline assertion, which is the only way it keeps holding.
+
+The seventh set, in `internal/razorpay/live_test.go`, is behind the
+`integration` build tag and does spend real API calls.
+
+## internal/config
+
+| Test | Asserts |
+|---|---|
+| `TestConfigReadsJaegerUIURLAndBuildsATraceURL` | `RZP_JAEGER_UI_URL` is read, `TraceURL` joins it to a trace id without a double slash, an empty trace id produces no link at all, and an unset variable falls back to the port compose publishes. |
+
+## internal/razorpay (live wire shapes)
+
+All four run against `httptest`.
+
+| Test | Asserts |
+|---|---|
+| `TestClientTreatsMissingResourceBadRequestAsNotFound` | A 400 whose `error.description` is "The id provided does not exist" maps to `ErrOrderNotFound` and `ErrPaymentNotFound`, and a 400 for a malformed id does not. |
+| `TestClientCreatePaymentLinkSendsNestedNotifyObject` | The payment-link body carries a nested `notify` object and no flat `notify_sms` or `notify_email`. |
+| `TestClientResendReadsSuccessFieldFromResponseBody` | `Accepted` comes from the `success` field when the body has one, including when it is false, and falls back to the status code when it does not. |
+| `TestOrderDecodesNotesWhetherRazorpaySendsAnObjectOrAnEmptyArray` | An order decodes with `notes` as an object, an empty object, an empty array, or null, and a non-empty array is still an error. |
+
+## internal/razorpay (fake, corrected by a live fact)
+
+| Test | Asserts |
+|---|---|
+| `TestFakeSplitsErrorCodeAndReasonTheWayRazorpayDoes` | The fake puts the coarse class in `error_code` and the specific reason in `error_reason`, with the observed `error_source` and `error_step`. |
+
+## internal/razorpay (Attempter)
+
+Five test functions against a `checkoutBackend` that replays the observed
+five-call sequence.
+
+| Test | Asserts |
+|---|---|
+| `TestAttempterWalksTheFiveCallCheckoutSequence` | The four calls happen in order, the bank form's fields are carried forward rather than rebuilt, and the card number reaches the first call and no call after it. |
+| `TestAttempterSendsTheOutcomeTheCallerAsksFor` | The `success` field the mock bank receives is the one the caller asked for, for both values. |
+| `TestAttempterRejectsAnOutcomeItCannotDrive` | An empty or invented outcome is `ErrUnsupportedAttemptOutcome` rather than a silent default. |
+| `TestAttempterRedactsCredentialsFromItsErrors` | An error quoting a page that echoes both credentials carries neither. |
+| `TestAttempterKeepsTheKeyIDOutOfEverySpanAttribute` | No span attribute from an attempt carries the key id or the secret, and the four steps are named spans. |
+
+## internal/classify
+
+| Test | Asserts |
+|---|---|
+| `TestClassifierLeavesTheObservedLiveReasonUnclassified` | `payment_failed` classifies as unclassified and is not retry eligible, `BAD_REQUEST_ERROR` alone stays never_retry, and `testdata/error_codes.json` lists the observed reason under `_meta.pending`. |
+
+## internal/razorpay (integration tag, spends real calls)
+
+Run with `make test-integration`. Never reached by `make ci`.
+
+| Test | Asserts |
+|---|---|
+| `TestPortContract_*` under the `live` harness | The two existing contract functions, against Razorpay test mode, with no assertion copied. |
+| `TestLiveMissingOrderIsReportedAsNotFound` | A missing order comes back as `ErrOrderNotFound` against the real API. |
+| `TestLiveFailedPaymentCarriesTheObservedReason` | A real failed payment carries the four observed error fields, and the order stays at `attempted`. |
+| `TestLiveSecondAttemptCanPayAnAttemptedOrder` | A second attempt on an attempted order can move it to `paid`, read back from the gateway. |
+| `TestLiveResendReportsAnAPICallAndNothingAboutAPerson` | A payment link with no contact on it still has its resend accepted. |
+| `TestLiveRateLimitObservation` | A burst survives without corrupting a response. It measures rather than asserts, and is skipped unless `RZP_RATE_LIMIT_PROBE` is set. |
+
+## Red runs
+
+### internal/config
+
+```
+=== RUN   TestConfigReadsJaegerUIURLAndBuildsATraceURL
+    config_test.go:163: JaegerUIURL = "", want the value from RZP_JAEGER_UI_URL
+    config_test.go:171: TraceURL = "", want "http://build-machine:16686/trace/4bf92f3577b34da6a3ce929d0e0e4736"
+    config_test.go:188: JaegerUIURL with RZP_JAEGER_UI_URL unset = "", want "http://localhost:16686"
+--- FAIL: TestConfigReadsJaegerUIURLAndBuildsATraceURL (0.00s)
+```
+
+### internal/razorpay, the wire shapes and the Attempter
+
+```
+--- FAIL: TestAttempterWalksTheFiveCallCheckoutSequence (0.00s)
+    attempt_test.go:184: payment id = "", want the id the create call returned
+    attempt_test.go:190: calls = [], want [create_ajax authenticate mocksharp_payment mocksharp_submit]
+--- FAIL: TestAttempterSendsTheOutcomeTheCallerAsksFor (0.00s)
+    --- FAIL: TestAttempterSendsTheOutcomeTheCallerAsksFor/S (0.00s)
+        attempt_test.go:240: the bank was sent success="", want "S"
+    --- FAIL: TestAttempterSendsTheOutcomeTheCallerAsksFor/F (0.00s)
+        attempt_test.go:240: the bank was sent success="", want "F"
+--- FAIL: TestAttempterRedactsCredentialsFromItsErrors (0.00s)
+    attempt_test.go:285: a 500 on the first call returned no error
+--- FAIL: TestPortContract_FailedPaymentCarriesErrorCodeAndSource (0.00s)
+    --- FAIL: TestPortContract_FailedPaymentCarriesErrorCodeAndSource/fake (0.00s)
+        contract_test.go:213: a failed payment carries no error_source
+        contract_test.go:216: a failed payment carries no error_step
+    --- FAIL: TestPortContract_FailedPaymentCarriesErrorCodeAndSource/client_httptest (0.00s)
+        contract_test.go:213: a failed payment carries no error_source
+        contract_test.go:216: a failed payment carries no error_step
+--- FAIL: TestClientTreatsMissingResourceBadRequestAsNotFound (0.00s)
+    --- FAIL: TestClientTreatsMissingResourceBadRequestAsNotFound/missing_order (0.00s)
+        livewire_test.go:117: err = razorpay: GET /orders/order_AAAAAAAAAAAAAA returned 400: {...}, want it to wrap razorpay: order not found
+    --- FAIL: TestClientTreatsMissingResourceBadRequestAsNotFound/missing_payment (0.00s)
+        livewire_test.go:117: err = razorpay: GET /payments/pay_AAAAAAAAAAAAAA returned 400: {...}, want it to wrap razorpay: payment not found
+--- FAIL: TestClientCreatePaymentLinkSendsNestedNotifyObject (0.00s)
+    livewire_test.go:151: the body carries a flat notify_sms field, which test mode rejects as an extra field
+    livewire_test.go:154: the body carries a flat notify_email field, which test mode rejects as an extra field
+    livewire_test.go:158: the body has no nested notify object: map[amount:100000 currency:INR description:probe nested notify_email:false notify_sms:true reference_id:ref_nested_01]
+--- FAIL: TestClientResendReadsSuccessFieldFromResponseBody (0.00s)
+    --- FAIL: TestClientResendReadsSuccessFieldFromResponseBody/success_false (0.00s)
+        livewire_test.go:215: Accepted = true, want false for body {"success":false}
+--- FAIL: TestFakeSplitsErrorCodeAndReasonTheWayRazorpayDoes (0.00s)
+    livewire_test.go:253: error_code = "insufficient_fund", want "BAD_REQUEST_ERROR", the coarse class Razorpay returns
+FAIL
+```
+
+One qualification on that run, on the phase 0 precedent of recording a test
+that could not fail rather than quietly deleting it.
+`TestAttempterRejectsAnOutcomeItCannotDrive` passed in the red tree and should
+not have: the red `ErrUnsupportedAttemptOutcome` was a nil `error` variable, and
+`errors.Is(nil, nil)` is true, so the assertion could not fail until the
+sentinel existed. It fails correctly against an `Attempt` that accepts a bad
+outcome, which is what it is for.
+
+### internal/classify
+
+```
+=== RUN   TestClassifierLeavesTheObservedLiveReasonUnclassified
+    classify_test.go:236: payment_failed is the only failure reason live test mode produces and ../../testdata/error_codes.json does not list it
+    classify_test.go:240: payment_failed is not in _meta.pending, so the totality test will demand a class for a reason that names no cause
+--- FAIL: TestClassifierLeavesTheObservedLiveReasonUnclassified (0.00s)
+```
+
+### The notes decoder, found by the live harness rather than written from a plan
+
+`TestOrderDecodesNotesWhetherRazorpaySendsAnObjectOrAnEmptyArray` was written
+after the live contract harness failed on a real call. The harness failure came
+first:
+
+```
+    contract_test.go:159: CreateOrder: razorpay: decode POST /orders: json: cannot unmarshal array into Go struct field Order.notes of type map[string]string
+--- FAIL: TestPortContract_CreateOrderThenFetchOrderRoundTrips/live (0.43s)
+```
+
+Then the offline reproduction, which is the test that stays:
+
+```
+--- FAIL: TestOrderDecodesNotesWhetherRazorpaySendsAnObjectOrAnEmptyArray (0.05s)
+    --- FAIL: .../empty_array (0.00s)
+        livewire_test.go:313: FetchOrder with notes []: razorpay: decode GET /orders/...: json: cannot unmarshal array into Go struct field Order.notes of type map[string]string
+```
+
+### The span leak, same order of events
+
+`TestAttempterKeepsTheKeyIDOutOfEverySpanAttribute` was written after the key
+id was found in a real Jaeger trace. The offline reproduction:
+
+```
+--- FAIL: TestAttempterKeepsTheKeyIDOutOfEverySpanAttribute (0.03s)
+    attempt_test.go:363: span "HTTP POST" attribute url.full carries the key id
+    attempt_test.go:363: span "HTTP POST" attribute url.full carries the key id
+    attempt_test.go:382: no span named "razorpay.checkout.attempt". recorded: [HTTP POST]
+    attempt_test.go:382: no span named "razorpay.checkout.create_payment". recorded: [HTTP POST]
+    attempt_test.go:382: no span named "razorpay.checkout.authenticate". recorded: [HTTP POST]
+    attempt_test.go:382: no span named "razorpay.checkout.gateway". recorded: [HTTP POST]
+    attempt_test.go:382: no span named "razorpay.checkout.settle". recorded: [HTTP POST]
+```
+
+Both of those are the honest order for a bug a live call found: the live
+failure is the discovery, and the offline test is what stops it coming back
+without a credential in the loop.

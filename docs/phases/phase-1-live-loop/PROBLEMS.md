@@ -149,3 +149,250 @@ card, so nothing needed rewriting out of history, and that was checked rather
 than assumed.
 
 Cost: 70 minutes, most of it worth it.
+
+# Live half, 2026-08-31
+
+The live half ran on 2026-08-31, one day ahead of the 2026-09-01 date the plan
+gave it. Everything below happened against Razorpay test mode with real
+credentials and a Jaeger container on a remote docker host.
+
+## 2026-08-31: PRD Q1, the 90-minute spike, and what it found
+
+This is the entry the phase turns on, so it gets the length.
+
+**The question.** Nothing in this repository could make a payment attempt
+happen. `AttemptPayment` existed on `razorpay.Fake` and on neither the port nor
+the client, and both contract harnesses reached past the client into the fake
+for it, because a real attempt happens in checkout rather than over the server
+API. Without an answer, the recovery loop could be built but never driven: no
+failed payment to classify, no second attempt to make, no `make demo`.
+
+**The box.** 90 minutes of wall clock, per the brief and per ADR-0004, which
+had already said an unanswered live question costs batch size in the live table
+rather than the build. Started 19:21:57 UTC, verdict reached at 19:28:38 UTC,
+which is 6 minutes and 41 seconds. The write-up took longer than the spike.
+
+**What was tried, in the order the brief gave.**
+
+1. Server-to-server, API only. `POST /v1/payments/create/upi` under HTTP Basic
+   auth answered 400 with "The requested URL was not found on the server".
+   `POST /v1/payments/create/ajax` and `POST /v1/payments` under Basic auth both
+   answered 401. S2S is not enabled on this account and asking for it is not a
+   thing a buildathon entry can wait on.
+2. UPI `success@razorpay` server side. `POST /v1/payments/create/upi` with
+   `key_id` in the form body answered 401 with "Please provide your api key for
+   authentication purposes", and the same with `key_id` in the query string.
+   Dead end, and the two `upi_vpas` rows in the card table stay unverified.
+3. The checkout endpoints, driven directly. This worked, on the first attempt.
+   `POST /v1/payments/create/ajax` with `key_id` as a **form field** and no
+   Basic auth returned 200, a `payment_id`, and a redirect to an authenticate
+   step. Following that redirect gives an HTML page carrying a form, posting
+   that form gives the mock bank page, and posting the bank form with a
+   `success` field of `S` or `F` settles the payment.
+
+The headless-browser option and the manual-browser fallback were never needed.
+
+**The verdict.** A payment attempt is fully drivable server side in test mode,
+in four HTTP calls, with no browser and no extra dependency. `POST` to
+`/v1/payments/create/ajax`, `/v1/payments/{id}/authenticate`,
+`/v1/gateway/mocksharp/payment`, `/v1/gateway/mocksharp/payment/submit`. It is
+implemented as `razorpay.Attempter`, kept off `Port` and off `Client` because
+none of it is documented and it does not exist in live mode.
+`docs/RAZORPAY-TEST-MODE-NOTES.md` has the table.
+
+**The finding nobody wanted.** The outcome is chosen at the last call, by one
+form field with two values in it. The card number never reaches that call. All
+eight documented magic cards were walked, one order each, and every one of them
+produced the identical failure: `error_reason` `payment_failed`, `error_code`
+`BAD_REQUEST_ERROR`, `error_source` `gateway`, `error_step`
+`payment_authorization`. Not one documented reason string came back.
+
+So zero cards were flipped to verified, and that is the result rather than a
+gap in the run. The consequences are real and are not being softened:
+
+- `internal/classify` maps eight reason strings that live test mode never
+  produces. The one it does produce, `payment_failed`, names no cause, so it
+  classifies as unclassified and is not retry eligible. Every live demo run
+  therefore classifies as unclassified, which is the honest answer and looks
+  worse than a made-up mapping would.
+- No recovery rate from the live layer can be evidence that an agent's decision
+  caused a recovery, because the outcome is selected by the caller. `make demo`
+  prints exactly that, in the run output, every time.
+- The documented codes are not established as wrong. They may well come from
+  the hosted Checkout widget simulating a decline in its own front end. This
+  project has not driven that widget and says nothing about it.
+
+**Cost:** 7 minutes for the spike, about 40 minutes for the card walk, the
+notes document, and the classifier decision.
+
+## 2026-08-31: a missing resource is a 400, not a 404
+
+Symptom: the auth probe in the phase 1 checklist expected a 404 for an order id
+nobody created. Test mode answered 400.
+
+Cause: Razorpay does not use 404 for a resource that is not there. It answers
+400 with `error.description` set to "The id provided does not exist". Confirmed
+against an order id and a payment link id. A malformed id gives a different 400
+with the description "<id> is not a valid id" and `error.reason`
+`input_validation_failed`.
+
+Why it mattered: `mapNotFound` matched on the status code alone, so
+`errors.Is(err, ErrOrderNotFound)` was false for the exact case the sentinel
+exists to catch. Every missing-resource call surfaced as a bare `APIError` and
+any caller branching on the sentinel took the wrong branch.
+
+Fix: `APIError` now parses `error.description` and `error.reason` out of the
+envelope before truncating the body, and `mapNotFound` treats a 400 carrying
+that description as a missing resource. The 404 branch stays, because it costs
+nothing and a gateway that starts answering the documented way should not break
+this.
+
+Matching on a description string is fragile and the fragility is written on the
+function rather than hidden. A 400 is also what a malformed id and a rejected
+body produce, so the status cannot separate them and the description is the
+only field that does. If Razorpay reword the string, this stops recognising a
+missing resource and callers see a plain `APIError`, which fails toward
+reporting less rather than toward reporting a resource absent that is not.
+
+Cost: 15 minutes.
+
+## 2026-08-31: the payment link body was rejected outright
+
+Symptom: `POST /v1/payment_links` with the body the offline half built answered
+400 with `error.description` "extra fields sent".
+
+Cause: `createPaymentLinkBody` sent flat `notify_sms` and `notify_email`
+fields, written from the field names on `CreatePaymentLinkRequest`. Razorpay
+takes a nested `notify` object, `{"sms":bool,"email":bool}`.
+
+This is the good kind of strict. The endpoint validates unknown fields and
+refuses the call, so the guess failed loudly on the first real request instead
+of being silently ignored and leaving a payment link created with notification
+settings nobody asked for.
+
+Fix: nested object, with `TestClientCreatePaymentLinkSendsNestedNotifyObject`
+asserting no flat field survives. The `PaymentLink` response struct needed no
+change: every field it declares came back.
+
+Cost: 10 minutes.
+
+## 2026-08-31: an order with no notes did not decode at all
+
+Symptom: the `live` contract harness failed within seconds of first being run.
+
+```
+CreateOrder: razorpay: decode POST /orders: json: cannot unmarshal array into
+Go struct field Order.notes of type map[string]string
+```
+
+Cause: an order created **with** notes comes back with `notes` as a JSON
+object. An order created **without** them comes back with `notes` as an empty
+JSON array. `Order.Notes` was a `map[string]string`, so the whole response
+failed to decode.
+
+The failure shape is the worst one available: the order exists in Razorpay, the
+caller gets an error, and nothing in the caller knows the id of the thing it
+just created. A retry would create a second order.
+
+Why the fixtures did not find it: every order the capture run created was
+created with notes on it, so every captured body had an object in that field.
+A fixture set is only as good as the calls that made it, which is the argument
+for the live harness existing at all rather than being replaced by replay.
+
+Fix: `razorpay.Notes` is a named map type with its own `UnmarshalJSON` that
+accepts an object, an empty array, or null. A non-empty array is still an
+error, because it is not an empty map with a different spelling and dropping
+its contents would lose data that was on the order.
+
+Cost: 20 minutes, most of it spent being glad the harness ran before the demo
+did.
+
+## 2026-08-31: the key id was in six span attributes of a real trace
+
+Symptom: found by grepping a Jaeger trace of a working demo run for the
+configured key id, before writing `AUDIT-TRACE-SCHEMA.md` from it. It was
+there, in `url.full` on six spans.
+
+Cause: `otelhttp` records `url.full`. Two of the four checkout calls take
+`key_id` as a query parameter, because that is how the form actions on
+Razorpay's own pages are built, and the callback the last one redirects to
+carries the key id as a **path segment**. The attempter used the client's
+`otelhttp` transport, so every one of those URLs went into a span attribute and
+then into the trace backend.
+
+The existing span test did not catch it. `TestClientEmitsClientSpanPerRequest`
+asserts no credential reaches a span attribute, and it was passing, because it
+runs against `razorpay.Client`, whose documented endpoints authenticate with an
+`Authorization` header and put nothing in the URL. The attempter was new
+surface and nothing was asking this question of it.
+
+Two fixes were considered and one was rejected:
+
+- Rejected: move `key_id` out of the query into the form body. It works for the
+  two `mocksharp` calls, verified live, but the settle call answers 302 and the
+  payment only settles once the callback is followed, and that callback URL is
+  Razorpay's own with the key id in its path. The credential cannot be kept out
+  of the URL, only out of the span.
+- Taken: `Attempter` does not use `otelhttp`. It has a plain transport and
+  opens its own span per step with attributes it chose, and a URL is not one of
+  them.
+
+Nothing was lost by this. `razorpay.checkout.settle` says more about where a
+run is than `HTTP POST` ever did, and the trace of a demo run went from ten
+identical `HTTP POST` entries to five named ones.
+
+`TestAttempterKeepsTheKeyIDOutOfEverySpanAttribute` reproduces the leak offline
+against a backend whose pages carry the key id in their form actions exactly as
+the real ones do, and it fails against the old arrangement. The fix was then
+confirmed against a real trace: the key id and the secret are both absent from
+trace `84775a556f3c0aec9fcd504d00fb77b4`.
+
+This is the third credential leak this phase has found in code whose tests were
+green, after the two in the offline review round. All three were in a path
+nothing was asking the question of. The pattern is worth stating plainly: the
+redaction tests keep passing because they test the surface that was already
+thought about.
+
+Cost: 35 minutes.
+
+## 2026-08-31: the first fixture capture wrote a directory that could not load
+
+Symptom: `LoadFixtures` refused the directory the first capture run produced.
+
+```
+razorpay: two fixtures answer GET /v1/orders/order_TWUltnSDVIxdYd, and
+fetch_order_after_failure.json is the second
+```
+
+Cause: the fixture map is keyed on method and path, and the capture sequence
+read one order's state twice, before and after the attempt. Same path, two
+different bodies. The same happened to the payments collection, empty before
+and populated after.
+
+The guard was right and the capture was wrong. Two responses to the same call
+cannot both be the answer a replay client gives.
+
+Fix: the capture uses two orders. An untouched one gives the before-state
+captures, and a second one is driven to a failed payment for the after-state
+captures. `POST /v1/orders` is captured once, from the first, because that path
+has the same collision.
+
+Cost: 15 minutes. Worth noting that the duplicate guard was written in the
+offline half on general principle and paid for itself on its first contact with
+real data.
+
+## 2026-08-31: no rate limit was found, so none is claimed
+
+40 sequential `FetchOrder` calls in 29.067 seconds, a rate of 1.4 per second,
+produced zero 429 responses. Roughly 60 more calls across the spike, the card
+walk, the captures, and the demo runs produced none either.
+
+That is not a rate limit measurement and PRD Q5 stays open. What it rules out
+is a limit low enough to matter at the pace this project currently works at.
+`DefaultMaxAttempts`, `DefaultBaseBackoff`, `DefaultMaxBackoff`, and
+`DefaultMaxConcurrent` in `client.go` are unchanged and are still a starting
+point rather than a measurement, which is what their comment says.
+
+`TestLiveRateLimitObservation` is the probe, behind both the integration build
+tag and an `RZP_RATE_LIMIT_PROBE` variable, because a real ramp spends real
+calls and nobody should trip one by running the suite.
