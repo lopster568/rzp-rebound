@@ -27,7 +27,7 @@ harness over the same batches. The output is a four-arm table per layer:
 
 ## Test counts
 
-23 new Go test functions and 21 new Python test methods, 44 in all. `TESTS.md`
+24 new Go test functions and 21 new Python test methods, 45 in all. `TESTS.md`
 named 20 and 12 before any of them existed, and records each addition with the
 defect that produced it.
 
@@ -35,6 +35,7 @@ defect that produced it.
 |---|---|
 | `internal/mcpserver` | 18, of which 5 are the containment layer ADR-0003 names |
 | `cmd/rzp-mcp` | 5, all driving the compiled binary or its helpers |
+| `internal/telemetry` | 1, from a phase 0 requirement this phase found was false |
 | `harness/` | 21, across `test_claude_runner.py`, `test_arm_config.py`, `test_agent_runner.py`, and two added to `test_aggregate.py` |
 
 The red run is in `TESTS.md`. All 20 Go tests that existed at the red commit
@@ -178,11 +179,16 @@ green suite.
 4. **Every audit row from the agent arm had an empty trace id**, because the
    CLI strips `OTEL_*` from the server's environment. FR-AUD-3 silently not
    met, with nothing failing.
+5. **`OTEL_SERVICE_NAME` beat the configured service name**, so FR-TEL-2 had
+   been false since phase 0. Nothing caught it because nothing here had ever
+   set the variable, and the first thing that did was this phase's own gate.
+   The failure looked like the harness breaking a phase 0 test rather than a
+   test finding a bug.
 
 ## Budget
 
-61 headless invocations for the night against a cap of about 60, and the one
-over is disclosed rather than rounded away.
+62 headless invocations for the night against a cap of about 60, and the two
+over are disclosed rather than rounded away.
 
 | What | Invocations |
 |---|---|
@@ -192,12 +198,15 @@ over is disclosed rather than rounded away.
 | Fake layer, n=40 | 40 |
 | Live layer, first attempt, lost to correction 2 | 8 |
 | Live layer, re-run on the fixed binary | 8 |
-| `make verify-phase-3` | 1 |
+| `make verify-phase-3`, run twice, capped at 1 each | 2 |
 
 The eight that correction 2 cost are why the number is over. They are counted
-here rather than written off as a failed attempt, because they were spent. No
-batch size was reduced: the preferred plan in `PLAN.md`, fake n=40 plus live
-n=8, ran in full.
+here rather than written off as a failed attempt, because they were spent. The
+gate ran twice because its first attempt failed before reaching the agent, on
+the telemetry bug in correction 5 below, and spent nothing.
+
+No batch size was reduced. The preferred plan in `PLAN.md`, fake n=40 plus live
+n=8, ran in full, and the stratified fallback was not needed.
 
 ## Still not done
 
