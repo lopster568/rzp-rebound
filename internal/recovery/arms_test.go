@@ -281,16 +281,20 @@ func TestNaiveArmStopsAtItsOwnAttemptCap(t *testing.T) {
 	}
 
 	order := r.seed(100000, "payment_timed_out")
-	for i := range 5 {
+	for range 5 {
 		r.clock.Advance(time.Hour)
 		r.run(a, order)
-		_ = i
 	}
 
-	// One seeded failure plus the cap. An arm with no bound would have added
-	// five.
-	if got := r.payments(order.OrderID); got != 1+2 {
-		t.Errorf("the gateway holds %d payments, want 3 (1 seeded, cap 2)", got)
+	// The cap counts every attempt on the order, including the seeded failure
+	// that put it in the batch, which is the same thing R1 counts. Two arms
+	// whose caps counted different things would not be comparable, and the
+	// three-arm table is a comparison. So a cap of 2 on an order arriving with
+	// one attempt leaves room for one retry.
+	//
+	// An arm with no bound at all would have added five.
+	if got := r.payments(order.OrderID); got != 2 {
+		t.Errorf("the gateway holds %d payments, want 2 (1 seeded plus 1 retry under a cap of 2)", got)
 	}
 }
 

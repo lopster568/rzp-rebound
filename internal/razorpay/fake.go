@@ -42,6 +42,11 @@ type Fake struct {
 	paymentsByOrder map[string][]string
 	payments        map[string]*Payment
 	links           map[string]*PaymentLink
+	// recoversAfter is the gateway's own answer to whether an order's cause
+	// has cleared: an attempt made once the order already carries this many
+	// attempts authorizes, whatever card is presented. SeedRecoversAfter
+	// writes it and nothing reads it but AttemptPayment.
+	recoversAfter map[string]int
 }
 
 var _ Port = (*Fake)(nil)
@@ -70,6 +75,7 @@ func NewFake(opts FakeOptions) (*Fake, error) {
 		paymentsByOrder: make(map[string][]string),
 		payments:        make(map[string]*Payment),
 		links:           make(map[string]*PaymentLink),
+		recoversAfter:   make(map[string]int),
 	}, nil
 }
 
@@ -225,7 +231,19 @@ func (f *Fake) AttemptPayment(_ context.Context, orderID, cardNumber string) (Pa
 		return Payment{}, fmt.Errorf("%w: %s", ErrOrderAlreadyPaid, orderID)
 	}
 
-	success := cardNumber == f.cards.SuccessCard()
+	// The gateway's own knowledge of whether the cause has cleared, set by
+	// SeedRecoversAfter, is consulted before the card is. It has to be: the
+	// card table maps a number to a failure, so a card-only fake can never
+	// model an order recovering on a repeat of the same instrument, which is
+	// the entire behaviour internal/recovery exists to exercise.
+	//
+	// It wins over the card rather than the other way round, because a
+	// documented failure card is what every recoverable order in a batch is
+	// seeded with. Checking the card first would mean the schedule never
+	// fired.
+	recovers, scheduled := f.recoversAfter[orderID]
+	success := cardNumber == f.cards.SuccessCard() || (scheduled && order.Attempts >= recovers)
+
 	card, documented := f.cards.FailureFor(cardNumber)
 	if !success && !documented {
 		return Payment{}, fmt.Errorf("%w: %s", ErrUnknownCard, cardNumber)
@@ -286,7 +304,39 @@ func (f *Fake) AttemptPayment(_ context.Context, orderID, cardNumber string) (Pa
 //
 // The order moves to attempted, exactly as a real failed attempt leaves it.
 func (f *Fake) SeedFailedPayment(_ context.Context, orderID, reason string) (Payment, error) {
-	return Payment{}, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	order, ok := f.orders[orderID]
+	if !ok {
+		return Payment{}, fmt.Errorf("%w: %s", ErrOrderNotFound, orderID)
+	}
+	if order.Status == OrderStatusPaid {
+		return Payment{}, fmt.Errorf("%w: %s", ErrOrderAlreadyPaid, orderID)
+	}
+	if reason == "" {
+		return Payment{}, fmt.Errorf("razorpay: a seeded failure needs an error reason, or nothing downstream can classify it")
+	}
+
+	payment := &Payment{
+		ID:               f.newID("pay_"),
+		OrderID:          orderID,
+		AmountPaise:      order.AmountPaise,
+		Currency:         order.Currency,
+		Method:           "card",
+		CreatedAt:        f.clock.Now().Unix(),
+		Status:           PaymentStatusFailed,
+		ErrorCode:        ErrorClassBadRequest,
+		ErrorReason:      reason,
+		ErrorSource:      ErrorSourceGateway,
+		ErrorStep:        ErrorStepPaymentAuthorization,
+		ErrorDescription: "seeded by the fake gateway",
+	}
+	order.Status = OrderStatusAttempted
+	order.Attempts++
+	f.payments[payment.ID] = payment
+	f.paymentsByOrder[orderID] = append(f.paymentsByOrder[orderID], payment.ID)
+	return *payment, nil
 }
 
 // SeedRecoversAfter tells the fake that an attempt on orderID, made once the
@@ -299,4 +349,8 @@ func (f *Fake) SeedFailedPayment(_ context.Context, orderID, reason string) (Pay
 // something has to stand in for the cause having cleared. Putting it on the
 // gateway is what lets an arm retry the same instrument and find out, instead
 // of being told.
-func (f *Fake) SeedRecoversAfter(orderID string, priorAttempts int) {}
+func (f *Fake) SeedRecoversAfter(orderID string, priorAttempts int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recoversAfter[orderID] = priorAttempts
+}

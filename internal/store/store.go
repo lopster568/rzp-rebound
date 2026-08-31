@@ -22,7 +22,9 @@ type OrderState struct {
 	// It is deliberately not primed from the gateway. R2 governs the interval
 	// between the agent's own actions, and the failure that put the order in
 	// the batch was not one of them. Priming it would refuse the first action
-	// of every run against a freshly seeded batch.
+	// of every run against a freshly seeded batch, which would make the
+	// cooldown rule look like it was working when what it was doing was
+	// refusing the whole experiment.
 	LastActionAt time.Time
 	// LastNotifyAt is when this run last sent a notification on the order.
 	LastNotifyAt time.Time
@@ -33,8 +35,11 @@ type OrderState struct {
 // already committed.
 //
 // It is in memory and it lives for one run. FR-STORE-1 and FR-STORE-2 ask for
-// state that survives a restart, and the phase 2 report records that this is
-// the in-memory half.
+// state that survives a restart; this is the in-memory half, and the phase 2
+// report says so rather than letting a green suite imply the durable one.
+//
+// Safe for concurrent use, because the batch runner drives orders under a
+// concurrency cap.
 type Store struct {
 	mu      sync.Mutex
 	clock   clock.Clock
@@ -44,7 +49,27 @@ type Store struct {
 }
 
 // New returns a Store. A nil clock means the wall clock.
-func New(c clock.Clock) *Store { return &Store{} }
+func New(c clock.Clock) *Store {
+	if c == nil {
+		c = clock.Real()
+	}
+	return &Store{
+		clock:  c,
+		orders: make(map[string]*OrderState),
+		keys:   make(map[string]bool),
+	}
+}
+
+// order returns the state for an order, creating it. The caller holds the
+// lock.
+func (s *Store) order(orderID string) *OrderState {
+	if st, ok := s.orders[orderID]; ok {
+		return st
+	}
+	st := &OrderState{OrderID: orderID}
+	s.orders[orderID] = st
+	return st
+}
 
 // Observe primes an order's attempt count from what the gateway reported.
 //
@@ -52,11 +77,35 @@ func New(c clock.Clock) *Store { return &Store{} }
 // manifest. An order's history is gateway state, and reading it from the
 // answer key would make the attempt cap a fact about the batch file rather
 // than about the world.
-func (s *Store) Observe(orderID string, attemptsSeen int) {}
+//
+// It raises the count and never lowers it. A later poll that saw fewer
+// payments than an earlier one is a gateway that lost something, and the
+// conservative reading of a disagreement about how many attempts an order has
+// had is the larger number.
+func (s *Store) Observe(orderID string, attemptsSeen int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	st := s.order(orderID)
+	if attemptsSeen > st.Attempts {
+		st.Attempts = attemptsSeen
+	}
+}
 
 // Snapshot builds the policy input for one proposed action.
 func (s *Store) Snapshot(orderID, idempotencyKey string, killSwitchEngaged bool) policy.State {
-	return policy.State{}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	st := s.order(orderID)
+	return policy.State{
+		AttemptsMade:       st.Attempts,
+		LastActionAt:       st.LastActionAt,
+		LastNotifyAt:       st.LastNotifyAt,
+		ActionsThisRun:     s.actions,
+		KillSwitchEngaged:  killSwitchEngaged,
+		IdempotencyKeySeen: s.keys[idempotencyKey],
+	}
 }
 
 // Commit records that an action was taken. It returns true when the key had
@@ -64,19 +113,71 @@ func (s *Store) Snapshot(orderID, idempotencyKey string, killSwitchEngaged bool)
 // attempts, not the run's action count, not either timestamp.
 //
 // This is the store half of R9. The policy half refuses the replay; this half
-// makes sure that a replay which somehow got past the policy still cannot
-// double-count.
-func (s *Store) Commit(orderID, idempotencyKey, action string) bool { return false }
+// makes sure a replay that somehow got past the policy still cannot
+// double-count. Two halves because they fail differently: the policy can be
+// handed a stale snapshot, and this one cannot be.
+//
+// An empty key commits without deduplication. A caller that did not compute
+// one gets the counter moved, because the alternative is that every action
+// with no key looks like a replay of every other one.
+func (s *Store) Commit(orderID, idempotencyKey, action string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if idempotencyKey != "" {
+		if s.keys[idempotencyKey] {
+			return true
+		}
+		s.keys[idempotencyKey] = true
+	}
+
+	now := s.clock.Now()
+	st := s.order(orderID)
+	st.LastActionAt = now
+	s.actions++
+
+	if policy.IsNotifyAction(action) {
+		st.Notifications++
+		st.LastNotifyAt = now
+		return false
+	}
+
+	// Anything that is not a notification put a payment on the order.
+	st.Attempts++
+	return false
+}
 
 // Attempts returns an order's attempt count.
-func (s *Store) Attempts(orderID string) int { return 0 }
+func (s *Store) Attempts(orderID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st, ok := s.orders[orderID]; ok {
+		return st.Attempts
+	}
+	return 0
+}
 
 // Order returns a copy of an order's state. A never-seen order comes back
 // zero-valued with its id filled in.
-func (s *Store) Order(orderID string) OrderState { return OrderState{} }
+func (s *Store) Order(orderID string) OrderState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st, ok := s.orders[orderID]; ok {
+		return *st
+	}
+	return OrderState{OrderID: orderID}
+}
 
 // ActionsThisRun returns the run-wide action count, which is what R5 reads.
-func (s *Store) ActionsThisRun() int { return 0 }
+func (s *Store) ActionsThisRun() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.actions
+}
 
 // Keys returns how many distinct idempotency keys have been committed.
-func (s *Store) Keys() int { return 0 }
+func (s *Store) Keys() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.keys)
+}

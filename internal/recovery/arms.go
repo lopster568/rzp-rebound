@@ -3,6 +3,8 @@ package recovery
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/audit"
 	"github.com/lopster568/rzp-recovery-agent/internal/batch"
@@ -81,11 +83,16 @@ type FakeAttempter struct {
 }
 
 // NewFakeAttempter returns a FakeAttempter.
-func NewFakeAttempter(f *razorpay.Fake) *FakeAttempter { return &FakeAttempter{} }
+func NewFakeAttempter(f *razorpay.Fake) *FakeAttempter { return &FakeAttempter{fake: f} }
 
-// Attempt makes one attempt on the fake gateway.
+// Attempt makes one attempt on the fake gateway. Whether it authorizes is the
+// fake's decision, taken from the recovery schedule the materialiser seeded.
 func (a *FakeAttempter) Attempt(ctx context.Context, order batch.AgentVisibleOrder, card string) (AttemptRecord, error) {
-	return AttemptRecord{}, nil
+	payment, err := a.fake.AttemptPayment(ctx, order.OrderID, card)
+	if err != nil {
+		return AttemptRecord{Card: card}, err
+	}
+	return AttemptRecord{PaymentID: payment.ID, Card: card}, nil
 }
 
 // LiveAttempter drives an attempt against Razorpay test mode through the
@@ -100,19 +107,36 @@ func (a *FakeAttempter) Attempt(ctx context.Context, order batch.AgentVisibleOrd
 type LiveAttempter struct {
 	attempter *razorpay.Attempter
 	outcomes  map[string]string
-	fallback  string
 }
 
 // NewLiveAttempter returns a LiveAttempter. An order with no entry in outcomes
 // settles as a failure, because a materialiser that forgot an order should not
 // be silently recovering it.
 func NewLiveAttempter(a *razorpay.Attempter, outcomes map[string]string) *LiveAttempter {
-	return &LiveAttempter{}
+	copied := make(map[string]string, len(outcomes))
+	for k, v := range outcomes {
+		copied[k] = v
+	}
+	return &LiveAttempter{attempter: a, outcomes: copied}
 }
 
 // Attempt makes one attempt through the checkout sequence.
 func (a *LiveAttempter) Attempt(ctx context.Context, order batch.AgentVisibleOrder, card string) (AttemptRecord, error) {
-	return AttemptRecord{}, nil
+	outcome := razorpay.AttemptFail
+	if v, ok := a.outcomes[order.OrderID]; ok {
+		outcome = v
+	}
+
+	got, err := a.attempter.Attempt(ctx, razorpay.AttemptRequest{
+		OrderID:     order.OrderID,
+		AmountPaise: order.AmountPaise,
+		CardNumber:  card,
+		Outcome:     outcome,
+	})
+	if err != nil {
+		return AttemptRecord{PaymentID: got.PaymentID, Card: card}, err
+	}
+	return AttemptRecord{PaymentID: got.PaymentID, Card: card}, nil
 }
 
 // Surface is the one set of hands every arm drives.
@@ -165,18 +189,266 @@ type Arm struct {
 }
 
 // ArmIDs returns the three arm ids, in report order.
-func ArmIDs() []string { return nil }
+func ArmIDs() []string { return []string{ArmControl, ArmNaive, ArmRules} }
 
 // NewArm returns the arm with the given id.
-func NewArm(id string, opts ArmOptions) (*Arm, error) { return &Arm{}, nil }
+func NewArm(id string, opts ArmOptions) (*Arm, error) {
+	switch id {
+	case ArmControl, ArmNaive, ArmRules:
+	default:
+		return nil, fmt.Errorf("%w: %q, want one of %v", ErrUnknownArm, id, ArmIDs())
+	}
+	if opts.Surface == nil {
+		return nil, ErrNoSurface
+	}
+	if opts.Store == nil {
+		return nil, ErrNoStore
+	}
+	if id == ArmRules && opts.Policy == nil {
+		return nil, ErrNoPolicy
+	}
+
+	a := &Arm{
+		id:       id,
+		surface:  opts.Surface,
+		store:    opts.Store,
+		policy:   opts.Policy,
+		naiveMax: opts.NaiveMaxAttempts,
+		kill:     opts.KillSwitchEngaged,
+	}
+	if a.naiveMax <= 0 {
+		a.naiveMax = DefaultNaiveMaxAttempts
+	}
+	return a, nil
+}
 
 // ID returns the arm's id.
-func (a *Arm) ID() string { return "" }
+func (a *Arm) ID() string { return a.id }
 
 // Act is the ActionFunc. It runs one action on one order and returns what it
 // did, including when what it did was refuse.
 func (a *Arm) Act(ctx context.Context, order batch.AgentVisibleOrder, class classify.Class) (ActionResult, error) {
-	return ActionResult{}, nil
+	switch a.id {
+	case ArmControl:
+		return a.control(order)
+	case ArmNaive:
+		return a.naive(ctx, order)
+	default:
+		return a.rules(ctx, order, class)
+	}
+}
+
+// control takes no action. It does not consult the class either, so the
+// control row in the report is the floor and nothing else.
+func (a *Arm) control(order batch.AgentVisibleOrder) (ActionResult, error) {
+	return ActionResult{
+		Kind: ActionNone,
+		Detail: map[string]string{
+			DetailArm:             a.id,
+			DetailSideEffect:      "false",
+			DetailPolicyConsulted: "false",
+		},
+	}, nil
+}
+
+// naive retries every failure up to its own cap, with no classification and no
+// policy.
+//
+// It writes no policy verdict onto its action, and that absence is the point:
+// policy_violations_succeeded counts action rows that reached a side effect
+// with nothing behind them, and this is the arm that produces them.
+func (a *Arm) naive(ctx context.Context, order batch.AgentVisibleOrder) (ActionResult, error) {
+	result := ActionResult{
+		Kind: ActionRetrySameInstrument,
+		Detail: map[string]string{
+			DetailArm:             a.id,
+			DetailPolicyConsulted: "false",
+			DetailSideEffect:      "false",
+		},
+	}
+
+	attempts := a.store.Attempts(order.OrderID)
+	if attempts >= a.naiveMax {
+		result.Kind = ActionNone
+		result.Detail["stopped_at_arm_cap"] = strconv.Itoa(a.naiveMax)
+		return result, nil
+	}
+
+	result.Detail[DetailAttemptNo] = strconv.Itoa(attempts + 1)
+	record, err := a.surface.Attempter.Attempt(ctx, order, a.surface.Card)
+
+	// The side effect is recorded whether or not the call came back clean. A
+	// request that reached the gateway and then failed to decode is a request
+	// that was made, and an ungated action that errored is still an ungated
+	// action.
+	result.SideEffect = true
+	result.Detail[DetailSideEffect] = "true"
+	if record.PaymentID != "" {
+		result.Detail[DetailPaymentID] = record.PaymentID
+	}
+	a.store.Commit(order.OrderID, "", ActionRetrySameInstrument)
+
+	if err != nil {
+		result.Detail["action_error"] = err.Error()
+		return result, err
+	}
+	result.ClaimedRecovered = true
+	return result, nil
+}
+
+// rules classifies, asks the policy, and then acts or escalates.
+func (a *Arm) rules(ctx context.Context, order batch.AgentVisibleOrder, class classify.Class) (ActionResult, error) {
+	action := ActionForClass(class)
+	attempts := a.store.Attempts(order.OrderID)
+	attemptNo := attempts + 1
+
+	key := policy.IdempotencyKey(order.OrderID, action, attemptNo)
+	state := a.store.Snapshot(order.OrderID, key, a.kill)
+	decision := a.policy.Evaluate(state, policy.Request{
+		OrderID:     order.OrderID,
+		Action:      action,
+		Class:       class,
+		AmountPaise: order.AmountPaise,
+		AttemptNo:   attemptNo,
+	})
+
+	result := ActionResult{
+		Kind:          action,
+		PolicyVerdict: string(decision.Verdict),
+		PolicyRule:    decision.RuleID,
+		Detail: map[string]string{
+			DetailArm:              a.id,
+			DetailPolicyConsulted:  "true",
+			DetailSideEffect:       "false",
+			DetailIdempotencyKey:   decision.IdempotencyKey,
+			DetailIdempotentReplay: strconv.FormatBool(decision.IdempotentReplay),
+			DetailAttemptNo:        strconv.Itoa(attemptNo),
+			"policy_reason":        decision.Reason,
+			"attempts_remaining":   strconv.Itoa(decision.Remaining),
+		},
+	}
+
+	// The evaluation is on the record before anything acts on it. A refusal
+	// that leaves no row is what makes a containment count unprovable, so the
+	// row goes down on every branch including the ones that do nothing.
+	if _, err := a.surface.Recorder.Record(ctx, audit.Event{
+		OrderID:        order.OrderID,
+		Kind:           audit.KindPolicyEvaluated,
+		Class:          class.String(),
+		ProposedAction: action,
+		PolicyVerdict:  string(decision.Verdict),
+		PolicyRule:     decision.RuleID,
+		Detail: map[string]string{
+			DetailArm:              a.id,
+			DetailIdempotencyKey:   decision.IdempotencyKey,
+			DetailIdempotentReplay: strconv.FormatBool(decision.IdempotentReplay),
+			DetailAttemptNo:        strconv.Itoa(attemptNo),
+			"policy_reason":        decision.Reason,
+		},
+	}); err != nil {
+		return result, err
+	}
+
+	if !decision.Allowed() {
+		result.Kind = ActionNone
+		result.Escalated = decision.Verdict == policy.VerdictEscalate
+		result.Detail[DetailEscalated] = strconv.FormatBool(result.Escalated)
+		result.Detail["refused_action"] = action
+		return result, nil
+	}
+
+	// Allowed. From here on there is a side effect, and the verdict that let
+	// it through is already on the result and already in the ledger.
+	switch action {
+	case ActionRetrySameInstrument:
+		return a.retry(ctx, order, result, decision)
+	case ActionRequestReauth, ActionRequestNewInstrument:
+		return a.requestFromCustomer(ctx, order, class, result, decision)
+	default:
+		// ActionForClass returned none for a class the policy allowed, which
+		// only happens if the two tables disagree. Refusing to act is the
+		// conservative reading.
+		result.Kind = ActionNone
+		result.Detail["no_action_for_class"] = class.String()
+		return result, nil
+	}
+}
+
+// retry re-presents the instrument.
+func (a *Arm) retry(ctx context.Context, order batch.AgentVisibleOrder, result ActionResult, decision policy.Decision) (ActionResult, error) {
+	record, err := a.surface.Attempter.Attempt(ctx, order, a.surface.Card)
+	result.SideEffect = true
+	result.Detail[DetailSideEffect] = "true"
+	if record.PaymentID != "" {
+		result.Detail[DetailPaymentID] = record.PaymentID
+	}
+	a.store.Commit(order.OrderID, decision.IdempotencyKey, ActionRetrySameInstrument)
+
+	if err != nil {
+		result.Detail["action_error"] = err.Error()
+		return result, err
+	}
+	result.ClaimedRecovered = true
+	return result, nil
+}
+
+// requestFromCustomer raises a payment link and asks Razorpay to send it.
+//
+// What is recorded is that the notification API call succeeded. Nothing here
+// or downstream claims a person received or read anything, and
+// notify.Receipt.DeliveryConfirmed is false on every path.
+func (a *Arm) requestFromCustomer(ctx context.Context, order batch.AgentVisibleOrder, class classify.Class, result ActionResult, decision policy.Decision) (ActionResult, error) {
+	currency := a.surface.Currency
+	if currency == "" {
+		currency = "INR"
+	}
+
+	link, err := a.surface.Port.CreatePaymentLink(ctx, razorpay.CreatePaymentLinkRequest{
+		AmountPaise: order.AmountPaise,
+		Currency:    currency,
+		Description: "recovery for " + order.OrderID,
+		ReferenceID: order.Receipt,
+	})
+	result.SideEffect = true
+	result.Detail[DetailSideEffect] = "true"
+	a.store.Commit(order.OrderID, decision.IdempotencyKey, result.Kind)
+	if err != nil {
+		result.Detail["action_error"] = err.Error()
+		return result, err
+	}
+	result.Detail[DetailPaymentLinkID] = link.ID
+
+	receipt, sendErr := a.surface.Notifier.SendPaymentLink(ctx, link.ID, razorpay.MediumEmail)
+	result.Detail[DetailNotifyPhrase] = receipt.AuditPhrase
+	result.Detail["notification_delivery_confirmed"] = strconv.FormatBool(receipt.DeliveryConfirmed)
+
+	if _, err := a.surface.Recorder.Record(ctx, audit.Event{
+		OrderID:        order.OrderID,
+		Kind:           audit.KindNotificationRequested,
+		Class:          class.String(),
+		ProposedAction: result.Kind,
+		PolicyVerdict:  result.PolicyVerdict,
+		PolicyRule:     result.PolicyRule,
+		Detail: map[string]string{
+			DetailArm:            a.id,
+			DetailPaymentLinkID:  link.ID,
+			"medium":             razorpay.MediumEmail,
+			"audit_phrase":       receipt.AuditPhrase,
+			"api_call_succeeded": strconv.FormatBool(receipt.APICallSucceeded),
+			"delivery_confirmed": strconv.FormatBool(receipt.DeliveryConfirmed),
+		},
+	}); err != nil {
+		return result, err
+	}
+
+	if sendErr != nil {
+		result.Detail["action_error"] = sendErr.Error()
+		return result, sendErr
+	}
+
+	// ClaimedRecovered stays false. A payment link that was sent is not a
+	// payment, and this project does not observe a person coming back.
+	return result, nil
 }
 
 // ActionForClass is the arm's own class-to-action table.
@@ -187,4 +459,20 @@ func (a *Arm) Act(ctx context.Context, order batch.AgentVisibleOrder, class clas
 // the arm was graded against itself. They agree today; when a later phase
 // changes what an arm does about a class, only this one moves, and the score
 // moves with it.
-func ActionForClass(c classify.Class) string { return "" }
+func ActionForClass(c classify.Class) string {
+	switch c {
+	case classify.TransientRetryEligible, classify.RetryEligible:
+		return ActionRetrySameInstrument
+	case classify.ReauthRequired:
+		return ActionRequestReauth
+	case classify.NewInstrumentRequired:
+		return ActionRequestNewInstrument
+	default:
+		return ActionDoNothing
+	}
+}
+
+// ActionDoNothing is what ActionForClass returns for a class no action suits.
+// It is batch.ActionDoNothing's string, so an outcome scores against the
+// manifest with no translation table in between.
+const ActionDoNothing = "do_nothing"

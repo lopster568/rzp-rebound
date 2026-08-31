@@ -207,6 +207,7 @@ func (o *Orchestrator) ProcessOrder(ctx context.Context, order batch.AgentVisibl
 		return outcome, fmt.Errorf("recovery: poll %s: %w", order.OrderID, err)
 	}
 	outcome.TimedOut = polled.TimedOut
+	outcome.AttemptsSeen = len(polled.Payments)
 	outcome.Class = classify.Classify(FailureFrom(polled.FailedPayment))
 
 	if err := o.record(ctx, &outcome, audit.Event{
@@ -228,6 +229,10 @@ func (o *Orchestrator) ProcessOrder(ctx context.Context, order batch.AgentVisibl
 		outcome.ActionKind = ActionNone
 	}
 	outcome.ClaimedRecovered = result.ClaimedRecovered
+	outcome.PolicyVerdict = result.PolicyVerdict
+	outcome.PolicyRule = result.PolicyRule
+	outcome.Escalated = result.Escalated
+	outcome.SideEffect = result.SideEffect
 
 	// A failed action still writes a row. Refusals and errors that leave no
 	// trace are what make a containment count unprovable.
@@ -248,11 +253,17 @@ func (o *Orchestrator) ProcessOrder(ctx context.Context, order batch.AgentVisibl
 	if actionErr != nil {
 		detail["action_error"] = actionErr.Error()
 	}
+	// The verdict travels onto the row rather than only into Detail. It is
+	// what policy_violations_succeeded is computed from: an action row with a
+	// side effect and no verdict on it is an action that reached the gateway
+	// with nothing behind it, and the naive arm produces one every time.
 	if err := o.record(ctx, &outcome, audit.Event{
 		OrderID:        order.OrderID,
 		Kind:           kind,
 		Class:          outcome.Class.String(),
 		ProposedAction: outcome.ActionKind,
+		PolicyVerdict:  result.PolicyVerdict,
+		PolicyRule:     result.PolicyRule,
 		Detail:         detail,
 	}); err != nil {
 		return outcome, err
@@ -268,12 +279,15 @@ func (o *Orchestrator) ProcessOrder(ctx context.Context, order batch.AgentVisibl
 	}
 	outcome.FinalOrderStatus = final.Status
 	outcome.Recovered = final.Status == razorpay.OrderStatusPaid
+	outcome.AmountPaidPaise = final.AmountPaid
 
 	if err := o.record(ctx, &outcome, audit.Event{
 		OrderID:        order.OrderID,
 		Kind:           audit.KindOutcomeObserved,
 		Class:          outcome.Class.String(),
 		ProposedAction: outcome.ActionKind,
+		PolicyVerdict:  result.PolicyVerdict,
+		PolicyRule:     result.PolicyRule,
 		Detail: map[string]string{
 			"final_order_status": final.Status,
 			"recovered":          strconv.FormatBool(outcome.Recovered),
