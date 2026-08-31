@@ -3,6 +3,10 @@
 #
 # Usage: scripts/jaeger-down.sh
 #
+# DOCKER_SSH_HOST, when set, tears down on that machine's docker daemon, which
+# is the same seam jaeger-up.sh uses. Both read COMPOSE_PROJECT from
+# scripts/lib.sh, so a teardown finds what the bring-up started.
+#
 # Traces are not evidence: every number this project reports comes from
 # results/, not from a span store. So this removes volumes rather than keeping
 # them, and a torn-down Jaeger costs nothing that has to be reproduced.
@@ -15,21 +19,21 @@ cd "$ROOT" || die "cannot cd to $ROOT"
 
 COMPOSE_FILE=compose/docker-compose.yml
 
-require_cmd docker "install docker to manage the trace backend"
-
-if ! docker info >/dev/null 2>&1; then
-	say "jaeger-down: the docker daemon is not reachable, so there is nothing to stop"
-	exit 0
-fi
-
-if docker compose version >/dev/null 2>&1; then
-	compose() { docker compose "$@"; }
-elif command -v docker-compose >/dev/null 2>&1; then
-	compose() { docker-compose "$@"; }
+if [ -n "${DOCKER_SSH_HOST:-}" ]; then
+	require_cmd ssh "DOCKER_SSH_HOST is set, so the daemon is driven over ssh"
+	if ! docker_reachable; then
+		say "jaeger-down: the docker daemon on $DOCKER_SSH_HOST is not reachable, so there is nothing to stop"
+		exit 0
+	fi
+	say "jaeger-down: stopping $COMPOSE_FILE on $DOCKER_SSH_HOST"
 else
-	die "neither 'docker compose' nor 'docker-compose' is available"
+	require_cmd docker "install docker to manage the trace backend, or set DOCKER_SSH_HOST"
+	if ! docker_reachable; then
+		say "jaeger-down: the docker daemon is not reachable, so there is nothing to stop"
+		exit 0
+	fi
+	say "jaeger-down: stopping $COMPOSE_FILE"
 fi
 
-say "jaeger-down: stopping $COMPOSE_FILE"
-compose -f "$COMPOSE_FILE" down -v || die "compose down failed"
+compose_run down -v || die "compose down failed"
 say "jaeger-down: stopped"
