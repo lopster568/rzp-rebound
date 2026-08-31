@@ -51,6 +51,7 @@ const (
 	DetailPaymentLinkID    = "payment_link_id"
 	DetailPaymentID        = "payment_id"
 	DetailNotifyPhrase     = "notification_audit_phrase"
+	DetailGatewayCalls     = "gateway_calls"
 )
 
 // Errors returned when an arm is built with a piece missing.
@@ -66,6 +67,16 @@ var (
 type AttemptRecord struct {
 	PaymentID string
 	Card      string
+	// GatewayCalls is how many requests the attempt made.
+	//
+	// It is reported by the adapter rather than counted by a wrapper around
+	// razorpay.Port, because an attempt does not go through Port on either
+	// layer: the live one drives four undocumented checkout calls and the fake
+	// one calls AttemptPayment, and neither is a Port method. Without this the
+	// cost column counted a run's polls and read-backs and none of its
+	// attempts, which on the live layer understated the naive arm by four
+	// calls per order.
+	GatewayCalls int
 }
 
 // Attempter is the one way any arm makes a payment attempt.
@@ -90,9 +101,9 @@ func NewFakeAttempter(f *razorpay.Fake) *FakeAttempter { return &FakeAttempter{f
 func (a *FakeAttempter) Attempt(ctx context.Context, order batch.AgentVisibleOrder, card string) (AttemptRecord, error) {
 	payment, err := a.fake.AttemptPayment(ctx, order.OrderID, card)
 	if err != nil {
-		return AttemptRecord{Card: card}, err
+		return AttemptRecord{Card: card, GatewayCalls: 1}, err
 	}
-	return AttemptRecord{PaymentID: payment.ID, Card: card}, nil
+	return AttemptRecord{PaymentID: payment.ID, Card: card, GatewayCalls: 1}, nil
 }
 
 // LiveAttempter drives an attempt against Razorpay test mode through the
@@ -133,10 +144,14 @@ func (a *LiveAttempter) Attempt(ctx context.Context, order batch.AgentVisibleOrd
 		CardNumber:  card,
 		Outcome:     outcome,
 	})
-	if err != nil {
-		return AttemptRecord{PaymentID: got.PaymentID, Card: card}, err
-	}
-	return AttemptRecord{PaymentID: got.PaymentID, Card: card}, nil
+	// Steps records a call when it is sent, not when it comes back, which is
+	// the count a cost column wants: a request that reached Razorpay and then
+	// failed to decode is a request that was paid for.
+	return AttemptRecord{
+		PaymentID:    got.PaymentID,
+		Card:         card,
+		GatewayCalls: len(got.Steps),
+	}, err
 }
 
 // Surface is the one set of hands every arm drives.
@@ -282,7 +297,9 @@ func (a *Arm) naive(ctx context.Context, order batch.AgentVisibleOrder) (ActionR
 	// that was made, and an ungated action that errored is still an ungated
 	// action.
 	result.SideEffect = true
+	result.GatewayCalls += record.GatewayCalls
 	result.Detail[DetailSideEffect] = "true"
+	result.Detail[DetailGatewayCalls] = strconv.Itoa(record.GatewayCalls)
 	if record.PaymentID != "" {
 		result.Detail[DetailPaymentID] = record.PaymentID
 	}
@@ -378,7 +395,9 @@ func (a *Arm) rules(ctx context.Context, order batch.AgentVisibleOrder, class cl
 func (a *Arm) retry(ctx context.Context, order batch.AgentVisibleOrder, result ActionResult, decision policy.Decision) (ActionResult, error) {
 	record, err := a.surface.Attempter.Attempt(ctx, order, a.surface.Card)
 	result.SideEffect = true
+	result.GatewayCalls += record.GatewayCalls
 	result.Detail[DetailSideEffect] = "true"
+	result.Detail[DetailGatewayCalls] = strconv.Itoa(record.GatewayCalls)
 	if record.PaymentID != "" {
 		result.Detail[DetailPaymentID] = record.PaymentID
 	}

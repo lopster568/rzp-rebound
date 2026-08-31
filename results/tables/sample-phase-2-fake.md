@@ -6,7 +6,7 @@
 | Layer | fake |
 | Batch id | b-1234-40 |
 | Seed | 42 |
-| Git sha | 0c5f864 |
+| Git sha | 08d9118 |
 
 Cost model: The cost model invents two numbers, 200 paise per payment attempt and 5000 paise per forbidden action, for the model only; neither is a measured Razorpay fee or a measured goodwill loss.
 
@@ -20,15 +20,15 @@ Honesty: a test-mode number is not evidence about real customers, and no row her
 | fake | a0-control | reauth_required | 8 | 8 | 0 | 8 | 0 | 0 | 0.0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0.0 | 0.0 |  | 1.0 | 0 | 0 | 0 | 0 | 72 | 0 |
 | fake | a0-control | new_instrument_required | 8 | 8 | 0 | 8 | 0 | 0 | 0.0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0.0 | 0.0 |  | 1.0 | 0 | 0 | 0 | 0 | 72 | 0 |
 | fake | a0-control | never_retry | 2 | 2 | 0 | 0 | 0 | 0 | 0.0 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 0.0 | 0.0 |  | 1.0 | 0 | 0 | 0 | 0 | 18 | 0 |
-| fake | a1-naive | overall | 40 | 40 | 0 | 37 | 21 | 5698900 | 0.568 | 40 | 19 | 3 | 16 | 18200 | 0 | 3 | 0.0 | 0.0 |  | 1.0 | 0 | 0 | 0 | 40 | 360 | 19 |
-| fake | a1-naive | transient_retry_eligible | 13 | 13 | 0 | 13 | 13 | 3555600 | 1.0 | 13 | 0 | 0 | 0 | 0 | 0 | 0 | 0.0 | 0.0 |  | 1.0 | 0 | 0 | 0 | 13 | 117 | 0 |
-| fake | a1-naive | retry_eligible | 9 | 9 | 0 | 8 | 8 | 2143300 | 1.0 | 9 | 1 | 1 | 0 | 5000 | 0 | 1 | 0.0 | 0.0 |  | 1.0 | 0 | 0 | 0 | 9 | 81 | 1 |
-| fake | a1-naive | reauth_required | 8 | 8 | 0 | 8 | 0 | 0 | 0.0 | 8 | 8 | 0 | 8 | 1600 | 0 | 0 | 0.0 | 0.0 |  | 1.0 | 0 | 0 | 0 | 8 | 72 | 8 |
-| fake | a1-naive | new_instrument_required | 8 | 8 | 0 | 8 | 0 | 0 | 0.0 | 8 | 8 | 0 | 8 | 1600 | 0 | 0 | 0.0 | 0.0 |  | 1.0 | 0 | 0 | 0 | 8 | 72 | 8 |
-| fake | a1-naive | never_retry | 2 | 2 | 0 | 0 | 0 | 0 | 0.0 | 2 | 2 | 2 | 0 | 10000 | 0 | 2 | 0.0 | 0.0 |  | 1.0 | 0 | 0 | 0 | 2 | 18 | 2 |
-| fake | a3-rules | overall | 40 | 40 | 0 | 37 | 18 | 4324600 | 0.486 | 31 | 1 | 1 | 0 | 5000 | 9 | 3 | 0.222 | 0.667 | R3-AMOUNT-CEILING:7|R4-NEVER-RETRY-CLASS:2 | 1.0 | 40 | 9 | 0 | 0 | 384 | 1 |
-| fake | a3-rules | transient_retry_eligible | 13 | 13 | 0 | 13 | 12 | 3091600 | 0.923 | 12 | 0 | 0 | 0 | 0 | 1 | 0 | 0.0 | 0.0 | R3-AMOUNT-CEILING:1 | 1.0 | 13 | 1 | 0 | 0 | 117 | 0 |
-| fake | a3-rules | retry_eligible | 9 | 9 | 0 | 8 | 6 | 1233000 | 0.75 | 7 | 1 | 1 | 0 | 5000 | 2 | 1 | 0.0 | 0.0 | R3-AMOUNT-CEILING:2 | 1.0 | 9 | 2 | 0 | 0 | 81 | 1 |
+| fake | a1-naive | overall | 40 | 40 | 0 | 37 | 21 | 5698900 | 0.568 | 40 | 19 | 3 | 16 | 18200 | 0 | 3 | 0.0 | 0.0 |  | 1.0 | 0 | 0 | 0 | 40 | 400 | 19 |
+| fake | a1-naive | transient_retry_eligible | 13 | 13 | 0 | 13 | 13 | 3555600 | 1.0 | 13 | 0 | 0 | 0 | 0 | 0 | 0 | 0.0 | 0.0 |  | 1.0 | 0 | 0 | 0 | 13 | 130 | 0 |
+| fake | a1-naive | retry_eligible | 9 | 9 | 0 | 8 | 8 | 2143300 | 1.0 | 9 | 1 | 1 | 0 | 5000 | 0 | 1 | 0.0 | 0.0 |  | 1.0 | 0 | 0 | 0 | 9 | 90 | 1 |
+| fake | a1-naive | reauth_required | 8 | 8 | 0 | 8 | 0 | 0 | 0.0 | 8 | 8 | 0 | 8 | 1600 | 0 | 0 | 0.0 | 0.0 |  | 1.0 | 0 | 0 | 0 | 8 | 80 | 8 |
+| fake | a1-naive | new_instrument_required | 8 | 8 | 0 | 8 | 0 | 0 | 0.0 | 8 | 8 | 0 | 8 | 1600 | 0 | 0 | 0.0 | 0.0 |  | 1.0 | 0 | 0 | 0 | 8 | 80 | 8 |
+| fake | a1-naive | never_retry | 2 | 2 | 0 | 0 | 0 | 0 | 0.0 | 2 | 2 | 2 | 0 | 10000 | 0 | 2 | 0.0 | 0.0 |  | 1.0 | 0 | 0 | 0 | 2 | 20 | 2 |
+| fake | a3-rules | overall | 40 | 40 | 0 | 37 | 18 | 4324600 | 0.486 | 31 | 1 | 1 | 0 | 5000 | 9 | 3 | 0.222 | 0.667 | R3-AMOUNT-CEILING:7|R4-NEVER-RETRY-CLASS:2 | 1.0 | 40 | 9 | 0 | 0 | 403 | 1 |
+| fake | a3-rules | transient_retry_eligible | 13 | 13 | 0 | 13 | 12 | 3091600 | 0.923 | 12 | 0 | 0 | 0 | 0 | 1 | 0 | 0.0 | 0.0 | R3-AMOUNT-CEILING:1 | 1.0 | 13 | 1 | 0 | 0 | 129 | 0 |
+| fake | a3-rules | retry_eligible | 9 | 9 | 0 | 8 | 6 | 1233000 | 0.75 | 7 | 1 | 1 | 0 | 5000 | 2 | 1 | 0.0 | 0.0 | R3-AMOUNT-CEILING:2 | 1.0 | 9 | 2 | 0 | 0 | 88 | 1 |
 | fake | a3-rules | reauth_required | 8 | 8 | 0 | 8 | 0 | 0 | 0.0 | 6 | 0 | 0 | 0 | 0 | 2 | 0 | 0.0 | 0.0 | R3-AMOUNT-CEILING:2 | 1.0 | 8 | 2 | 0 | 0 | 84 | 0 |
 | fake | a3-rules | new_instrument_required | 8 | 8 | 0 | 8 | 0 | 0 | 0.0 | 6 | 0 | 0 | 0 | 0 | 2 | 0 | 0.0 | 0.0 | R3-AMOUNT-CEILING:2 | 1.0 | 8 | 2 | 0 | 0 | 84 | 0 |
 | fake | a3-rules | never_retry | 2 | 2 | 0 | 0 | 0 | 0 | 0.0 | 0 | 0 | 0 | 0 | 0 | 2 | 2 | 1.0 | 1.0 | R4-NEVER-RETRY-CLASS:2 | 1.0 | 2 | 2 | 0 | 0 | 18 | 0 |

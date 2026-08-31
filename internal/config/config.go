@@ -43,9 +43,16 @@ type Config struct {
 	// OTLPEndpoint is empty when traces should go to stdout.
 	OTLPEndpoint string
 	ServiceName  string
-	// Layer and Arm select which recovery layer and which experiment arm a
-	// run belongs to. Phase 2 and phase 3 give them meaning; phase 0 reads
-	// them and puts them in the run record.
+	// Layer and Arm name the measurement layer and the experiment arm a run
+	// belongs to.
+	//
+	// Layer is the gateway that produced the numbers: fake, replay, or live,
+	// per ADR-0004. It is not a "recovery layer", which is what this comment
+	// used to say. PRD Q7 asked which of the two meanings was intended and
+	// phase 2 settled it by writing the code: cmd/rzp run takes -layer, every
+	// outcome row and every results row carries it, and no table sums across
+	// it. Arm is a0-control, a1-naive, or a3-rules today, and a2 is the LLM
+	// arm in phase 3.
 	Layer string
 	Arm   string
 	// JaegerUIURL is the root of the Jaeger query UI, so a run can print a

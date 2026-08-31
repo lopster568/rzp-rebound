@@ -61,6 +61,11 @@ type ActionResult struct {
 	// refused before any call has none. An attempt that returned an error has
 	// one, because the call was made.
 	SideEffect bool
+	// GatewayCalls is how many requests the action made that did not go
+	// through razorpay.Port, so a cost column can add them to the ones a
+	// counting port saw. A payment attempt is the case: it is four checkout
+	// calls on the live layer and one on the fake, and Port has neither.
+	GatewayCalls int
 	// Detail goes into the audit row.
 	Detail map[string]string
 }
@@ -133,6 +138,9 @@ type Outcome struct {
 	PolicyRule    string
 	Escalated     bool
 	SideEffect    bool
+	// OffPortCalls is how many gateway requests the action made outside
+	// razorpay.Port, which is every payment attempt on both layers.
+	OffPortCalls int
 	// AttemptsSeen is how many payment attempts the poller found on the order
 	// before the action ran. It comes from the gateway, which is what makes an
 	// over-attempt a countable thing rather than a claim.
@@ -233,6 +241,7 @@ func (o *Orchestrator) ProcessOrder(ctx context.Context, order batch.AgentVisibl
 	outcome.PolicyRule = result.PolicyRule
 	outcome.Escalated = result.Escalated
 	outcome.SideEffect = result.SideEffect
+	outcome.OffPortCalls = result.GatewayCalls
 
 	// A failed action still writes a row. Refusals and errors that leave no
 	// trace are what make a containment count unprovable.

@@ -221,7 +221,7 @@ func runRun(ctx context.Context, args []string) error {
 	fmt.Printf("batch    %s, %d orders\n", batchFile.BatchID, len(orders))
 	fmt.Println()
 
-	var acted, recovered, escalated, unobserved int
+	var acted, recovered, escalated, unobserved, armCalls, offPort int
 	for _, o := range orders {
 		before := rig.calls()
 		outcome, procErr := orchestrator.ProcessOrder(ctx, o.visible)
@@ -247,7 +247,11 @@ func runRun(ctx context.Context, args []string) error {
 			SideEffect:       outcome.SideEffect,
 			TimedOut:         outcome.TimedOut,
 			Observed:         outcome.FinalOrderStatus != "",
-			APICalls:         rig.calls() - before,
+			// Port calls plus the ones an attempt made outside Port. The
+			// second half is why this is not just the counting port's delta:
+			// a payment attempt is four checkout calls on the live layer and
+			// Port has no method for any of them.
+			APICalls: rig.calls() - before + outcome.OffPortCalls,
 		}
 		if procErr != nil {
 			// The error is redacted by internal/razorpay before it gets here,
@@ -272,6 +276,8 @@ func runRun(ctx context.Context, args []string) error {
 		if !row.Observed {
 			unobserved++
 		}
+		armCalls += row.APICalls
+		offPort += outcome.OffPortCalls
 
 		status := row.FinalOrderStatus
 		if status == "" {
@@ -285,8 +291,18 @@ func runRun(ctx context.Context, args []string) error {
 	}
 
 	fmt.Println()
-	fmt.Printf("orders %d  actions %d  recovered %d  escalated %d  unobserved %d  api calls %d\n",
-		len(orders), acted, recovered, escalated, unobserved, rig.calls())
+	// Two call counts, because they answer different questions. The arm's is
+	// what the arm cost and is what the report's cost column carries. The
+	// run's adds the materialisation, which is the harness building the world
+	// before any arm sees it.
+	//
+	// The run total has to add the off-port calls back: the counting port
+	// cannot see a checkout attempt, because none of those four calls is a
+	// Port method.
+	fmt.Printf("orders %d  actions %d  recovered %d  escalated %d  unobserved %d\n",
+		len(orders), acted, recovered, escalated, unobserved)
+	fmt.Printf("gateway calls: %d by the arm, %d for the whole run including materialisation\n",
+		armCalls, rig.calls()+offPort)
 	fmt.Printf("outcomes %s\n", filepath.Join(armDir, "outcomes.jsonl"))
 	fmt.Printf("ledger   %s\n", filepath.Join(armDir, "ledger.jsonl"))
 	return nil
@@ -494,11 +510,19 @@ func (r *gatewayRig) materialise(ctx context.Context, orders []batch.Order) ([]m
 		var visible batch.AgentVisibleOrder
 
 		if r.layer == layerFake {
+			// The materialisation calls go straight at the fake rather than
+			// through the counting port, so they are counted here. Both
+			// layers have to count them the same way or the run total means
+			// one thing on one layer and another on the other.
+			//
+			// SeedRecoversAfter below is deliberately not counted. It
+			// configures the gateway; it does not talk to one.
 			created, err := r.fake.CreateOrder(ctx, razorpay.CreateOrderRequest{
 				AmountPaise: o.AmountPaise,
 				Currency:    o.Currency,
 				Receipt:     o.Receipt,
 			})
+			*r.apiCalls++
 			if err != nil {
 				return nil, fmt.Errorf("materialise %s: %w", o.OrderID, err)
 			}
@@ -507,6 +531,7 @@ func (r *gatewayRig) materialise(ctx context.Context, orders []batch.Order) ([]m
 				if _, err := r.fake.SeedFailedPayment(ctx, gatewayID, o.SeededErrorCode); err != nil {
 					return nil, fmt.Errorf("seed the failure on %s: %w", o.OrderID, err)
 				}
+				*r.apiCalls++
 			}
 			if recoversOnRetry(o) {
 				r.fake.SeedRecoversAfter(gatewayID, attempts)

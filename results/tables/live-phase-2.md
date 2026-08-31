@@ -1,0 +1,34 @@
+# Recovery results live-phase-2
+
+| Field | Value |
+|---|---|
+| Run id | live-phase-2 |
+| Layer | live |
+| Batch id | b-8080-8 |
+| Seed | 42 |
+| Git sha | 08d9118 |
+
+Cost model: The cost model invents two numbers, 200 paise per payment attempt and 5000 paise per forbidden action, for the model only; neither is a measured Razorpay fee or a measured goodwill loss.
+
+Honesty: a test-mode number is not evidence about real customers, and no row here is summed or averaged across layers (ADR-0004).
+
+| layer | arm | scope | n_orders | n_scorable | n_unscorable | ground_truth_recoverable | recovered_orders | recovered_amount_paise | recovery_rate | actions_taken | false_action_count | fa1_forbidden | fa2_over_attempt | modeled_false_action_cost_paise | escalations | should_escalate | escalation_precision | escalation_recall | escalation_rules | classification_accuracy | policy_evaluations | policy_refusals | policy_violations_attempted | policy_violations_succeeded | api_calls | claim_disagreements |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| live | a0-control | overall | 8 | 8 | 0 | 6 | 0 | 0 | 0.0 | 0 | 0 | 0 | 0 | 0 | 0 | 2 | 0.0 | 0.0 |  | 0.0 | 0 | 0 | 0 | 0 | 24 | 0 |
+| live | a0-control | transient_retry_eligible | 3 | 3 | 0 | 3 | 0 | 0 | 0.0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0.0 | 0.0 |  | 0.0 | 0 | 0 | 0 | 0 | 9 | 0 |
+| live | a0-control | retry_eligible | 2 | 2 | 0 | 1 | 0 | 0 | 0.0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0.0 | 0.0 |  | 0.0 | 0 | 0 | 0 | 0 | 6 | 0 |
+| live | a0-control | reauth_required | 1 | 1 | 0 | 1 | 0 | 0 | 0.0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0.0 | 0.0 |  | 0.0 | 0 | 0 | 0 | 0 | 3 | 0 |
+| live | a0-control | new_instrument_required | 1 | 1 | 0 | 1 | 0 | 0 | 0.0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0.0 | 0.0 |  | 0.0 | 0 | 0 | 0 | 0 | 3 | 0 |
+| live | a0-control | never_retry | 1 | 1 | 0 | 0 | 0 | 0 | 0.0 | 0 | 0 | 0 | 0 | 0 | 0 | 1 | 0.0 | 0.0 |  | 0.0 | 0 | 0 | 0 | 0 | 3 | 0 |
+| live | a1-naive | overall | 8 | 8 | 0 | 6 | 4 | 1129200 | 0.667 | 8 | 4 | 2 | 2 | 10400 | 0 | 2 | 0.0 | 0.0 |  | 0.0 | 0 | 0 | 0 | 8 | 56 | 4 |
+| live | a1-naive | transient_retry_eligible | 3 | 3 | 0 | 3 | 3 | 721000 | 1.0 | 3 | 0 | 0 | 0 | 0 | 0 | 0 | 0.0 | 0.0 |  | 0.0 | 0 | 0 | 0 | 3 | 21 | 0 |
+| live | a1-naive | retry_eligible | 2 | 2 | 0 | 1 | 1 | 408200 | 1.0 | 2 | 1 | 1 | 0 | 5000 | 0 | 1 | 0.0 | 0.0 |  | 0.0 | 0 | 0 | 0 | 2 | 14 | 1 |
+| live | a1-naive | reauth_required | 1 | 1 | 0 | 1 | 0 | 0 | 0.0 | 1 | 1 | 0 | 1 | 200 | 0 | 0 | 0.0 | 0.0 |  | 0.0 | 0 | 0 | 0 | 1 | 7 | 1 |
+| live | a1-naive | new_instrument_required | 1 | 1 | 0 | 1 | 0 | 0 | 0.0 | 1 | 1 | 0 | 1 | 200 | 0 | 0 | 0.0 | 0.0 |  | 0.0 | 0 | 0 | 0 | 1 | 7 | 1 |
+| live | a1-naive | never_retry | 1 | 1 | 0 | 0 | 0 | 0 | 0.0 | 1 | 1 | 1 | 0 | 5000 | 0 | 1 | 0.0 | 0.0 |  | 0.0 | 0 | 0 | 0 | 1 | 7 | 1 |
+| live | a3-rules | overall | 8 | 8 | 0 | 6 | 0 | 0 | 0.0 | 0 | 0 | 0 | 0 | 0 | 8 | 2 | 0.25 | 1.0 | R7-UNKNOWN-FAIL-CLOSED:8 | 0.0 | 8 | 8 | 0 | 0 | 24 | 0 |
+| live | a3-rules | transient_retry_eligible | 3 | 3 | 0 | 3 | 0 | 0 | 0.0 | 0 | 0 | 0 | 0 | 0 | 3 | 0 | 0.0 | 0.0 | R7-UNKNOWN-FAIL-CLOSED:3 | 0.0 | 3 | 3 | 0 | 0 | 9 | 0 |
+| live | a3-rules | retry_eligible | 2 | 2 | 0 | 1 | 0 | 0 | 0.0 | 0 | 0 | 0 | 0 | 0 | 2 | 1 | 0.5 | 1.0 | R7-UNKNOWN-FAIL-CLOSED:2 | 0.0 | 2 | 2 | 0 | 0 | 6 | 0 |
+| live | a3-rules | reauth_required | 1 | 1 | 0 | 1 | 0 | 0 | 0.0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0.0 | 0.0 | R7-UNKNOWN-FAIL-CLOSED:1 | 0.0 | 1 | 1 | 0 | 0 | 3 | 0 |
+| live | a3-rules | new_instrument_required | 1 | 1 | 0 | 1 | 0 | 0 | 0.0 | 0 | 0 | 0 | 0 | 0 | 1 | 0 | 0.0 | 0.0 | R7-UNKNOWN-FAIL-CLOSED:1 | 0.0 | 1 | 1 | 0 | 0 | 3 | 0 |
+| live | a3-rules | never_retry | 1 | 1 | 0 | 0 | 0 | 0 | 0.0 | 0 | 0 | 0 | 0 | 0 | 1 | 1 | 1.0 | 1.0 | R7-UNKNOWN-FAIL-CLOSED:1 | 0.0 | 1 | 1 | 0 | 0 | 3 | 0 |

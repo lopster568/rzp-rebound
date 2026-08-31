@@ -21,3 +21,9 @@ results/runs/*
 !results/runs/sample-phase-2-fake/
 results/batches/*
 !results/batches/b-1234-40.json
+
+# make verify-phase-2 regenerates this pair on every run from the same seeded
+# batch as the committed sample, so tracking it would put two identical tables
+# in the tree and a diff on every gate run.
+results/tables/verify-phase-2.csv
+results/tables/verify-phase-2.md

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v1.0 draft. Freezes at the end of phase 1. |
+| Status | v1.1. Updated at the end of phase 2. |
 | Date | 2026-08-31 |
 | Owner | Roshan Singh |
 
@@ -99,13 +99,16 @@ four of them are not written yet.
 | Command | Prints | Status |
 |---|---|---|
 | `make preflight` | One line per tool (go, jq, claude, docker), then one per credential variable. Toolchain gaps are hard failures, missing keys are warnings, and the last line is the count of each. | Works. `scripts/preflight.sh`. |
-| `make seed` | The batch id, the seed, the per-class counts, the bait count, and the path of the manifest written under `results/batches/`. | Planned, phase 2. |
-| `make run-all` | One progress line per arm per order, then a per-arm summary: orders touched, actions taken, orders recovered, policy violations attempted and succeeded. | Planned, phase 3. |
-| `make report` | The three-arm comparison table, the per-failure-class breakdown, and the honesty metrics, written to `results/` as markdown and echoed to the terminal. | Planned, phase 4. |
+| `make seed` | The batch id, the seed, the per-class counts, the bait count, and the path of the manifest written under `results/batches/`. | Works. `cmd/rzp/seed.go`, phase 2. |
+| `make run-all` | One progress line per arm per order, then a per-arm summary: orders touched, actions taken, orders recovered, escalated, and unobserved, and the gateway call count. | Works for the three deterministic arms. `cmd/rzp/run.go` and `harness/orchestrator.py`, phase 2. The LLM arm is phase 3. |
+| `make report` | The three-arm comparison table, the per-failure-class breakdown, and the honesty metrics, written to `results/tables/` as CSV and markdown and echoed to the terminal. Exits non-zero when `policy_violations_succeeded` is not 0 for `a3-rules`. | Works. `harness/aggregate.py`, phase 2. |
+| `make run-arm` | The same, for one arm. | Works. Phase 2. |
 | `make demo` | The scripted end-to-end run: seed, three arms, report, and the Jaeger URL for the trace of one recovered order. | Planned, phase 4. |
 
-Supporting targets that exist today: `make hooks`, `make test`, `make lint`,
-`make docs-check`, `make ci`, `make verify-phase-0`.
+Supporting targets that exist today: `make hooks`, `make test` (Go and
+Python), `make test-go`, `make test-python`, `make lint`, `make docs-check`,
+`make ci`, `make verify-phase-0`, `make verify-offline`, `make verify-live`,
+`make verify-phase-2`.
 
 ## 7. Success metrics
 
@@ -166,7 +169,7 @@ covers them today. Later components name the test that will.
 |---|---|---|
 | FR-CLOCK-1 | A fake clock reads the same instant until it is advanced. | `TestFakeClockNowIsStableWithoutAdvance` |
 | FR-CLOCK-2 | `Advance(d)` moves the reading forward by exactly `d`. | `TestFakeClockAdvanceMovesNowForward` |
-| FR-CLOCK-3 | Retry backoff and scheduling read time through `clock.Clock`, never `time.Now`, so no test sleeps. | Planned, phase 2 |
+| FR-CLOCK-3 | Retry backoff and scheduling read time through `clock.Clock`, never `time.Now`, so no test sleeps. | Met. `policy.Policy` and `store.Store` both take a clock, and the fake layer runs the whole batch on a fake clock started at a fixed instant. |
 
 **`internal/testcards`**
 
@@ -212,49 +215,52 @@ covers them today. Later components name the test that will.
 | FR-BATCH-3 | Every order in the batch has a ground-truth entry: class, correct action, recoverable flag, attempt budget. | `TestManifestCarriesGroundTruthForEveryOrder` |
 | FR-BATCH-4 | Requesting bait adds orders whose correct action is to do nothing, on top of the requested distribution. | `TestManifestIncludesBaitOrdersWhenRequested` |
 | FR-BATCH-5 | No agent-visible field on any order carries ground truth. The agent sees four fields, on a type that never held the answer. | `TestManifestGroundTruthNeverLeaksIntoAgentVisibleFields` |
-| FR-BATCH-6 | A third bait kind, an order already `paid` in the gateway, is seedable. | Planned, phase 2 |
+| FR-BATCH-6 | A third bait kind, an order already `paid` in the gateway, is seedable. | **Not built.** Two bait kinds ship and both fire in the phase 2 runs. A paid-order bait would catch an arm that acts without reading state, which `razorpay.ErrOrderAlreadyPaid` already refuses at the gateway, so it was left for phase 3 rather than added for the count. |
 
 **`internal/policy`**
 
 | ID | Requirement | Covering test |
 |---|---|---|
-| FR-POL-1 | `Evaluate` returns allow or deny plus the rule that decided, for every proposed action. | Planned, phase 2 |
-| FR-POL-2 | A kill switch denies every action while it is set. | Planned, phase 2 |
-| FR-POL-3 | A per-batch spend budget in paise denies the action that would cross it. | Planned, phase 2 |
-| FR-POL-4 | Actions on an order id outside the batch allowlist are denied. | Planned, phase 2 |
-| FR-POL-5 | Attempts past the per-class cap are denied. | Planned, phase 2 |
-| FR-POL-6 | Every evaluation emits a span carrying the verdict and the rule. | Planned, phase 2 |
-| FR-POL-7 | No action handler reaches a side effect without consulting the policy first. | `TestEveryActionToolConsultsPolicyBeforeSideEffect`, planned phase 3 |
+| FR-POL-1 | `Evaluate` returns a verdict plus the rule that decided, for every proposed action. Three verdicts, not two: escalate is a different decision from deny and is scored separately. | `TestPolicyDenialAlwaysCarriesRuleID`, `TestPolicyGoldenMatrix`, and one table test per rule |
+| FR-POL-2 | A kill switch denies every action while it is set, from a flag or from a file. | `TestPolicyKillSwitchFlagDeniesEveryAction`, `TestPolicyKillSwitchStateDeniesEveryAction`, `TestKillSwitchFileReportsEngagedWhenThePathExists` |
+| FR-POL-3 | A per-run action budget denies the action that would cross it, and an amount ceiling escalates above it. | `TestPolicyActionBudgetDeniesPastTheGlobalCap`, `TestPolicyAmountAboveCeilingEscalates`, `TestPolicyAmountAtCeilingIsAllowed` |
+| FR-POL-4 | Actions on an order id outside the batch allowlist are denied. | **Not met, and moved to phase 3.** The allowlist is a middleware concern per ADR-0003 layer 1, and the deterministic arms cannot reach an order that is not in the batch: `rzp run` iterates the manifest. It becomes reachable when the LLM arm can name an order id. |
+| FR-POL-5 | Attempts past the cap are denied. | `TestPolicyMaxAttemptsDeniesTheFourthAttempt`, `TestPolicyNeverExceedsMaxAttempts`. The cap is flat at 3 per order and does not read `batch.MaxLegitAttemptsFor`, which is the gap the attempt-budget-exhausted bait catches. See Q6. |
+| FR-POL-6 | Every evaluation emits a span carrying the verdict and the rule. | Met at the call site rather than inside `Evaluate`, which stays pure so the golden matrix can generate 576 cells without a tracer. `TestRulesArmRecordsAPolicyVerdictBeforeEverySideEffect`, and phase 2 `DECISIONS.md`. |
+| FR-POL-7 | No action handler reaches a side effect without consulting the policy first. | `TestEveryActionToolConsultsPolicyBeforeSideEffect`, planned phase 3. Phase 2 proves the weaker mechanical claim: `policy_violations_succeeded` reads 0 for `a3-rules` in `make verify-phase-2`. |
+| FR-POL-8 | A replayed action is a no-op rather than a second side effect. | `TestPolicyIdempotentReplayIsANoOp`, `TestPolicyIdempotencyKeyIsSha256OfOrderActionAttempt`, `TestStoreCommitIsANoOpOnAReplayedKey` |
+| FR-POL-9 | An unrecognised failure escalates and is never retried. | `TestPolicyUnclassifiedEscalatesAndNeverRetries`, `TestRulesArmEscalatesEveryUnclassifiedOrder` |
 
 **`internal/store`**
 
 | ID | Requirement | Covering test |
 |---|---|---|
-| FR-STORE-1 | Orders, attempts, and recovery state persist across the run. | Planned, phase 2 |
-| FR-STORE-2 | Re-running a batch resumes from recorded state instead of repeating attempts already made. | Planned, phase 2 |
+| FR-STORE-1 | Orders, attempts, and recovery state persist across the run. | `TestStoreCountsAttemptsPerOrder`, `TestStoreActionsThisRunCountsEveryOrder`. In memory, for one run. The durable half is not built and nothing in phase 2 pretends it is. |
+| FR-STORE-2 | Re-running a batch resumes from recorded state instead of repeating attempts already made. | **Partly met.** `Store.Observe` primes an order from the gateway's own payment count, so a rerun against the same gateway orders sees the attempts already made. A rerun through `rzp run` materialises fresh orders and so starts clean. Phase 3. |
 
 **`internal/recovery`**
 
 | ID | Requirement | Covering test |
 |---|---|---|
-| FR-REC-1 | One cycle per order: classify, evaluate, act, record. Every stage writes to the audit trail even when the action is denied. | Planned, phase 2 |
-| FR-REC-2 | At most one action per order per cycle. | Planned, phase 2 |
-| FR-REC-3 | An `Unclassified` failure takes no action. | Planned, phase 2 |
+| FR-REC-1 | One cycle per order: classify, evaluate, act, record. Every stage writes to the audit trail even when the action is denied. | `TestRulesArmRefusesTheNeverRetryBaitAndWalksIntoTheBudgetBait` reads the refusal back out of the ledger with its rule id |
+| FR-REC-2 | At most one action per order per cycle. | `TestControlArmTakesNoActions`, `TestNaiveArmStopsAtItsOwnAttemptCap`, `TestRulesArmStopsAtMaxAttempts` |
+| FR-REC-3 | An `Unclassified` failure takes no action. | `TestRulesArmEscalatesEveryUnclassifiedOrder`. It escalates rather than silently doing nothing, so the decision is countable. |
+| FR-REC-4 | Three arms drive one action surface, so the comparison is of decisions and not of capabilities. | `TestArmsShareOneActionSurface`, `TestArmsCannotReachTheGatewaysGroundTruth` |
 
 **`internal/notify`**
 
 | ID | Requirement | Covering test |
 |---|---|---|
-| FR-NOT-1 | Reauth and new-instrument outcomes send a payment link over sms or email through `ResendPaymentLinkNotification`. | Planned, phase 2 |
-| FR-NOT-2 | The recorded outcome is that the notification API call succeeded, and nothing in the trail claims a person received or read anything. | Planned, phase 2 |
+| FR-NOT-1 | Reauth and new-instrument outcomes send a payment link over sms or email through `ResendPaymentLinkNotification`. | Met in `recovery.Arm.requestFromCustomer`, exercised by every reauth and new-instrument order in the fake-layer run |
+| FR-NOT-2 | The recorded outcome is that the notification API call succeeded, and nothing in the trail claims a person received or read anything. | `TestNotifierNeverClaimsCustomerNotified`, and `Receipt.DeliveryConfirmed` is false on every path. The scorer never credits a notification as a recovery. |
 
 **`internal/audit`**
 
 | ID | Requirement | Covering test |
 |---|---|---|
-| FR-AUD-1 | One append-only machine-readable row per decision: order id, class, proposed action, policy verdict, rule, trace id, timestamp. | Planned, phase 2 |
-| FR-AUD-2 | No credential, card number, or customer contact detail reaches the ledger. | Planned, phase 2 |
-| FR-AUD-3 | Every row joins to a span by trace id, so a reviewer can go from the table to the trace. | Planned, phase 2 |
+| FR-AUD-1 | One append-only machine-readable row per decision: order id, class, proposed action, policy verdict, rule, trace id, timestamp. | Met in phase 1 and given its verdict fields in phase 2. `harness/scorer.py` computes both containment numbers from these rows. |
+| FR-AUD-2 | No credential, card number, or customer contact detail reaches the ledger. | `TestRecorderRedactsCardShapedAndKeyShapedValues`, and the phase 2 ledgers were scanned for key-shaped strings before being committed |
+| FR-AUD-3 | Every row joins to a span by trace id, so a reviewer can go from the table to the trace. | Met in phase 1, `make demo` checks it on every run |
 
 **`internal/telemetry`**
 
@@ -263,14 +269,14 @@ covers them today. Later components name the test that will.
 | FR-TEL-1 | With no OTLP endpoint set, traces go to the stdout exporter instead of failing to connect. | `TestStdoutExporterIsUsedWhenOTLPEndpointIsUnset` |
 | FR-TEL-2 | Every span carries the configured service name on its resource. | `TestTracerProviderUsesServiceNameFromConfig` |
 | FR-TEL-3 | `Shutdown` returns no error and runs its work once. | `TestNewTracerProviderShutsDownCleanly` |
-| FR-TEL-4 | Every recovery decision is a span carrying order id, class, action, and policy verdict. | Planned, phase 2 |
+| FR-TEL-4 | Every recovery decision is a span carrying order id, class, action, and policy verdict. | Met. `audit.Recorder` writes the same fields to the span and to the ledger line, and phase 2 filled the two policy fields. |
 
 **`internal/poller`**
 
 | ID | Requirement | Covering test |
 |---|---|---|
-| FR-POLL-1 | Order and payment status changes are picked up through `FetchOrder` and `ListPaymentsForOrder` and fed to the recovery loop. | Planned, phase 2 |
-| FR-POLL-2 | Polling runs under a concurrency cap and backs off on 429. | Planned, phase 2 |
+| FR-POLL-1 | Order and payment status changes are picked up through `FetchOrder` and `ListPaymentsForOrder` and fed to the recovery loop. | Met in phase 1, driven by every order of every phase 2 run |
+| FR-POLL-2 | Polling runs under a concurrency cap and backs off on 429. | Met in code. The phase 2 live runs set `MaxConcurrent` to 2 rather than the client default of 4. No 429 was observed, so Q5 stays open. |
 
 **`internal/mcpserver`**
 
@@ -381,8 +387,8 @@ Detail lives in `docs/phases/README.md` and in each phase directory.
 | Phase | Target date | Goal | Status |
 |---|---|---|---|
 | 0 foundations | 2026-08-31 | Every seam the later phases plug into exists and is proven by tests that run offline with no credentials. | Done. 28 tests green. |
-| 1 live loop | 2026-09-01 | Drive a real test-mode order to a documented failure and back to paid, and confirm the card table against live responses. | Not started |
-| 2 policy and eval | 2026-09-02 | Retry policy plus a batch harness that scores decisions against the ground-truth manifest. | Not started |
+| 1 live loop | 2026-09-01 | Drive a real test-mode order to a documented failure and back to paid, and confirm the card table against live responses. | Done 2026-08-31. The loop closes; none of the eight cards confirmed, which is the finding. |
+| 2 policy and eval | 2026-09-02 | Retry policy plus a batch harness that scores decisions against the ground-truth manifest. | Done 2026-08-31. 9 rules, 3 arms, 53 tests, and a three-arm table on two layers. `docs/phases/phase-2-policy-and-eval/REPORT.md`. |
 | 3 agent arm | 2026-09-03 | An agent drives the loop over MCP and is scored on the same batches. | Not started |
 | 4 submission | 2026-09-04 | Demo, writeup, and the numbers that back them. | Not started |
 
@@ -397,8 +403,9 @@ Each one has a trigger that closes it. All opened 2026-08-31.
 | Q3 | Which test card forces a successful authorization? | Phase 1 card-table run. `testcards.PendingSuccessCard` holds the slot, and the fake treats whatever `SuccessCard()` returns as the card that authorizes, so replacing the constant changes nothing else. | **Closed 2026-08-31, and there is no such card.** The outcome is chosen at the last checkout call by one form field. The constant stays as a value that cannot pass for a card number. |
 | Q4 | Does Razorpay put the reason string in `error.code`, `error.reason`, or both? | Phase 1 fixture capture of one failed payment. The fake fills both until then. | **Closed 2026-08-31.** Both, with different content: the coarse class in `error.code` and the specific reason in `error.reason`. The fake now splits them the same way. |
 | Q5 | What rate limit does test mode enforce? | Phase 1 measures it: the first 429 under backoff, recorded with the request rate that produced it. | **Open.** No 429 at 1.4 requests per second over 40 sequential calls on 2026-08-31. The probe is `TestLiveRateLimitObservation`, behind `RZP_RATE_LIMIT_PROBE`. A real ramp is phase 2. |
-| Q6 | Are the four attempt budgets in `batch.MaxLegitAttemptsFor` (3, 2, 1, 0) right? They are an eval choice made without data. | Phase 2 rescores a batch against observed outcomes and either keeps the numbers or moves them with a reason. | Open, phase 2. |
-| Q7 | Does `RZP_LAYER` mean the measurement layer (live, replay, fake), as this PRD and ADR-0004 use it, or the "recovery layer" its doc comment in `internal/config` names? | Phase 2, when the batch runner becomes the first code to write the value. The doc comment moves to whichever meaning the runner uses. | Open, phase 2. |
+| Q6 | Are the four attempt budgets in `batch.MaxLegitAttemptsFor` (3, 2, 1, 0) right? They are an eval choice made without data. | Phase 2 rescores a batch against observed outcomes and either keeps the numbers or moves them with a reason. | **Answered on a different axis, 2026-08-31, and still open on the original one.** The numbers were not moved, because the phase 2 run found something prior to whether they are right: nothing enforces them. `R1-MAX-ATTEMPTS` is a flat cap of 3 per order and no rule reads the per-class budget, so the attempt-budget-exhausted bait order is allowed a third attempt and the rules arm takes it. Whether 3, 2, 1, 0 are the right numbers is a question for a rule that reads them, which is phase 3. |
+| Q7 | Does `RZP_LAYER` mean the measurement layer (live, replay, fake), as this PRD and ADR-0004 use it, or the "recovery layer" its doc comment in `internal/config` names? | Phase 2, when the batch runner becomes the first code to write the value. The doc comment moves to whichever meaning the runner uses. | **Closed 2026-08-31: the measurement layer.** `rzp run` takes `-layer` with `fake` or `live`, every outcome row and every results row carries it, and ADR-0004 forbids summing across it. The doc comment in `internal/config` was corrected. |
+| Q8 | What does a rule set that reads the per-class attempt budget do to the false-action count, and does it cost recovery? | Phase 3 adds the rule and reruns the same seeded batch, so the two tables can be put side by side. | Open, phase 3, opened 2026-08-31 out of Q6. |
 
 ## 14. Glossary
 
@@ -439,3 +446,4 @@ reported, never dropped from a denominator.
 | Date | Version | Change |
 |---|---|---|
 | 2026-08-31 | v1.0 draft | First version, written at the end of phase 0. |
+| 2026-08-31 | v1.1 | End of phase 2. Section 6 marks `seed`, `run-all`, and `report` as working. Section 8 replaces "planned, phase 2" with the covering test for policy, store, recovery, notify, audit, telemetry, poller, and clock, and marks the three requirements phase 2 did not meet as not met rather than leaving them ambiguous: FR-POL-4 (the order allowlist, unreachable until an arm can name an order id), FR-STORE-2 (durable resume), and FR-BATCH-6 (the paid-order bait). Q7 closed, Q6 answered on a different axis, Q8 opened. |
