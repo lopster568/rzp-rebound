@@ -28,6 +28,8 @@ afc0e3e feat(razorpay): port interface and the deterministic in-memory fake
 c741d4d feat(batch): seeded generator, ground-truth manifest, agent-visible projection
 843072b feat(telemetry): tracer provider, OTLP when configured and stdout when not
 44b0725 feat(config): env loading that fails fast and never prints a credential
+56aaf9c docs(phase-0): green run, decisions, problems, and the phase report
+7935966 refactor(classify,testcards): drop three exported functions nothing calls
 ```
 
 `b459ef5` is the red commit. It holds all 28 tests and the six packages with
@@ -113,7 +115,7 @@ the action, on every order including bait.
 every ground-truth value in the manifest.
 
 **`DECISIONS.md` records anything a later phase would have to
-reverse-engineer.** Met. Nine entries added in this phase, covering the
+reverse-engineer.** Met. Ten entries added in this phase, covering the
 toolchain bump, the two pending constants, the reason-before-code precedence,
 the pending-fixture error fields, the contract-harness table, the separate
 projection type, the bait design, and the timestamp-free manifest.
