@@ -1,0 +1,64 @@
+{
+  "_meta": {
+    "source": "Razorpay error documentation plus the test-card table in testdata/magic_cards.json, read 2026-08-31",
+    "documented_date": "2026-08-31",
+    "kind_values": {
+      "reason": "a payment-failure reason string returned in error.reason for a failed payment",
+      "error_class": "a top-level Razorpay error class returned in error.code"
+    },
+    "read_by": "TestClassifierIsTotalOverKnownRazorpayErrorCodes asserts the classifier returns a class for every code listed here and never panics.",
+    "gap": "The classify test list includes TestClassifierMapsRiskBlockToNeverRetry, but no risk-block code is in the documented card table. Confirm the exact Razorpay code string in phase 1 and add it here before relying on that test for coverage."
+  },
+  "codes": [
+    {
+      "code": "payment_timed_out",
+      "kind": "reason",
+      "documented_date": "2026-08-31"
+    },
+    {
+      "code": "insufficient_fund",
+      "kind": "reason",
+      "documented_date": "2026-08-31"
+    },
+    {
+      "code": "payment_cancelled",
+      "kind": "reason",
+      "documented_date": "2026-08-31"
+    },
+    {
+      "code": "card_declined",
+      "kind": "reason",
+      "documented_date": "2026-08-31"
+    },
+    {
+      "code": "card_disabled_for_online_payments",
+      "kind": "reason",
+      "documented_date": "2026-08-31"
+    },
+    {
+      "code": "card_number_invalid",
+      "kind": "reason",
+      "documented_date": "2026-08-31"
+    },
+    {
+      "code": "gateway_technical_error",
+      "kind": "reason",
+      "documented_date": "2026-08-31"
+    },
+    {
+      "code": "authentication_failed",
+      "kind": "reason",
+      "documented_date": "2026-08-31"
+    },
+    {
+      "code": "BAD_REQUEST_ERROR",
+      "kind": "error_class",
+      "documented_date": "2026-08-31"
+    },
+    {
+      "code": "GATEWAY_ERROR",
+      "kind": "error_class",
+      "documented_date": "2026-08-31"
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+version: "3.8"
+
+# Jaeger v2 (built-in OTel collector) as the trace backend for the recovery agent.
+# Adapted from ~/jaeger-mcp-bench/compose/docker-compose.yml, jaeger service only:
+# hotrod, prometheus, and flatserver are not part of this project, and with
+# prometheus gone the METRICS_STORAGE_TYPE / PROMETHEUS_* env and the
+# jaeger-config.yml mount were dropped too, so the image runs its default config.
+#
+# Bring up: docker compose -f compose/docker-compose.yml up -d
+# Tear down: docker compose -f compose/docker-compose.yml down -v
+#
+# Health check after up: curl http://localhost:16686/api/services
+# Point the agent at it: OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+
+services:
+  jaeger:
+    image: jaegertracing/jaeger:2.20.0
+    container_name: rzp-jaeger
+    ports:
+      - "16686:16686"   # query UI / API
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+      - "8888:8888"     # collector telemetry
+    networks:
+      - rzp
+
+networks:
+  rzp:
+    driver: bridge
