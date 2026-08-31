@@ -23,7 +23,7 @@ without a key or a socket to Razorpay.
 | `TestClientCreateOrderPostsExpectedPayload` | `CreateOrder` POSTs to the orders path with `amount`, `currency`, `receipt`, and `notes` in a JSON body, and decodes the response into `Order`. |
 | `TestClientRetriesOn429WithBackoffUpToCap` | A 429 is retried, the wait between attempts grows exponentially, no wait exceeds the configured cap, and the call gives up after the configured attempt limit. |
 | `TestClientDoesNotRetryOn400` | A 400 produces exactly one request and an error. A refusal repeated is still a refusal. |
-| `TestClientEmitsClientSpanPerRequest` | Each request produces one span of kind client, recorded through an in-memory span recorder. |
+| `TestClientEmitsClientSpanPerRequest` | Each request produces one span of kind client, recorded through an in-memory span recorder, and no span attribute carries the key id, the key secret, or the base64 basic-auth token. |
 | `TestClientRedactsSecretFromErrorMessages` | An error carrying a response body that echoes the key id, the secret, and the base64 basic-auth token contains none of the three. |
 | `TestClientCapsConcurrencyAtConfiguredLimit` | With the limit set to 2 and 6 calls in flight, the server never sees more than 2 at once. |
 | `TestClientCapturesRawResponseBody` | With a capture writer configured, each response appends one JSON line carrying the method, the path, the status, and the body, and no request header. A subtest added on 2026-08-31 also drives a JSON error body that echoes the credentials and asserts none of the three forms survives into the line. See `PROBLEMS.md`. |

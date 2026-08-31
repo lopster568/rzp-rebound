@@ -334,6 +334,38 @@ func TestClientEmitsClientSpanPerRequest(t *testing.T) {
 	if clientSpans != 2 {
 		t.Errorf("recorded %d client spans for 2 requests, want 2", clientSpans)
 	}
+
+	// NFR-3 says no secret in git, logs, spans, or the ledger. Spans are the
+	// one of the four this package hands to a library, so assert it rather
+	// than assuming what otelhttp records.
+	//
+	// otelhttp v0.69.0 records url.full among six attributes, so a credential
+	// that reached the URL would land here. The attribute count is checked
+	// first: a version that recorded nothing would make the scan below pass
+	// over an empty list and prove nothing.
+	attributes := 0
+	for _, span := range recorder.Ended() {
+		attributes += len(span.Attributes())
+	}
+	if attributes == 0 {
+		t.Fatal("the recorded spans carry no attributes, so the scan below would assert nothing")
+	}
+
+	token := base64.StdEncoding.EncodeToString([]byte(testKeyID + ":" + testKeySecret))
+	for _, span := range recorder.Ended() {
+		for _, kv := range span.Attributes() {
+			value := kv.Value.Emit()
+			for name, secret := range map[string]string{
+				"key id":           testKeyID,
+				"key secret":       testKeySecret,
+				"basic auth token": token,
+			} {
+				if strings.Contains(value, secret) {
+					t.Errorf("span attribute %s carries the %s: %q", kv.Key, name, value)
+				}
+			}
+		}
+	}
 }
 
 func TestClientRedactsSecretFromErrorMessages(t *testing.T) {
