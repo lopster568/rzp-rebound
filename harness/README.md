@@ -177,7 +177,9 @@ confound than ordering. The trade is written down rather than left implicit.
 
 `git_sha` is the short HEAD sha, or an empty string when git is unavailable,
 recorded as empty rather than guessed. `key_id_prefix` is the first 8
-characters of `RAZORPAY_KEY_ID` and nothing more, enough to tell two accounts
-apart in a results directory and not enough to be a credential.
+characters of `RAZORPAY_KEY_ID` and nothing more, which is the mode prefix and
+nothing after it. It says a run was test mode rather than live mode; it does
+not distinguish two test accounts, and a length that did would be a length that
+leaked part of a key.
 `prompt_sha256` reads `n/a (deterministic arms)` until the phase-3 LLM arm has
 a prompt file to digest.

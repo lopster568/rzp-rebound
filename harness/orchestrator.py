@@ -59,8 +59,13 @@ def policy_config(rzp_bin: str) -> dict:
 # real digest of the prompt file it ran.
 PROMPT_SHA256_DETERMINISTIC = "n/a (deterministic arms)"
 
-# A key id is a credential. Only enough of it is recorded to tell two accounts
-# apart in a results directory.
+# A key id is a credential, so only a prefix is recorded.
+#
+# Eight characters is "rzp_test" and nothing after it, which distinguishes a
+# test-mode run from a live-mode one and does not distinguish two test accounts.
+# That is deliberate and the comment used to overclaim it: the field exists so a
+# results directory says which mode produced it, and a length that separated
+# accounts would be a length that leaked part of a key.
 KEY_ID_PREFIX_LEN = 8
 
 
