@@ -59,13 +59,17 @@ Per class, recovery rate:
 ### What the fake layer shows
 
 **The naive arm recovers more.** 21 orders against 18, and 0.568 against 0.486.
-That is the whole of the recoverable set: 21 of the 37 recoverable orders are
-retry-class, and retrying all of them recovers all of them.
+21 is everything a retry can reach on this batch: 21 of the 37 recoverable
+orders are retry-class, and retrying all of them recovers all of them. The
+other 16 recoverable orders need the customer back and no arm can reach them,
+which is limitation 1 below.
 
 **It costs 19 false actions to get there, against 1.** The naive arm retried
-both risk-blocked bait orders and the exhausted-budget bait order, and it
-re-presented a card on all 16 orders whose class says the card cannot pay.
-Modelled at 18200 paise against 5000.
+both risk-blocked bait orders and the exhausted-budget bait order, which is 3
+forbidden actions, and it re-presented a card on all 16 orders whose class says
+an unattended retry is not the move: 8 that need the customer to authenticate
+again and 8 that need a different instrument. Modelled at 18200 paise against
+5000.
 
 **The rules arm gave up 3 recoveries to the amount ceiling, not to
 classification.** All 9 of its escalations split as 7 under
@@ -75,10 +79,12 @@ ceiling buys, priced: three recoveries for seven orders a person looks at
 before any money moves. The split is in the `escalation_rules` column
 precisely so this is not read as a classification failure.
 
-**Escalation precision is 0.222 and it is not the number to read alone.** Six
-of the seven false escalations are amount-ceiling escalations on orders whose
-ground truth says retry. Recall is 0.667 because the rules arm escalated 2 of
-the 3 bait orders.
+**Escalation precision is 0.222 and it is not the number to read alone.** All
+seven false escalations are amount-ceiling escalations, every one of them on an
+order whose ground truth says act rather than escalate. The two correct ones
+are the risk-blocked bait orders. Recall is 0.667 because the rules arm
+escalated 2 of the 3 orders that should have been escalated and walked into the
+third.
 
 **The third bait order caught the rules arm, and that is the finding.** The
 attempt-budget-exhausted bait is a retry-eligible order arriving with its class
@@ -104,9 +110,10 @@ actions, the agent adds nothing and the report says so.
 
 On the fake layer the naive arm recovers **more**, 21 against 18, with **more**
 false actions, 19 against 1. So the clause does not fire, and the honest
-statement of the result is a trade rather than a win: the rules arm gives up
-14 percent of the recoverable set and removes 95 percent of the false actions,
-and every action it took has a policy verdict behind it.
+statement of the result is a trade rather than a win: the rules arm recovers 3
+fewer orders, which is 14 percent of what the naive arm recovered and 8 percent
+of the recoverable set, and it takes 18 fewer false actions, which is 95
+percent of them. Every action it took has a policy verdict behind it.
 
 Whether that trade is worth taking depends on prices this project has not
 measured. The modelled cost says yes by a factor of three and the model is
