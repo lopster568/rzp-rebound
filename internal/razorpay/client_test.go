@@ -504,4 +504,56 @@ func TestClientCapturesRawResponseBody(t *testing.T) {
 	if strings.Contains(lines[0], testKeySecret) || strings.Contains(lines[0], "Authorization") {
 		t.Errorf("the capture line carries request auth: %q", lines[0])
 	}
+
+	// The other way a credential reaches a committed fixture: a gateway that
+	// echoes the request back inside a JSON error body. The capture is what
+	// becomes a file in testdata/recorded/, so it has to be scrubbed on the
+	// way out, not only when it lands in an error message.
+	t.Run("a json body that echoes the credentials is scrubbed", func(t *testing.T) {
+		token := base64.StdEncoding.EncodeToString([]byte(testKeyID + ":" + testKeySecret))
+
+		leaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"description":   "upstream failed for key " + testKeyID + " with secret " + testKeySecret,
+				"authorization": "Basic " + token,
+			})
+		}))
+		defer leaky.Close()
+
+		var captured bytes.Buffer
+		c := newTestClient(t, leaky.URL+"/v1", func(o *razorpay.ClientOptions) {
+			o.RawCapture = &captured
+		})
+
+		if _, err := c.FetchOrder(context.Background(), "order_leakycapture"); err == nil {
+			t.Fatal("a 500 returned no error")
+		}
+
+		line := strings.TrimSpace(captured.String())
+		if line == "" {
+			t.Fatal("a failing response wrote no capture line, so a fixture run would record nothing")
+		}
+		for name, secret := range map[string]string{
+			"key id":           testKeyID,
+			"key secret":       testKeySecret,
+			"basic auth token": token,
+		} {
+			if strings.Contains(line, secret) {
+				t.Errorf("the %s reached the capture line: %q", name, line)
+			}
+		}
+
+		// Scrubbing must leave the line parseable, or the fixture it becomes
+		// is unusable.
+		var scrubbed razorpay.RawResponse
+		if err := json.Unmarshal([]byte(line), &scrubbed); err != nil {
+			t.Fatalf("the scrubbed capture line is not valid JSON: %v (%q)", err, line)
+		}
+		if scrubbed.Status != http.StatusInternalServerError {
+			t.Errorf("captured status = %d, want 500", scrubbed.Status)
+		}
+		if _, ok := scrubbed.Body.(map[string]any); !ok {
+			t.Errorf("the scrubbed body is no longer an object: %v", scrubbed.Body)
+		}
+	})
 }

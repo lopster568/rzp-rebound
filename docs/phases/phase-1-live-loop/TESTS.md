@@ -26,7 +26,7 @@ without a key or a socket to Razorpay.
 | `TestClientEmitsClientSpanPerRequest` | Each request produces one span of kind client, recorded through an in-memory span recorder. |
 | `TestClientRedactsSecretFromErrorMessages` | An error carrying a response body that echoes the key id, the secret, and the base64 basic-auth token contains none of the three. |
 | `TestClientCapsConcurrencyAtConfiguredLimit` | With the limit set to 2 and 6 calls in flight, the server never sees more than 2 at once. |
-| `TestClientCapturesRawResponseBody` | With a capture writer configured, each response appends one JSON line carrying the method, the path, the status, and the body, and no request header. |
+| `TestClientCapturesRawResponseBody` | With a capture writer configured, each response appends one JSON line carrying the method, the path, the status, and the body, and no request header. A subtest added on 2026-08-31 also drives a JSON error body that echoes the credentials and asserts none of the three forms survives into the line. See `PROBLEMS.md`. |
 
 ## internal/razorpay (replay)
 

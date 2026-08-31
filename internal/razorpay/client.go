@@ -419,10 +419,17 @@ func (c *Client) captureResponse(method, path string, status int, body []byte) e
 		Path:       c.basePath + path,
 		Status:     status,
 	}
-	if json.Valid(body) {
-		line.Body = json.RawMessage(body)
+	// Scrub before writing, not only on the error path. A capture line becomes
+	// a committed file under testdata/recorded/, and a gateway that echoes the
+	// request back inside a JSON error body would otherwise put a credential
+	// in git. Redacted holds no JSON metacharacter, so replacing inside a
+	// string value leaves the document parseable, and the check below covers
+	// the case where it did not.
+	scrubbed := c.Redact(string(body))
+	if json.Valid(body) && json.Valid([]byte(scrubbed)) {
+		line.Body = json.RawMessage(scrubbed)
 	} else {
-		line.Body = c.Redact(string(body))
+		line.Body = scrubbed
 	}
 
 	encoded, err := json.Marshal(line)

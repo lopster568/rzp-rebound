@@ -40,3 +40,37 @@ slice it had just read, which it should have had anyway.
 The red run went from 22 visible failures to 25, which is the real number.
 
 Cost: 10 minutes.
+
+## 2026-08-31: the raw capture hook wrote JSON response bodies without scrubbing them
+
+Symptom: found by reviewing `Client.captureResponse` after the package was
+green. A response body that parsed as JSON went into the capture line as
+`json.RawMessage(body)`, straight from the wire. Only a body that failed
+`json.Valid` went through `Redact`.
+
+Cause: the redaction work was aimed at error messages, and the capture path got
+the branch that treats a valid JSON body as already safe. Nothing about being
+valid JSON makes a body safe. A gateway that echoes the request into a JSON
+error body puts the key id, the key secret, and the base64 basic-auth token
+into that stream.
+
+Why it mattered more than the equivalent in an error message: a capture line
+becomes a committed file under `testdata/recorded/`. The pre-commit hook blocks
+a staged diff containing something shaped like a Razorpay key, but it matches
+the two key prefixes, so it would not have caught a base64 token, and the
+fixture would have gone into git.
+
+Writing this entry tripped the prose gate, which refused the first draft for
+naming those two prefixes literally. Both gates behaved.
+
+Fix: scrub first, then decide how to store it.
+`TestClientCapturesRawResponseBody` gained a subtest driving a 500 whose JSON
+body echoes all three forms. It was seen failing on all three before the fix.
+
+The fix also checks that the scrubbed text is still valid JSON before storing
+it as raw JSON, and falls back to a string when it is not. `[redacted]` carries
+no JSON metacharacter, so replacing inside a string value leaves the document
+parseable, but a fixture that will not parse is worse than an ugly one and the
+check costs one call.
+
+Cost: 20 minutes.
