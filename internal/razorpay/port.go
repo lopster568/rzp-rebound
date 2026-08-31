@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -113,11 +114,32 @@ func (n *Notes) UnmarshalJSON(b []byte) error {
 		return nil
 	}
 
-	var m map[string]string
-	if err := json.Unmarshal(trimmed, &m); err != nil {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &raw); err != nil {
 		return fmt.Errorf("razorpay: decode notes: %w", err)
 	}
-	*n = m
+
+	// A note whose value is not a string keeps its JSON text rather than
+	// failing the whole order. This project only ever writes string notes, but
+	// an order created from the dashboard or by another integration can carry
+	// a number or a boolean, and failing there would be the same defect this
+	// type was added to fix: the order exists in Razorpay, the caller gets an
+	// error, and nothing knows the id of what it just read. Review finding,
+	// 2026-08-31.
+	out := make(Notes, len(raw))
+	for key, value := range raw {
+		var str string
+		if err := json.Unmarshal(value, &str); err == nil {
+			out[key] = str
+			continue
+		}
+		text := strings.TrimSpace(string(value))
+		if text == "null" {
+			text = ""
+		}
+		out[key] = text
+	}
+	*n = out
 	return nil
 }
 

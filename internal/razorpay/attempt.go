@@ -119,7 +119,18 @@ type AttemptOutcome struct {
 	PaymentID string
 	// Outcome is the value that was sent to the mock bank.
 	Outcome string
-	// Steps names each call that was made, in order, for the audit trail.
+	// Steps names each call that was attempted, in order, for the audit
+	// trail.
+	//
+	// A step is recorded when it is sent, not when it comes back. A call that
+	// reached Razorpay and had its effect but whose response failed is a call
+	// that was made, and recording it as never made is the wrong direction to
+	// be wrong in for a system whose argument is that the trail says what
+	// happened. The last step is the case that matters: the mock bank can be
+	// told to authorize and the response can still fail.
+	//
+	// So the presence of a step means it was sent, not that it succeeded. The
+	// error returned alongside says which one stopped the run.
 	Steps []string
 }
 
@@ -135,6 +146,15 @@ type AttemptOutcome struct {
 // The sequence and the evidence for it are in
 // docs/RAZORPAY-TEST-MODE-NOTES.md. It is test mode only, and the mock bank
 // page it ends at does not exist in live mode.
+//
+// What it does not inherit from Client: the 429 backoff and the concurrency
+// semaphore. Those live on Client.do and these four calls do not go through
+// it, so an attempt is one request per step with no retry and no cap. That is
+// deliberate for now rather than hidden, because a retry of an undocumented
+// checkout call is a second payment attempt, not a repeated read, and nothing
+// has measured what these endpoints do under load. A batch runner that drives
+// many attempts at once is phase 2, and it is the thing that will need this
+// answered.
 type Attempter struct {
 	client  *Client
 	http    *http.Client
@@ -168,7 +188,12 @@ func NewAttempter(opts AttempterOptions) (*Attempter, error) {
 	// page cannot send a run somewhere it was not pointed.
 	parsed, err := url.Parse(c.BaseURL())
 	if err != nil {
-		return nil, fmt.Errorf("razorpay: attempter base url %q: %w", c.BaseURL(), err)
+		// Not echoed, for the reason newClient gives.
+		var uerr *url.Error
+		if errors.As(err, &uerr) {
+			return nil, fmt.Errorf("razorpay: the attempter base url does not parse: %v", uerr.Err)
+		}
+		return nil, fmt.Errorf("razorpay: the attempter base url does not parse")
 	}
 
 	// The HTTP client here is deliberately not otelhttp instrumented, unlike
@@ -192,8 +217,21 @@ func NewAttempter(opts AttempterOptions) (*Attempter, error) {
 	}
 
 	return &Attempter{
-		client:  c,
-		http:    &http.Client{Transport: base},
+		client: c,
+		http: &http.Client{
+			Transport: base,
+			// The redirect pin matters more here than on Client. Two of these
+			// four calls carry key_id in the query and the callback carries it
+			// as a path segment, so an unpinned 302 hands a foreign host half
+			// a credential pair and an unpinned 307 replays the form body,
+			// which is the key id, the card number, and the CVV. Found in
+			// review on 2026-08-31 and reproduced.
+			//
+			// The same-origin callback the settle call redirects to is still
+			// followed, which the attempt sequence depends on.
+			CheckRedirect: pinnedRedirect(parsed),
+			Timeout:       DefaultRequestTimeout,
+		},
 		tracer:  tp.Tracer(AttempterTracerName),
 		keyID:   opts.KeyID,
 		apiRoot: parsed.Scheme + "://" + parsed.Host,
@@ -255,10 +293,10 @@ func (a *Attempter) Attempt(ctx context.Context, req AttemptRequest) (AttemptOut
 		"card[expiry_year]":  {"30"},
 		"card[cvv]":          {"123"},
 	})
+	outcome.Steps = append(outcome.Steps, "create_payment")
 	if err != nil {
 		return outcome, a.fail(span, err)
 	}
-	outcome.Steps = append(outcome.Steps, "create_payment")
 
 	var ajax struct {
 		PaymentID string `json:"payment_id"`
@@ -283,11 +321,11 @@ func (a *Attempter) Attempt(ctx context.Context, req AttemptRequest) (AttemptOut
 		authURL = a.apiRoot + a.path(fmt.Sprintf(pathAuthenticate,
 			url.PathEscape(strings.TrimPrefix(ajax.PaymentID, "pay_"))))
 	}
+	outcome.Steps = append(outcome.Steps, "authenticate")
 	authPage, err := a.postForm(ctx, "authenticate", authURL, url.Values{"key_id": {a.keyID}})
 	if err != nil {
 		return outcome, a.fail(span, err)
 	}
-	outcome.Steps = append(outcome.Steps, "authenticate")
 
 	gatewayURL, gatewayFields, err := a.form(string(authPage), `id="form1"`)
 	if err != nil {
@@ -297,11 +335,11 @@ func (a *Attempter) Attempt(ctx context.Context, req AttemptRequest) (AttemptOut
 	// Step 3. The mock bank gateway. The fields are carried forward rather
 	// than rebuilt: the callback url among them is signed per payment and
 	// there is no way to construct one.
+	outcome.Steps = append(outcome.Steps, "gateway")
 	bankPage, err := a.postForm(ctx, "gateway", gatewayURL, gatewayFields)
 	if err != nil {
 		return outcome, a.fail(span, err)
 	}
-	outcome.Steps = append(outcome.Steps, "gateway")
 
 	submitURL, submitFields, err := a.form(string(bankPage), "")
 	if err != nil {
@@ -311,10 +349,10 @@ func (a *Attempter) Attempt(ctx context.Context, req AttemptRequest) (AttemptOut
 	// Step 4. Settle it. This one field is the entire outcome, which is why
 	// the card table could not be verified: the card never reaches this call.
 	submitFields.Set("success", req.Outcome)
+	outcome.Steps = append(outcome.Steps, "settle")
 	if _, err := a.postForm(ctx, "settle", submitURL, submitFields); err != nil {
 		return outcome, a.fail(span, err)
 	}
-	outcome.Steps = append(outcome.Steps, "settle")
 
 	return outcome, nil
 }
@@ -348,7 +386,16 @@ func (a *Attempter) resolve(raw string) string {
 	if err != nil || parsed.Path == "" {
 		return ""
 	}
-	out := a.apiRoot + parsed.Path
+	// A path without a leading slash would concatenate straight onto the host
+	// and produce something like https://host:9000relative, which url.Parse
+	// then rejects with an invalid-port error that says nothing useful. The
+	// observed pages all use absolute URLs, so this is a guard rather than a
+	// fix for something seen. Review finding, 2026-08-31.
+	path := parsed.Path
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	out := a.apiRoot + path
 	if parsed.RawQuery != "" {
 		out += "?" + parsed.RawQuery
 	}
@@ -367,36 +414,81 @@ func (a *Attempter) postForm(ctx context.Context, step, rawURL string, form url.
 		trace.WithAttributes(attribute.String(AttrCheckoutStep, step)))
 	defer span.End()
 
+	// stepErr marks this step's own span before returning. Without it a
+	// transport failure left the step span indistinguishable from a
+	// successful one, with neither a status attribute nor an error on it,
+	// which undercuts the reason these spans exist. Review finding,
+	// 2026-08-31.
+	stepErr := func(err error) ([]byte, error) {
+		span.SetStatus(codes.Error, "checkout step failed")
+		span.RecordError(err)
+		return nil, err
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, a.client.redactErr(fmt.Errorf("razorpay: build the %s call: %w", step, err))
+		return stepErr(a.client.redactErr(fmt.Errorf("razorpay: build the %s call: %w", step, err)))
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return nil, a.client.redactErr(fmt.Errorf("razorpay: %s: %w", step, err))
+		return stepErr(a.client.redactErr(fmt.Errorf("razorpay: %s: %w", step, err)))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	span.SetAttributes(attribute.Int(AttrCheckoutStatus, resp.StatusCode))
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
-		return nil, a.client.redactErr(fmt.Errorf("razorpay: read the %s response: %w", step, err))
+		return stepErr(a.client.redactErr(fmt.Errorf("razorpay: read the %s response: %w", step, err)))
 	}
 	if len(body) > maxResponseBytes {
-		return nil, fmt.Errorf("razorpay: the %s response is larger than the %d byte cap", step, maxResponseBytes)
+		return stepErr(fmt.Errorf("razorpay: the %s response is larger than the %d byte cap", step, maxResponseBytes))
 	}
 
-	path := "/checkout/" + step
+	// The capture line records the path that actually answered, not a
+	// synthetic one. It used to say "/checkout/<step>", which is not a path
+	// Razorpay serves, in a stream the client documents as the record of what
+	// Razorpay sent. Review finding, 2026-08-31.
+	path := resp.Request.URL.Path
+	if path == "" {
+		path = "/checkout/" + step
+	}
 	if err := a.client.captureResponse(http.MethodPost, path, resp.StatusCode, body); err != nil {
-		return nil, a.client.redactErr(err)
+		return stepErr(a.client.redactErr(err))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, a.client.redactErr(a.client.apiError(http.MethodPost, path, resp.StatusCode, body))
+		return stepErr(a.client.redactErr(a.client.apiError(http.MethodPost, path, resp.StatusCode, body)))
 	}
 	return body, nil
 }
+
+// decodeHTMLAttr undoes the entity escaping an HTML attribute value carries.
+//
+// Only the actions were decoded until a review on 2026-08-31 pointed out that
+// input values were not, which is asymmetric for no reason: a hidden field
+// holding a URL with two query parameters must be written with an escaped
+// ampersand in valid HTML, and the field this would land on is the callback
+// url, the one the code carries forward precisely because it cannot be
+// rebuilt. The observed pages have no such value, so this was latent.
+//
+// The five predefined entities are the whole set that matters here. A numeric
+// character reference in a Razorpay hidden field would be a different problem
+// and is not being guessed at.
+func decodeHTMLAttr(s string) string {
+	return htmlAttrReplacer.Replace(s)
+}
+
+// htmlAttrReplacer expands the ampersand entity last so that an already
+// escaped sequence is not double decoded.
+var htmlAttrReplacer = strings.NewReplacer(
+	"&lt;", "<",
+	"&gt;", ">",
+	"&quot;", `"`,
+	"&#39;", "'",
+	"&apos;", "'",
+	"&amp;", "&",
+)
 
 var (
 	formTagPattern   = regexp.MustCompile(`(?is)<form[^>]*>`)
@@ -430,7 +522,7 @@ func (a *Attempter) form(page, marker string) (string, url.Values, error) {
 		if m == nil {
 			continue
 		}
-		action = strings.ReplaceAll(m[1], "&amp;", "&")
+		action = decodeHTMLAttr(m[1])
 		break
 	}
 	if action == "" {
@@ -450,9 +542,9 @@ func (a *Attempter) form(page, marker string) (string, url.Values, error) {
 		}
 		value := ""
 		if v := attrValuePattern.FindStringSubmatch(tag); v != nil {
-			value = v[1]
+			value = decodeHTMLAttr(v[1])
 		}
-		fields.Set(name[1], value)
+		fields.Set(decodeHTMLAttr(name[1]), value)
 	}
 	return resolved, fields, nil
 }

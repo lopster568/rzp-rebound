@@ -46,6 +46,9 @@ const (
 	DefaultBaseBackoff   = 250 * time.Millisecond
 	DefaultMaxBackoff    = 8 * time.Second
 	DefaultMaxConcurrent = 4
+	// DefaultRequestTimeout bounds one request including reading its body.
+	// Nothing observed on 2026-08-31 took longer than a couple of seconds.
+	DefaultRequestTimeout = 30 * time.Second
 )
 
 // maxResponseBytes bounds how much of a response body is read, so a runaway
@@ -55,6 +58,15 @@ const maxResponseBytes = 1 << 20
 // maxErrorBodyBytes bounds how much of a failing response body goes into an
 // error message.
 const maxErrorBodyBytes = 512
+
+// maxCaptureBodyBytes bounds how much of a response body goes into a capture
+// line.
+//
+// The capture path had no cap at all, so one checkout page produced a JSONL
+// line of over a megabyte. Review finding, 2026-08-31. Every real API response
+// this project has seen is under a kilobyte, and the pages that are not are
+// HTML that no fixture is built from.
+const maxCaptureBodyBytes = 64 << 10
 
 // Redacted is what a credential becomes in anything that leaves this package.
 // It is internal/redact's marker, because a capture line can be scrubbed by
@@ -156,6 +168,12 @@ type ClientOptions struct {
 	Wait WaitFunc
 	// RawCapture, when set, gets one JSON line per response. It is what the
 	// live half records testdata/recorded/ fixtures with.
+	//
+	// It must be safe for concurrent use if it is shared. Each Client holds
+	// its own mutex around the write, and an Attempter builds a second Client
+	// internally, so handing the same writer to both leaves the two
+	// unsynchronised with each other. cmd/rzp does exactly that and is safe
+	// because its writer has a mutex of its own.
 	RawCapture io.Writer
 	// Clock stamps the capture lines. Nil means the wall clock.
 	Clock clock.Clock
@@ -202,7 +220,15 @@ func newClient(opts ClientOptions) (*Client, error) {
 	}
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
-		return nil, fmt.Errorf("razorpay: base url %q: %w", baseURL, err)
+		// The URL is not echoed. It is caller-supplied and can carry userinfo,
+		// and this runs before the client exists to redact anything. A
+		// *url.Error prints the URL it failed on, so only its inner cause is
+		// reported.
+		var uerr *url.Error
+		if errors.As(err, &uerr) {
+			return nil, fmt.Errorf("razorpay: the base url does not parse: %v", uerr.Err)
+		}
+		return nil, fmt.Errorf("razorpay: the base url does not parse")
 	}
 
 	base := opts.Transport
@@ -215,11 +241,16 @@ func newClient(opts ClientOptions) (*Client, error) {
 	}
 
 	c := &Client{
-		baseURL:     baseURL,
-		basePath:    strings.TrimRight(parsed.Path, "/"),
-		keyID:       opts.KeyID,
-		keySecret:   opts.KeySecret,
-		http:        &http.Client{Transport: otelhttp.NewTransport(base, traceOpts...)},
+		baseURL:   baseURL,
+		basePath:  strings.TrimRight(parsed.Path, "/"),
+		keyID:     opts.KeyID,
+		keySecret: opts.KeySecret,
+		http: &http.Client{
+			Transport:     otelhttp.NewTransport(base, traceOpts...),
+			CheckRedirect: pinnedRedirect(parsed),
+			// A money call that hangs forever is worse than one that fails.
+			Timeout: DefaultRequestTimeout,
+		},
 		maxAttempts: opts.MaxAttempts,
 		baseBackoff: opts.BaseBackoff,
 		maxBackoff:  opts.MaxBackoff,
@@ -261,6 +292,45 @@ func newClient(opts ClientOptions) (*Client, error) {
 	c.sem = make(chan struct{}, concurrency)
 
 	return c, nil
+}
+
+// maxRedirectHops bounds how many redirects any client here will follow. Go's
+// default is 10. Nothing Razorpay does needs more than the one the checkout
+// callback uses, and a lower ceiling bounds a redirect loop.
+const maxRedirectHops = 3
+
+// ErrRedirectOffOrigin is returned when a gateway tries to send a request
+// somewhere other than the origin the client was pointed at.
+var ErrRedirectOffOrigin = errors.New("razorpay: refusing to follow a redirect off the configured origin")
+
+// pinnedRedirect keeps every hop on the origin the client was built for.
+//
+// Without it both clients here followed the Location header anywhere, which
+// was found in review on 2026-08-31 and reproduced. The attempter was the
+// serious one: two of its calls carry key_id in the query and the callback
+// carries it as a path segment, so a 302 handed a foreign host half a
+// credential pair, and a 307 replayed the whole form body, which is the key
+// id, the card number, and the CVV. The client was milder, because Go strips
+// the Authorization header on a cross-domain redirect, but it keeps it for a
+// different port on the same host or for a subdomain.
+//
+// Same-origin redirects are still followed. The real checkout callback is on
+// the same origin as the API, and the attempt sequence depends on it.
+//
+// The error names the host and never the URL. A refused redirect target is
+// exactly the kind of URL that carries a credential, and an error message is
+// the last place it should end up.
+func pinnedRedirect(root *url.URL) func(*http.Request, []*http.Request) error {
+	origin := root.Scheme + "://" + root.Host
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= maxRedirectHops {
+			return fmt.Errorf("razorpay: stopped after %d redirect(s)", len(via))
+		}
+		if req.URL.Scheme+"://"+req.URL.Host != origin {
+			return fmt.Errorf("%w: %s wanted %s", ErrRedirectOffOrigin, root.Host, req.URL.Host)
+		}
+		return nil
+	}
 }
 
 // sleepWait is the default backoff: a timer that gives up when the context
@@ -311,15 +381,23 @@ func (c *Client) apiError(method, path string, status int, body []byte) *APIErro
 	// the replacer is looking for, so it goes into the error message and from
 	// there into every log line that formats one. Measured on 2026-08-31 with
 	// the cut inside the secret: 11 of 22 characters survived.
-	scrubbed := redact.Value(c.Redact(string(body)))
-
-	// Parse before truncating, for the same reason redaction runs before it:
-	// the description can sit past the cut, and it is the field mapNotFound
-	// needs. A body that does not parse leaves both fields empty, which is
-	// the fail-closed answer.
+	// Parse the raw body, before anything rewrites it, and redact what comes
+	// out. Parsing the scrubbed text instead was a real defect, found in
+	// review on 2026-08-31 and reproduced: redact.Value replaces a run of 13
+	// or more digits with a bare marker, and an unquoted JSON number is
+	// exactly that shape, so a millisecond epoch anywhere in the envelope left
+	// a document that no longer parsed. The unmarshal error was discarded,
+	// Description stayed empty, and mapNotFound stopped recognising the one
+	// case ErrOrderNotFound exists for. Razorpay's error envelope carries an
+	// open-shaped metadata object, so it was reachable rather than
+	// theoretical.
+	//
+	// The two extracted fields are scrubbed individually on the way out, so
+	// nothing skips redaction by being parsed first.
 	var envelope apiErrorEnvelope
-	_ = json.Unmarshal([]byte(scrubbed), &envelope)
+	_ = json.Unmarshal(body, &envelope)
 
+	scrubbed := redact.Value(c.Redact(string(body)))
 	if len(scrubbed) > maxErrorBodyBytes {
 		// Truncation is on a byte boundary and can split a rune, so drop what
 		// it broke rather than putting invalid UTF-8 in an error.
@@ -330,8 +408,8 @@ func (c *Client) apiError(method, path string, status int, body []byte) *APIErro
 		Method:      method,
 		Path:        path,
 		Body:        scrubbed,
-		Description: envelope.Error.Description,
-		Reason:      envelope.Error.Reason,
+		Description: redact.Value(c.Redact(envelope.Error.Description)),
+		Reason:      redact.Value(c.Redact(envelope.Error.Reason)),
 	}
 }
 
@@ -376,6 +454,19 @@ func mapNotFound(err error, sentinel error, id string) error {
 // was lost on the way back. The live half observes one and this comment gets a
 // decision instead of a caveat.
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
+	return c.doWith(ctx, method, path, body, out, false)
+}
+
+// doWith is do, with the one behaviour that is not shared by every call.
+//
+// tolerateEmptyBody makes a 2xx with no body a success that leaves out
+// untouched. It is false everywhere except the resend call, and it was
+// unconditional until review on 2026-08-31 showed what that costs: every read
+// call returned a zero value and a nil error, so FetchOrder reported an empty
+// status and ListPaymentsForOrder reported that an order had no attempts on
+// it. An empty slice is a positive claim, and the poller and the recovery
+// orchestrator both act on it.
+func (c *Client) doWith(ctx context.Context, method, path string, body any, out any, tolerateEmptyBody bool) error {
 	var payload []byte
 	if body != nil {
 		var err error
@@ -402,11 +493,11 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 			if out == nil {
 				return nil
 			}
-			// A 2xx with no body is not a decode failure. Nothing observed so
-			// far answers that way, and treating it as an error would turn a
-			// successful side effect into a reported failure, which is the
-			// wrong direction for a call that moves money.
-			if len(bytes.TrimSpace(respBody)) == 0 {
+			// A 2xx with no body is only acceptable where the caller said so.
+			// For the resend it means the call was accepted and carried
+			// nothing else, which is all Accepted ever claims. For a read it
+			// would mean inventing state.
+			if tolerateEmptyBody && len(bytes.TrimSpace(respBody)) == 0 {
 				return nil
 			}
 			if err := json.Unmarshal(respBody, out); err != nil {
@@ -508,9 +599,16 @@ func (c *Client) captureResponse(method, path string, status int, body []byte) e
 	// metacharacter, so replacing inside a string value leaves the document
 	// parseable, and the check below covers the case where it did not.
 	scrubbed := redact.Value(c.Redact(string(body)))
-	if json.Valid(body) && json.Valid([]byte(scrubbed)) {
+	switch {
+	case len(scrubbed) > maxCaptureBodyBytes:
+		// Store it as a truncated string rather than as raw JSON. A cut
+		// document would not parse, and a capture line that cannot be read is
+		// worse than one that says it is short.
+		line.Body = strings.ToValidUTF8(scrubbed[:maxCaptureBodyBytes], "") +
+			fmt.Sprintf("(truncated from %d bytes)", len(scrubbed))
+	case json.Valid(body) && json.Valid([]byte(scrubbed)):
 		line.Body = json.RawMessage(scrubbed)
-	} else {
+	default:
 		line.Body = scrubbed
 	}
 
@@ -690,7 +788,10 @@ func (c *Client) ResendPaymentLinkNotification(ctx context.Context, linkID, medi
 
 	var out notifyResponse
 	path := fmt.Sprintf(pathPaymentLinkNotify, url.PathEscape(linkID), url.PathEscape(medium))
-	if err := c.do(ctx, http.MethodPost, path, nil, &out); err != nil {
+	// The only call that tolerates an empty 2xx body. What is being observed
+	// is that the notification API call was accepted, and a response with
+	// nothing in it still says that.
+	if err := c.doWith(ctx, http.MethodPost, path, nil, &out, true); err != nil {
 		return NotifyReceipt{}, mapNotFound(err, ErrPaymentLinkNotFound, linkID)
 	}
 

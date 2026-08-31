@@ -55,13 +55,19 @@ type Config struct {
 }
 
 // TraceURL returns the Jaeger link for one trace, or an empty string when
-// there is no trace id.
+// there is no usable trace id.
 //
-// An empty trace id means no span was recorded, and a link ending in /trace/
-// with nothing after it is a broken link presented as evidence. Callers print
-// nothing rather than that.
+// A link ending in /trace/ with nothing after it, or with 32 zeros after it,
+// is a broken link presented as evidence. Callers print nothing rather than
+// that.
+//
+// The all-zero id is the case that actually happens.
+// trace.TraceID.String never returns an empty string: a span context that is
+// not recording renders as 32 zeros, so a guard on the empty string alone let
+// the caller print a link to a trace that cannot exist. Review finding,
+// 2026-08-31.
 func (c Config) TraceURL(traceID string) string {
-	if traceID == "" {
+	if !validTraceID(traceID) {
 		return ""
 	}
 	root := c.JaegerUIURL
@@ -69,6 +75,26 @@ func (c Config) TraceURL(traceID string) string {
 		root = DefaultJaegerUIURL
 	}
 	return strings.TrimRight(root, "/") + "/trace/" + traceID
+}
+
+// validTraceID reports whether s is a trace id worth linking to: 32 hex
+// characters, at least one of them not a zero.
+func validTraceID(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	nonZero := false
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f':
+		default:
+			return false
+		}
+		if r != '0' {
+			nonZero = true
+		}
+	}
+	return nonZero
 }
 
 // Load reads the configuration from the process environment.

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/clock"
@@ -324,5 +325,300 @@ func TestOrderDecodesNotesWhetherRazorpaySendsAnObjectOrAnEmptyArray(t *testing.
 				}
 			}
 		})
+	}
+}
+
+// TestClientStillRecognisesAMissingResourceWhenTheBodyCarriesALongNumber is a
+// review finding from 2026-08-31, reproduced before it was fixed.
+//
+// apiError scrubbed the body and then parsed the scrubbed text. redact.Value
+// replaces any run of 13 or more digits with a bare marker, and an unquoted
+// JSON number is exactly that shape, so a millisecond epoch anywhere in the
+// error envelope turned the document into something that no longer parsed.
+// The unmarshal error was discarded, Description stayed empty, and
+// mapNotFound stopped recognising the one case ErrOrderNotFound exists for.
+//
+// Razorpay's error envelope carries an open-shaped metadata object, which
+// testdata/recorded/fetch_missing_order.json confirms, so this was reachable
+// rather than theoretical.
+func TestClientStillRecognisesAMissingResourceWhenTheBodyCarriesALongNumber(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "no long number",
+			body: `{"error":{"code":"BAD_REQUEST_ERROR","description":"The id provided does not exist","source":"internal","step":"payment_initiation","reason":"input_validation_failed","metadata":{}}}`,
+		},
+		{
+			// A millisecond epoch is exactly 13 digits.
+			name: "millisecond epoch in metadata",
+			body: `{"error":{"code":"BAD_REQUEST_ERROR","description":"The id provided does not exist","source":"internal","step":"payment_initiation","reason":"input_validation_failed","metadata":{"ts":1756654321987}}}`,
+		},
+		{
+			name: "long number before the description",
+			body: `{"error":{"metadata":{"ts":1756654321987000},"code":"BAD_REQUEST_ERROR","description":"The id provided does not exist","reason":"input_validation_failed"}}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer srv.Close()
+
+			_, err := newWireClient(t, srv).FetchOrder(context.Background(), "order_AAAAAAAAAAAAAA")
+			if err == nil {
+				t.Fatal("the call returned no error")
+			}
+			if !errors.Is(err, razorpay.ErrOrderNotFound) {
+				t.Errorf("err = %v, want it to wrap ErrOrderNotFound", err)
+			}
+
+			var apiErr *razorpay.APIError
+			if !errors.As(err, &apiErr) {
+				t.Fatalf("err = %v, want an *APIError", err)
+			}
+			if apiErr.Description != razorpay.DescriptionMissingResource {
+				t.Errorf("Description = %q, want %q", apiErr.Description, razorpay.DescriptionMissingResource)
+			}
+			if apiErr.Reason != "input_validation_failed" {
+				t.Errorf("Reason = %q, want %q", apiErr.Reason, "input_validation_failed")
+			}
+			// The body a caller sees is still scrubbed, whatever the parse did.
+			if strings.Contains(apiErr.Body, "1756654321987") {
+				t.Errorf("Body kept a long digit run unscrubbed: %s", apiErr.Body)
+			}
+		})
+	}
+}
+
+// TestClientDoesNotInventStateFromAnEmptyResponseBody is the second review
+// finding from 2026-08-31.
+//
+// do treated a 2xx with an empty body as a success and left out untouched, so
+// a read call returned a zero value and a nil error. ListPaymentsForOrder was
+// the worst of them: an empty slice is a positive claim that the order has no
+// attempts on it, and the poller and the recovery orchestrator both read that
+// claim. FetchOrder returning an empty status feeds the read-the-state-back
+// discipline the whole project rests on.
+//
+// The tolerance was written for the resend call, which is the one place a body
+// is genuinely optional, and that is the only place it applies now.
+func TestClientDoesNotInventStateFromAnEmptyResponseBody(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusNoContent} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+			}))
+			defer srv.Close()
+
+			c := newWireClient(t, srv)
+			ctx := context.Background()
+
+			if _, err := c.FetchOrder(ctx, "order_TWUltnSDVIxdYd"); err == nil {
+				t.Error("FetchOrder returned an order and no error for an empty body")
+			}
+			if _, err := c.CreateOrder(ctx, razorpay.CreateOrderRequest{AmountPaise: 100, Currency: "INR"}); err == nil {
+				t.Error("CreateOrder returned an order and no error for an empty body")
+			}
+			if payments, err := c.ListPaymentsForOrder(ctx, "order_TWUltnSDVIxdYd"); err == nil {
+				t.Errorf("ListPaymentsForOrder returned %d payment(s) and no error for an empty body, "+
+					"which is a positive claim that the order has no attempts", len(payments))
+			}
+			if _, err := c.FetchPayment(ctx, "pay_TWUlwFBzmiGUvk"); err == nil {
+				t.Error("FetchPayment returned a payment and no error for an empty body")
+			}
+			if _, err := c.CreatePaymentLink(ctx, razorpay.CreatePaymentLinkRequest{AmountPaise: 100}); err == nil {
+				t.Error("CreatePaymentLink returned a link and no error for an empty body")
+			}
+
+			// The resend is the one call whose body is optional. A 2xx with
+			// nothing in it is an accepted call, which is all Accepted claims.
+			receipt, err := c.ResendPaymentLinkNotification(ctx, "plink_TWUSsBJJxaHJ3W", razorpay.MediumEmail)
+			if err != nil {
+				t.Fatalf("ResendPaymentLinkNotification with an empty body: %v", err)
+			}
+			if !receipt.Accepted {
+				t.Error("a 2xx with an empty body was not reported as accepted")
+			}
+		})
+	}
+}
+
+// TestClientAndAttempterRefuseToFollowARedirectOffTheirOrigin is a review
+// finding from 2026-08-31, reproduced before it was fixed.
+//
+// Neither the client nor the attempter set an http.Client.CheckRedirect, so
+// both followed up to ten hops anywhere the Location header pointed.
+//
+// The attempter is the dangerous one. resolve() pins every URL that comes out
+// of an HTML form action back onto the configured root, and that works, but
+// nothing pinned the Location header, which is the one hop the design relies
+// on: the settle call answers 302 and the payment only settles once the
+// callback is followed. Two of those calls carry key_id in the query and the
+// callback carries it as a path segment, so a 302 handed a foreign host half a
+// credential pair. A 307 on the first call replays the whole form body, which
+// is the key id, the card number, and the CVV.
+//
+// The client is the milder one. Go strips the Authorization header on a
+// cross-domain redirect but keeps it for a different port on the same host or
+// a subdomain, so a redirect to api.razorpay.com:8443 would have handed over
+// the base64 of the key pair.
+//
+// Same-origin redirects are still followed, because the real callback is on
+// the same origin as the API.
+func TestClientAndAttempterRefuseToFollowARedirectOffTheirOrigin(t *testing.T) {
+	var foreignHits []string
+	var mu sync.Mutex
+
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		foreignHits = append(foreignHits, r.URL.RequestURI()+" form="+r.Form.Encode())
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer foreign.Close()
+
+	leaked := func(t *testing.T) {
+		t.Helper()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, hit := range foreignHits {
+			if strings.Contains(hit, testKeyID) {
+				t.Errorf("a foreign host received the key id: %s", hit)
+			}
+			if strings.Contains(hit, testKeySecret) {
+				t.Errorf("a foreign host received the key secret: %s", hit)
+			}
+			if strings.Contains(hit, "4100280000080001") {
+				t.Errorf("a foreign host received the card number: %s", hit)
+			}
+		}
+		foreignHits = nil
+	}
+
+	t.Run("attempter 307 replays the form body off origin", func(t *testing.T) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/v1/payments/create/ajax", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, foreign.URL+"/v1/payments/create/ajax", http.StatusTemporaryRedirect)
+		})
+		srv := httptest.NewServer(mux)
+		defer srv.Close()
+
+		a, err := razorpay.NewAttempter(razorpay.AttempterOptions{
+			KeyID: testKeyID, KeySecret: testKeySecret, BaseURL: srv.URL + "/v1",
+		})
+		if err != nil {
+			t.Fatalf("NewAttempter: %v", err)
+		}
+		if _, err := a.Attempt(context.Background(), razorpay.AttemptRequest{
+			OrderID: "order_TWUV6Jba72pLIG", AmountPaise: 100000,
+			CardNumber: "4100280000080001", Outcome: razorpay.AttemptFail,
+		}); err == nil {
+			t.Error("following a redirect off the configured origin returned no error")
+		}
+		leaked(t)
+	})
+
+	t.Run("attempter 302 hands over the request uri", func(t *testing.T) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/v1/payments/create/ajax", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, foreign.URL+"/callback/sig/"+testKeyID, http.StatusFound)
+		})
+		srv := httptest.NewServer(mux)
+		defer srv.Close()
+
+		a, err := razorpay.NewAttempter(razorpay.AttempterOptions{
+			KeyID: testKeyID, KeySecret: testKeySecret, BaseURL: srv.URL + "/v1",
+		})
+		if err != nil {
+			t.Fatalf("NewAttempter: %v", err)
+		}
+		if _, err := a.Attempt(context.Background(), razorpay.AttemptRequest{
+			OrderID: "order_TWUV6Jba72pLIG", AmountPaise: 100000,
+			CardNumber: "4100280000080001", Outcome: razorpay.AttemptFail,
+		}); err == nil {
+			t.Error("following a redirect off the configured origin returned no error")
+		}
+		leaked(t)
+	})
+
+	t.Run("client refuses an off-origin redirect", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, foreign.URL+r.URL.Path, http.StatusFound)
+		}))
+		defer srv.Close()
+
+		if _, err := newWireClient(t, srv).FetchOrder(context.Background(), "order_TWUltnSDVIxdYd"); err == nil {
+			t.Error("the client followed a redirect off its configured origin and reported no error")
+		}
+		mu.Lock()
+		hits := len(foreignHits)
+		foreignHits = nil
+		mu.Unlock()
+		if hits != 0 {
+			t.Errorf("the foreign host was contacted %d time(s)", hits)
+		}
+	})
+
+	t.Run("a same-origin redirect is still followed", func(t *testing.T) {
+		var served int
+		mux := http.NewServeMux()
+		mux.HandleFunc("/v1/orders/order_TWUltnSDVIxdYd", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/v1/orders/moved", http.StatusFound)
+		})
+		mux.HandleFunc("/v1/orders/moved", func(w http.ResponseWriter, r *http.Request) {
+			served++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"order_TWUltnSDVIxdYd","status":"created","amount":100000,"currency":"INR"}`)
+		})
+		srv := httptest.NewServer(mux)
+		defer srv.Close()
+
+		order, err := newWireClient(t, srv).FetchOrder(context.Background(), "order_TWUltnSDVIxdYd")
+		if err != nil {
+			t.Fatalf("a same-origin redirect was refused: %v", err)
+		}
+		if served != 1 || order.ID == "" {
+			t.Errorf("the redirect target served %d time(s), order id %q", served, order.ID)
+		}
+	})
+}
+
+// TestOrderDecodesNotesThatAreNotStrings covers the second half of the same
+// review finding as the empty-array case: any note value that is not a string
+// used to fail the whole order.
+//
+// This project only writes string notes, but an order created from the
+// dashboard or by another integration can carry a number or a boolean, and
+// failing there is the same defect the type exists to fix.
+func TestOrderDecodesNotesThatAreNotStrings(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"order_TWUltnSDVIxdYd","amount":100000,"currency":"INR",`+
+			`"status":"created","notes":{"who":"demo","count":3,"flagged":true,"missing":null}}`)
+	}))
+	defer srv.Close()
+
+	order, err := newWireClient(t, srv).FetchOrder(context.Background(), "order_TWUltnSDVIxdYd")
+	if err != nil {
+		t.Fatalf("FetchOrder: %v", err)
+	}
+	if order.ID != "order_TWUltnSDVIxdYd" {
+		t.Fatalf("id = %q, so the whole response failed to decode", order.ID)
+	}
+
+	for key, want := range map[string]string{
+		"who": "demo", "count": "3", "flagged": "true", "missing": "",
+	} {
+		if got := order.Notes[key]; got != want {
+			t.Errorf("notes[%q] = %q, want %q", key, got, want)
+		}
 	}
 }

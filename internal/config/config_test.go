@@ -178,6 +178,18 @@ func TestConfigReadsJaegerUIURLAndBuildsATraceURL(t *testing.T) {
 		t.Errorf("TraceURL with no trace id = %q, want an empty string", empty)
 	}
 
+	// The all-zero id is the one that actually shows up. trace.TraceID.String
+	// never returns an empty string: a span context that is not recording
+	// renders as 32 zeros, so guarding only the empty case left the caller
+	// printing a link to a trace that cannot exist. Review finding,
+	// 2026-08-31.
+	if zero := cfg.TraceURL("00000000000000000000000000000000"); zero != "" {
+		t.Errorf("TraceURL with the all-zero trace id = %q, want an empty string", zero)
+	}
+	if short := cfg.TraceURL("abc"); short != "" {
+		t.Errorf("TraceURL with a malformed trace id = %q, want an empty string", short)
+	}
+
 	// Unset falls back to the port compose publishes, so a local run still
 	// prints a working link.
 	fallback, err := config.LoadFrom(envMap(map[string]string{}))

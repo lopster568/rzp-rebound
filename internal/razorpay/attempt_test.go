@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -391,4 +393,110 @@ func sortedNames(set map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// TestAttemptOutcomeRecordsAStepThatRanAndThenFailed is a review finding from
+// 2026-08-31, reproduced before it was fixed.
+//
+// Steps was appended to only after a 2xx, so a call that reached Razorpay and
+// had its effect but whose response failed was recorded as never made. The
+// worst case is the last one: the mock bank is told to authorize, the response
+// comes back 500, and the audit trail says the settle call never happened.
+//
+// For a system whose whole argument is that the trail says what actually
+// happened, an attempt recorded as not made is the wrong direction to be wrong
+// in. A step is now recorded when it is attempted.
+func TestAttemptOutcomeRecordsAStepThatRanAndThenFailed(t *testing.T) {
+	var settleReceived string
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/payments/create/ajax", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"payment_id":"pay_TWUV7spZH4h8rl","request":{"url":"https://api.razorpay.com/v1/payments/TWUV7spZH4h8rl/authenticate"}}`)
+	})
+	mux.HandleFunc("/v1/payments/TWUV7spZH4h8rl/authenticate", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `<form id="form1" action="https://api.razorpay.com/v1/gateway/mocksharp/payment">
+<input type="hidden" name="action" value="authorize"><input type="hidden" name="payment_id" value="TWUV7spZH4h8rl"></form>`)
+	})
+	mux.HandleFunc("/v1/gateway/mocksharp/payment", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `<form action="https://api.razorpay.com/v1/gateway/mocksharp/payment/submit">
+<input type="hidden" name="callback_url" value="https://api.razorpay.com/cb"><input type="hidden" name="success"></form>`)
+	})
+	// The call the bank acts on, answering with a failure afterwards.
+	mux.HandleFunc("/v1/gateway/mocksharp/payment/submit", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		settleReceived = r.Form.Get("success")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"error":{"description":"upstream blew up after taking the instruction"}}`)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	outcome, err := newAttempter(t, srv).Attempt(context.Background(), razorpay.AttemptRequest{
+		OrderID:     "order_TWUV6Jba72pLIG",
+		AmountPaise: 100000,
+		CardNumber:  "4100280000080001",
+		Outcome:     razorpay.AttemptSucceed,
+	})
+	if err == nil {
+		t.Fatal("a 500 on the settle call returned no error")
+	}
+
+	if settleReceived != razorpay.AttemptSucceed {
+		t.Fatalf("the bank received success=%q, so this test is not driving the case it exists for", settleReceived)
+	}
+	if !slices.Contains(outcome.Steps, "settle") {
+		t.Errorf("the bank was told to authorize and Steps = %v, which says the settle call never happened",
+			outcome.Steps)
+	}
+}
+
+// TestAttempterDecodesEntitiesInHiddenInputValues covers a review finding from
+// 2026-08-31: the form action was HTML-entity decoded and the input values
+// were not, which is asymmetric for no reason. The field it lands on is the
+// callback url, which the code carries forward precisely because it cannot be
+// rebuilt, and a URL with two query parameters must be written with an escaped
+// ampersand in valid HTML.
+func TestAttempterDecodesEntitiesInHiddenInputValues(t *testing.T) {
+	var settleForm url.Values
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/payments/create/ajax", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"payment_id":"pay_TWUV7spZH4h8rl","request":{"url":"https://api.razorpay.com/v1/payments/TWUV7spZH4h8rl/authenticate"}}`)
+	})
+	mux.HandleFunc("/v1/payments/TWUV7spZH4h8rl/authenticate", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `<form id="form1" action="https://api.razorpay.com/v1/gateway/mocksharp/payment?a=1&amp;b=2">
+<input type="hidden" name="action" value="authorize"><input type="hidden" name="payment_id" value="TWUV7spZH4h8rl"></form>`)
+	})
+	mux.HandleFunc("/v1/gateway/mocksharp/payment", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("b") != "2" {
+			t.Errorf("the action query decoded to %q, so b never arrived", r.URL.RawQuery)
+		}
+		_, _ = io.WriteString(w, `<form action="https://api.razorpay.com/v1/gateway/mocksharp/payment/submit">
+<input type="hidden" name="callback_url" value="https://api.razorpay.com/cb?sig=abc&amp;t=99">
+<input type="hidden" name="success"></form>`)
+	})
+	mux.HandleFunc("/v1/gateway/mocksharp/payment/submit", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		settleForm = r.Form
+		_, _ = io.WriteString(w, `done`)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	if _, err := newAttempter(t, srv).Attempt(context.Background(), razorpay.AttemptRequest{
+		OrderID: "order_TWUV6Jba72pLIG", AmountPaise: 100000,
+		CardNumber: "4100280000080001", Outcome: razorpay.AttemptFail,
+	}); err != nil {
+		t.Fatalf("Attempt: %v", err)
+	}
+
+	got := settleForm.Get("callback_url")
+	want := "https://api.razorpay.com/cb?sig=abc&t=99"
+	if got != want {
+		t.Errorf("callback_url = %q, want %q", got, want)
+	}
 }
