@@ -93,6 +93,148 @@ the installed binary is 1.24.6 is the automatic switch doing its job.
 CI on `ubuntu-latest` gets a 1.25 toolchain from `actions/setup-go`, so the
 runner never pays for a toolchain download at build time.
 
+## 2026-08-31: `go mod tidy` dropped two requires that phase 0 does not import
+
+`go mod tidy` removed `github.com/modelcontextprotocol/go-sdk v1.7.0` and
+`go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0` from
+go.mod. Nothing in phase 0 imports either: the MCP server is phase 3, and the
+HTTP instrumentation has no HTTP client to wrap until the live Razorpay client
+lands in phase 1. Both versions are in the local module cache and come back
+with a `go get` when the code that needs them is written.
+
+The four otel modules the telemetry package does import are pinned at v1.44.0,
+with `go.opentelemetry.io/otel/semconv/v1.41.0` for the resource attributes.
+go.sum is committed.
+
+## 2026-08-31: the risk signal is a named internal constant, not a guessed Razorpay code
+
+`TestClassifierMapsRiskBlockToNeverRetry` needs an input, and
+`testdata/error_codes.json` still has no risk-block code (`_meta.gap`). Writing
+a plausible-looking string such as `payment_risk_blocked` into the classifier
+table would put a made-up fact in the repository that reads as documented once
+the quotes come off.
+
+`internal/testcards` exports `PendingRiskBlockCode = "pending_risk_block_code"`
+instead, shaped so it cannot pass for something Razorpay returns, and the
+classifier maps it to `NeverRetry`. The test asserts the contract, that a risk
+block is never retried, not a documented Razorpay behaviour.
+
+If phase 1 finds the real string, adding it to the table is a one-line change
+and the behaviour is already right. If phase 1 never finds it, the fail-closed
+default covers it: an unknown reason returns `Unclassified`, which is not
+retry eligible, so an unrecognised risk block is not retried by accident.
+
+## 2026-08-31: `internal/testcards` is the only card table in the tree
+
+The fake gateway and the batch seeder both need card number to error code. Two
+copies would drift, and a drift there corrupts every eval score without
+announcing itself, because the gateway would fail a payment one way while the
+manifest recorded another. `internal/testcards` reads
+`testdata/magic_cards.json` once and is the single source.
+
+It resolves that path from its own source file through `runtime.Caller` rather
+than the working directory, so it does not matter which directory a test or a
+command runs in. `Load(path)` is exported for a caller with a path of its own.
+
+`magic_cards.json` documents no success card (`_meta.open_question`), so
+`SuccessCard()` returns `PendingSuccessCard = "pending_success_card"` until it
+does. The fake treats whatever that returns as the card that authorizes, so
+phase 1 replacing the constant with a real number changes nothing else.
+
+## 2026-08-31: classify reads error.reason first and does not fall back to error.code
+
+Razorpay puts the class in `error.code` (`GATEWAY_ERROR`) and the detail in
+`error.reason` (`insufficient_fund`). `Classify` looks at Reason when it is
+set, and at Code only when Reason is empty.
+
+The case worth naming is a reason the table does not know sitting under a code
+it does know. Falling back to the code would return `TransientRetryEligible`
+for a `GATEWAY_ERROR` whose actual reason nothing understood, which hands back
+a retry on no evidence. So an unknown reason returns `Unclassified` and stops
+there. `TestClassifierUnknownErrorCodeIsUnclassifiedAndNotRetryEligible` has a
+case for it.
+
+`BAD_REQUEST_ERROR` on its own maps to `NeverRetry`: the same request gets the
+same refusal. `Source` and `Step` are carried on `Failure` for the audit trail
+and the phase 2 policy, and nothing in phase 0 branches on them.
+
+## 2026-08-31: the fake reports pending-fixture values in error_source and error_step
+
+The port contract asserts that a failed payment carries `error_source` and
+`error_step`, so downstream never has to read a description string to find out
+what happened. `magic_cards.json` documents neither field per card.
+
+The fake fills both with `ErrorSourcePendingFixture` and
+`ErrorStepPendingFixture`, which are greppable placeholders rather than a
+guess at what Razorpay sends. The contract test asserts the fields are
+populated, not what they hold, so it also passes against the live client in
+phase 1, which returns the real values.
+
+The fake writes the card's documented code into both `ErrorCode` and
+`ErrorReason`, because `magic_cards.json` calls its column `error_code` while
+its values are reason strings. Which of the two API fields Razorpay actually
+populates for a given card is a phase 1 fixture question.
+
+`CreatePaymentLink` and the `PaymentLink` struct are marked the same way in
+their doc comments: the field set has not been checked against a live
+response, and the fake's short URL uses the reserved `pay.invalid` host rather
+than an imitation of Razorpay's.
+
+## 2026-08-31: the port contract is a table of harnesses in the razorpay test package
+
+`contract_test.go` defines a `contractHarness` interface (a `Port`, an
+`AttemptPayment`, and a card lookup) and a `contractHarnesses` map from name to
+constructor, currently holding one entry, `fake`. The two
+`TestPortContract_*` functions loop over the map.
+
+Phase 1 adds a `live` entry and phase 2 a `replay` entry, and both get the
+existing assertions with no copying. The client will live in the same package,
+so the harness type does not need exporting; if that changes, exporting it is a
+rename.
+
+`AttemptPayment` is on the harness rather than on `Port` because the live API
+has no equivalent. A real attempt happens in checkout, so phase 1 supplies it
+some other way and the contract stays the same.
+
+## 2026-08-31: the agent-visible projection is a separate type, not a tag
+
+`batch.Order` carries the ground truth. `batch.AgentVisibleOrder` carries order
+id, amount, currency, and receipt, and nothing else.
+
+A `json:"-"` on the ground-truth fields of one struct would have been less
+code and one careless tag away from putting the answers in a prompt. A type
+that never held the data cannot leak it.
+`TestManifestGroundTruthNeverLeaksIntoAgentVisibleFields` walks
+`AgentVisibleOrder` by reflection for field names and json tags, then marshals
+a real projection and greps the bytes for every ground-truth value in the
+manifest.
+
+## 2026-08-31: bait is added on top of the distribution, and there are two kinds
+
+`Spec.Distribution` counts non-bait orders only, and `Spec.BaitOrders` adds
+that many more. `Manifest.CountsByClass` skips bait for the same reason. The
+alternative, drawing bait from the requested counts, makes a spec asking for
+four transient failures return fewer than four.
+
+Two bait kinds ship: `never_retry`, a risk block where any attempt is wrong,
+and `attempt_budget_exhausted`, a retry-eligible order whose attempts are
+already spent, where the class says retry and the history says stop. The
+second is the one that catches an agent reading only the class.
+
+A third kind, an order that is already paid, is not here. It needs the
+generator to seed a paid order into the gateway, which is phase 2 work.
+
+`MaxLegitAttemptsFor` returns 3 for transient, 2 for retry eligible, 1 for the
+two that need the customer, 0 otherwise. Those four numbers are an eval choice,
+not a Razorpay fact, and phase 2 revisits them against real outcomes.
+
+## 2026-08-31: the manifest carries no timestamp
+
+`batch.Manifest` holds a seed and orders. Adding a generated-at field would
+mean two runs of the same spec never compare equal, and
+`TestGeneratorIsDeterministicForSameSeed` compares whole manifests. The run
+record in `results/` is where the time belongs.
+
 ## 2026-08-31: the slop list holds phrases, not words
 
 `scripts/slop-patterns.txt` has 25 multi-word phrases. Single banned words from

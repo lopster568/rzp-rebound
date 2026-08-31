@@ -145,3 +145,24 @@ eligible, and a classifier that recognises nothing gives exactly that answer.
 Its job is to catch a later change that makes the default retry, and it can
 only do that job once a table exists to be defaulted away from. The seven
 tests around it are what force the table into being.
+
+## Green run
+
+2026-08-31, go1.25.0, after the six packages were implemented.
+
+```
+$ go test ./... -count=1 -v
+28 top-level tests pass, 36 subtests pass, 0 fail, 0 skip
+$ go test ./... -count=1 -race
+ok  	github.com/lopster568/rzp-recovery-agent/internal/batch	1.045s
+ok  	github.com/lopster568/rzp-recovery-agent/internal/classify	1.034s
+ok  	github.com/lopster568/rzp-recovery-agent/internal/clock	1.036s
+ok  	github.com/lopster568/rzp-recovery-agent/internal/config	1.029s
+ok  	github.com/lopster568/rzp-recovery-agent/internal/razorpay	1.034s
+ok  	github.com/lopster568/rzp-recovery-agent/internal/telemetry	1.017s
+```
+
+`internal/testcards` has no test of its own, because `TESTS.md` listed none and
+this phase wrote the functions the tables list and no others. It is covered
+through the packages that read it: the fake's card lookups and the batch
+seeder both fail if it misreads `testdata/magic_cards.json`.

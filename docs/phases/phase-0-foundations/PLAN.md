@@ -38,10 +38,10 @@ Order of work per group: write the tests, run them, paste the red output into
 - [x] `testdata/magic_cards.json` and `testdata/error_codes.json` from the
       Razorpay docs, every entry marked unverified
 - [x] Prose gate, pre-commit hook, preflight, Makefile, CI
-- [ ] Write the 24 tests listed in `TESTS.md`, run them, paste the red output
-- [ ] Implement the six packages until the suite is green
-- [ ] `make verify-phase-0` passes on a machine with no Razorpay keys
-- [ ] Write `REPORT.md`
+- [x] Write the 28 tests listed in `TESTS.md`, run them, paste the red output
+- [x] Implement the six packages until the suite is green
+- [x] `make verify-phase-0` passes on a machine with no Razorpay keys
+- [x] Write `REPORT.md`
 
 ## Exit criteria
 

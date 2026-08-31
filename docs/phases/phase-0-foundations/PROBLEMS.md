@@ -49,6 +49,21 @@ files with a note saying which number was right.
 
 Cost: 5 minutes.
 
+## 2026-08-31: `go test ./... | tee log | head` truncated the red log
+
+Symptom: the captured red run held 124 lines and had no `internal/telemetry` in
+it. Counting failures off that file gave 24 of 28, and three of the missing
+four looked like tests that had somehow passed.
+
+Cause: `head` exiting closed the pipe, `tee` took the signal, and the file
+stopped at whatever had been written. `internal/telemetry` sorts last, so it
+was the package that got cut.
+
+Fix: redirect to the file and read it afterwards, rather than piping through
+`head`. The real count is 27 of 28.
+
+Cost: 10 minutes, all of it chasing a fourth passing test that did not exist.
+
 ## 2026-08-31: one test cannot be seen failing, and that is a property of the test
 
 Symptom: `TestClassifierUnknownErrorCodeIsUnclassifiedAndNotRetryEligible`
