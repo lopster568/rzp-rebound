@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/clock"
@@ -71,17 +72,59 @@ type Notifier struct {
 }
 
 // New returns a Notifier.
-func New(opts Options) (*Notifier, error) { return &Notifier{}, nil }
+func New(opts Options) (*Notifier, error) {
+	if opts.Port == nil {
+		return nil, ErrNoPort
+	}
+
+	c := opts.Clock
+	if c == nil {
+		c = clock.Real()
+	}
+	return &Notifier{port: opts.Port, clock: c}, nil
+}
 
 // SendPaymentLink resends a payment link over sms or email.
 //
 // The returned Receipt reports whether the API call succeeded. It reports
 // nothing about a person, because nothing here observes one.
 func (n *Notifier) SendPaymentLink(ctx context.Context, linkID, medium string) (Receipt, error) {
-	return Receipt{}, nil
+	receipt := Receipt{
+		LinkID:      linkID,
+		Medium:      medium,
+		RequestedAt: n.clock.Now(),
+	}
+
+	if medium != razorpay.MediumSMS && medium != razorpay.MediumEmail {
+		receipt.AuditPhrase = AuditPhraseMediumRejected
+		return receipt, fmt.Errorf("%w: %q", razorpay.ErrUnsupportedMedium, medium)
+	}
+
+	answer, err := n.port.ResendPaymentLinkNotification(ctx, linkID, medium)
+	if err != nil {
+		receipt.AuditPhrase = AuditPhraseAPICallFailed
+		return receipt, fmt.Errorf("notify: resend %s over %s: %w", linkID, medium, err)
+	}
+
+	// Accepted is the gateway reporting its own call succeeded. A gateway that
+	// answered without accepting is a failed send, not a quiet success.
+	if !answer.Accepted {
+		receipt.AuditPhrase = AuditPhraseAPICallFailed
+		return receipt, nil
+	}
+
+	receipt.APICallSucceeded = true
+	receipt.AuditPhrase = AuditPhraseAPICallSucceeded
+	return receipt, nil
 }
 
 // AuditPhrases returns every phrase this package can put in an audit trail.
 // TestNotifierNeverClaimsCustomerNotified walks it, so a new phrase added
 // without thinking gets checked against the forbidden wording.
-func AuditPhrases() []string { return nil }
+func AuditPhrases() []string {
+	return []string{
+		AuditPhraseAPICallSucceeded,
+		AuditPhraseAPICallFailed,
+		AuditPhraseMediumRejected,
+	}
+}

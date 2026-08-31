@@ -34,13 +34,40 @@ type Mock struct {
 var _ NotifierPort = (*Mock)(nil)
 
 // NewMock returns a Mock that accepts every send.
-func NewMock(c clock.Clock) *Mock { return &Mock{} }
+func NewMock(c clock.Clock) *Mock {
+	if c == nil {
+		c = clock.Real()
+	}
+	return &Mock{Accepted: true, Clock: c}
+}
 
 // ResendPaymentLinkNotification records the call and returns the configured
-// answer.
-func (m *Mock) ResendPaymentLinkNotification(ctx context.Context, linkID, medium string) (razorpay.NotifyReceipt, error) {
-	return razorpay.NotifyReceipt{}, nil
+// answer. The call is recorded even when Err is set, because an attempt that
+// failed still happened and the audit trail says so.
+func (m *Mock) ResendPaymentLinkNotification(_ context.Context, linkID, medium string) (razorpay.NotifyReceipt, error) {
+	m.mu.Lock()
+	m.sends = append(m.sends, Send{LinkID: linkID, Medium: medium})
+	m.mu.Unlock()
+
+	if m.Err != nil {
+		return razorpay.NotifyReceipt{}, m.Err
+	}
+
+	c := m.Clock
+	if c == nil {
+		c = clock.Real()
+	}
+	return razorpay.NotifyReceipt{
+		LinkID:      linkID,
+		Medium:      medium,
+		Accepted:    m.Accepted,
+		RequestedAt: c.Now(),
+	}, nil
 }
 
 // Sends returns a copy of everything the mock was asked to send, in order.
-func (m *Mock) Sends() []Send { return nil }
+func (m *Mock) Sends() []Send {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]Send(nil), m.sends...)
+}
