@@ -249,6 +249,19 @@ func TestRecorderRedactsCardAndKeyFieldsFromLedger(t *testing.T) {
 	if got := audit.RedactValue(cardNumber); got != audit.Redacted {
 		t.Errorf("RedactValue(a card number) = %q, want %q", got, audit.Redacted)
 	}
+
+	// A card number pasted into a longer run of digits must not slip through
+	// on the grounds that the whole run is too long to be a card.
+	for _, run := range []string{
+		cardNumber + "0000000",
+		"0000000" + cardNumber,
+		"4111 1111 1111 1111",
+		"4111-1111-1111-1111",
+	} {
+		if got := audit.RedactValue(run); strings.Contains(got, "1111111") {
+			t.Errorf("RedactValue(%q) = %q, and digits survived", run, got)
+		}
+	}
 	if !audit.IsRedactedKey("card_number") || !audit.IsRedactedKey("key_secret") {
 		t.Error("IsRedactedKey does not cover card_number and key_secret")
 	}

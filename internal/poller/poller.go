@@ -12,6 +12,11 @@ import (
 
 // Defaults. Interval doubles on every poll up to MaxBackoff, and MaxWait ends
 // the run whatever state the order is in.
+//
+// These three are a starting point, not a measurement. Nothing in this
+// repository has observed how long a Razorpay test-mode payment takes to settle
+// or what rate limit polling runs into (PRD Q5). The live half times a real
+// settlement and moves them to fit it.
 const (
 	DefaultInterval   = 500 * time.Millisecond
 	DefaultMaxBackoff = 5 * time.Second
@@ -74,8 +79,9 @@ type Result struct {
 	FailedPayment *razorpay.Payment
 	// Polls counts how many times the gateway was read.
 	Polls int
-	// Waited is the total backoff the run asked for, measured on the injected
-	// clock.
+	// Waited is the sum of the backoff durations the run asked for. It is what
+	// was requested, not what a clock observed passing, and a wait that
+	// returned an error is not counted.
 	Waited time.Duration
 }
 

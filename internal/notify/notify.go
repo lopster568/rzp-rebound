@@ -25,6 +25,11 @@ const (
 // ErrNoPort is returned when a Notifier is built with nothing to send through.
 var ErrNoPort = errors.New("notify: needs a NotifierPort")
 
+// ErrNotAccepted is returned when the gateway answered the resend call without
+// accepting it. Nothing was sent, and a caller that only checks the error has
+// to find that out from the error.
+var ErrNotAccepted = errors.New("notify: the gateway did not accept the resend")
+
 // NotifierPort is the slice of razorpay.Port this package needs. It is a
 // separate interface so the notifier can run against razorpay.Fake, against
 // the replay client, against razorpay.Client, and against Mock, with no
@@ -107,10 +112,12 @@ func (n *Notifier) SendPaymentLink(ctx context.Context, linkID, medium string) (
 	}
 
 	// Accepted is the gateway reporting its own call succeeded. A gateway that
-	// answered without accepting is a failed send, not a quiet success.
+	// answered without accepting is a failed send, and it has to come back as
+	// an error: a caller that checks err first and gets nil reads this as a
+	// message having gone out.
 	if !answer.Accepted {
 		receipt.AuditPhrase = AuditPhraseAPICallFailed
-		return receipt, nil
+		return receipt, fmt.Errorf("%w: %s over %s", ErrNotAccepted, linkID, medium)
 	}
 
 	receipt.APICallSucceeded = true

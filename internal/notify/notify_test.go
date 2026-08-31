@@ -111,15 +111,23 @@ func TestReceiptDeliveryConfirmedIsAlwaysFalse(t *testing.T) {
 	failing := notify.NewMock(clock.NewFake(notifyStart))
 	failing.Err = errors.New("razorpay: gateway refused the resend")
 
+	// A gateway that answered without accepting. It is the branch Accepted
+	// exists to drive, and it is the one that could look like a quiet success
+	// to a caller that checks the error first.
+	notAccepted := notify.NewMock(clock.NewFake(notifyStart))
+	notAccepted.Accepted = false
+
 	cases := []struct {
-		name   string
-		port   notify.NotifierPort
-		medium string
-		wantOK bool
+		name    string
+		port    notify.NotifierPort
+		medium  string
+		wantOK  bool
+		wantErr bool
 	}{
-		{"api call succeeded", succeeding, razorpay.MediumSMS, true},
-		{"api call failed", failing, razorpay.MediumEmail, false},
-		{"medium rejected before any call", succeeding, "carrier_pigeon", false},
+		{"api call succeeded", succeeding, razorpay.MediumSMS, true, false},
+		{"api call failed", failing, razorpay.MediumEmail, false, true},
+		{"medium rejected before any call", succeeding, "carrier_pigeon", false, true},
+		{"gateway answered without accepting", notAccepted, razorpay.MediumSMS, false, true},
 	}
 
 	for _, tc := range cases {
@@ -129,7 +137,7 @@ func TestReceiptDeliveryConfirmedIsAlwaysFalse(t *testing.T) {
 				t.Fatalf("notify.New: %v", err)
 			}
 
-			receipt, _ := n.SendPaymentLink(ctx, "plink_delivery0001", tc.medium)
+			receipt, sendErr := n.SendPaymentLink(ctx, "plink_delivery0001", tc.medium)
 
 			if receipt.DeliveryConfirmed {
 				t.Error("DeliveryConfirmed is true, and nothing in this system observes a person receiving anything")
@@ -139,6 +147,11 @@ func TestReceiptDeliveryConfirmedIsAlwaysFalse(t *testing.T) {
 			}
 			if receipt.AuditPhrase == "" {
 				t.Error("receipt carries no audit phrase")
+			}
+			// A send that did not happen has to reach a caller that only
+			// checks the error, or it reads as a success.
+			if (sendErr != nil) != tc.wantErr {
+				t.Errorf("SendPaymentLink error = %v, want an error: %v", sendErr, tc.wantErr)
 			}
 		})
 	}

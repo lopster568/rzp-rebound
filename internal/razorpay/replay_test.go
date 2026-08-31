@@ -75,10 +75,11 @@ func TestClassifierHandlesEveryRecordedErrorPayload(t *testing.T) {
 	}
 
 	if len(fixtures) == 0 {
-		t.Logf("skipped: %s holds no captured fixture on 2026-08-31, only synthetic ones, "+
+		// Skip rather than pass. An empty assertion set reporting PASS is the
+		// wrong signal: it reads as the classifier having been checked.
+		t.Skipf("%s holds no captured fixture on 2026-08-31, only synthetic ones, "+
 			"which this test excludes on purpose. It starts asserting something once the "+
 			"phase 1 live half captures real responses.", dir)
-		return
 	}
 
 	classified := 0

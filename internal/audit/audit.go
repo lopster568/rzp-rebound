@@ -6,19 +6,21 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/clock"
+	"github.com/lopster568/rzp-recovery-agent/internal/redact"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
 // Redacted is what a key-shaped or card-shaped value becomes before either
-// sink sees it.
-const Redacted = "[redacted]"
+// sink sees it. It is internal/redact's marker: two spellings of the same
+// string would drift, and a ledger with two redaction markers in it reads as
+// two different things having happened.
+const Redacted = redact.Marker
 
 // Event kinds. The set is closed and every kind is a constant, so a reader of
 // the ledger has an enumerable vocabulary rather than whatever string a call
@@ -86,17 +88,6 @@ var redactedKeys = map[string]bool{
 	"token":               true,
 }
 
-// cardLike matches 13 to 19 digits, with optional single spaces or hyphens
-// between them. Nothing else this ledger records is that long and all numeric:
-// amounts in paise are six digits, a unix timestamp is ten, and every
-// identifier carries a letter prefix.
-var cardLike = regexp.MustCompile(`\b\d(?:[ -]?\d){12,18}\b`)
-
-// keyLike matches a Razorpay key prefix followed by a key body. The prefix is
-// assembled from parts so this source file does not itself contain a string
-// the pre-commit secret scan would flag.
-var keyLike = regexp.MustCompile(`rzp_(?:` + "test" + `|` + "live" + `)_[A-Za-z0-9]{6,}`)
-
 // Event is one decision or observation the recovery loop wants on the record.
 type Event struct {
 	// OrderID is required. It is what joins a row to a batch manifest.
@@ -115,6 +106,13 @@ type Event struct {
 	PolicyRule    string
 	// Detail is free-form context. Values go through redaction, and a key on
 	// the credential or card list is dropped whatever its value looks like.
+	//
+	// A caller putting an error string in here has to have scrubbed it first.
+	// A Razorpay key secret is a bare alphanumeric string, so no pattern on
+	// this side can find one, and an error from internal/razorpay has already
+	// been through Client.Redact by the time it is an error. That ordering is
+	// the control. What happens here is a backstop for card-shaped and
+	// key-shaped runs.
 	Detail map[string]string
 }
 
@@ -260,13 +258,13 @@ func redactDetail(detail map[string]string) map[string]string {
 
 // RedactValue replaces anything shaped like a card number or a Razorpay key
 // inside s.
-func RedactValue(s string) string {
-	if s == "" {
-		return s
-	}
-	s = cardLike.ReplaceAllString(s, Redacted)
-	return keyLike.ReplaceAllString(s, Redacted)
-}
+//
+// It cannot find a bare key secret, which has no prefix and no shape to match.
+// The packages that hold a credential scrub their own before a string gets
+// here, and internal/redact says so at more length. Anything arriving in
+// Event.Detail is expected to have been through its owner's redactor already;
+// this is the second line, not the first.
+func RedactValue(s string) string { return redact.Value(s) }
 
 // IsRedactedKey reports whether a detail key names a credential or a card
 // field, in which case the value never reaches either sink whatever it looks

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Brings up the Jaeger container from compose/docker-compose.yml and waits for
-# its query API to answer, so a run started right after this one has somewhere
-# to send spans.
+# both ports a run needs: the query API, so a reviewer can open a trace, and the
+# OTLP gRPC port, so an exporter started right after this one has somewhere to
+# send spans. Waiting only on the query API would return before the collector is
+# listening, which is the port that actually matters to a run.
 #
 # Usage: scripts/jaeger-up.sh [seconds-to-wait]
 # Default wait: 60 seconds.
@@ -21,6 +23,10 @@ COMPOSE_FILE=compose/docker-compose.yml
 UI_PORT=${JAEGER_UI_PORT:-16686}
 OTLP_GRPC_PORT=${JAEGER_OTLP_GRPC_PORT:-4317}
 WAIT_SECONDS=${1:-60}
+
+case $WAIT_SECONDS in
+'' | *[!0-9]*) die "the wait in seconds must be a whole number, got '$WAIT_SECONDS'" ;;
+esac
 
 require_cmd docker "install docker to run the trace backend"
 
@@ -45,19 +51,26 @@ if ! command -v curl >/dev/null 2>&1; then
 	exit 0
 fi
 
-say "jaeger-up: waiting up to ${WAIT_SECONDS}s for the query API on port $UI_PORT"
+# otlp_listening opens a TCP connection to the collector port through bash's
+# own /dev/tcp, so no extra tool is needed to check the port a run sends to.
+otlp_listening() {
+	(exec 3<>"/dev/tcp/localhost/$OTLP_GRPC_PORT") 2>/dev/null && exec 3>&- 3<&-
+}
+
+say "jaeger-up: waiting up to ${WAIT_SECONDS}s for the query API on $UI_PORT and OTLP on $OTLP_GRPC_PORT"
 deadline=$((SECONDS + WAIT_SECONDS))
 while [ "$SECONDS" -lt "$deadline" ]; do
-	if curl -fsS "http://localhost:$UI_PORT/api/services" >/dev/null 2>&1; then
+	if curl -fsS "http://localhost:$UI_PORT/api/services" >/dev/null 2>&1 && otlp_listening; then
 		say "jaeger-up: ready"
 		say "  ui    http://localhost:$UI_PORT"
 		say "  otlp  OTEL_EXPORTER_OTLP_ENDPOINT=localhost:$OTLP_GRPC_PORT"
+		say "        (host:port with no scheme, which is what otlptracegrpc.WithEndpoint takes)"
 		exit 0
 	fi
 	sleep 1
 done
 
-say "jaeger-up: the container is up but the query API did not answer in ${WAIT_SECONDS}s"
+say "jaeger-up: the container is up but it did not answer on both ports in ${WAIT_SECONDS}s"
 say "jaeger-up: last 20 lines of container output"
 compose -f "$COMPOSE_FILE" logs --tail 20 jaeger
 die "jaeger did not become healthy"

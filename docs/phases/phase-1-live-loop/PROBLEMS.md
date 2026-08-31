@@ -74,3 +74,78 @@ parseable, but a fixture that will not parse is worse than an ugly one and the
 check costs one call.
 
 Cost: 20 minutes.
+
+## 2026-08-31: a hostile review of the offline half found two more leaks and four bugs
+
+After the packages were green, the diff went through a review agent briefed to
+construct concrete leaks rather than list suspicions. It ran probes rather than
+reading. Six findings were real and are fixed; the ones worth writing down:
+
+**The error body was truncated before it was redacted.** `Client.apiError` cut
+the body at 512 bytes and then ran the replacer over the result. A credential
+straddling the cut leaves a prefix that no longer equals the string the replacer
+looks for, so it went into the error message and from there into any log line
+formatting one. Measured with a body arranged to split a 22-character secret:
+11 characters survived verbatim. Against a real key secret the leak is up to a
+character short of the whole thing, positioned by the gateway rather than by us.
+
+Fix: redact, then truncate. `TestClientRedactsSecretFromErrorMessages` gained a
+subtest that writes the response body by hand so the offsets are exact, and it
+was seen failing at 11 of 22 before the fix.
+
+**The card pattern failed open on longer digit runs.** `audit.cardLike` was
+anchored with `\b` on both ends and capped at 19 digits, so a card number
+sitting inside a longer run of digits matched nothing and passed through whole.
+Verified on a 23-digit run.
+
+Fix: drop the upper bound and the anchors, and move the pattern into a new
+`internal/redact` package that `internal/audit` and `internal/razorpay` both
+call, because the client's capture path needed the same pattern and a second
+copy would have drifted from the first. The trade-off, that a genuinely long
+number now loses its digits, is written on the pattern: nothing this project
+writes to a ledger or a fixture is a 13-digit run that has to survive.
+
+**A failed action was recorded as `action_skipped`.** The idiomatic Go failure
+from an `ActionFunc` is `return ActionResult{}, err`, which leaves `Kind` empty,
+which normalised to `ActionNone`, which chose the skipped row. An action that
+ran and errored was indistinguishable in the ledger from one never attempted, so
+a scoring pass counting attempts against refusals would have undercounted
+attempts. The kind now reads the error as well as the action kind.
+
+**A rejected send returned a nil error.** `notify.SendPaymentLink` had a comment
+saying a gateway that answered without accepting is a failed send and not a
+quiet success, directly above the line returning `receipt, nil`. To a caller
+checking the error first, that is a quiet success. It now returns
+`ErrNotAccepted`. The branch had no test either: `Mock.Accepted` is the field
+that exists to drive it and nothing set it false, which is why the comment and
+the code could disagree without anything noticing.
+
+Two smaller ones: `roundTrip` truncated at the 1 MiB read cap and surfaced it as
+a JSON syntax error at some character offset rather than as a truncated
+response, and `jaeger-up.sh` health-waited on the query API while its own header
+said the wait existed so an exporter would have somewhere to send spans, which
+is a different port. Both fixed.
+
+Three test weaknesses the review named, and what was done about each:
+
+- `TestClassifierHandlesEveryRecordedErrorPayload` reported PASS while
+  asserting nothing. It now calls `t.Skipf`, so the run says SKIP. A green pass
+  on an empty assertion set reads as the classifier having been checked.
+- The clock assertion in `TestPollerUsesInjectedClockForBackoff` restated the
+  test double: `recordingWait.Wait` advances the clock itself, so the assertion
+  could not fail. Removed. The list of three waits is the real proof, because
+  the run stops on the third only if elapsed time is read from the injected
+  clock, and the comment now says so.
+- The `"Authorization"` substring check in `TestClientCapturesRawResponseBody`
+  cannot fail, because `RawResponse` has no field a header could reach. Kept as
+  a structural guard with a comment saying it starts failing the day somebody
+  adds one, on the phase 0 precedent of documenting a test that cannot fail
+  rather than deleting it or weakening it into one that can.
+
+The review also left a scratch probe file behind, which a concurrent commit
+swept into `d89c0c0`. It was removed in `aa3c251`. It held only the two
+placeholder credentials this suite already uses and the well-known 4111 test
+card, so nothing needed rewriting out of history, and that was checked rather
+than assumed.
+
+Cost: 70 minutes, most of it worth it.

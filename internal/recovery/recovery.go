@@ -201,8 +201,14 @@ func (o *Orchestrator) ProcessOrder(ctx context.Context, order batch.AgentVisibl
 
 	// A failed action still writes a row. Refusals and errors that leave no
 	// trace are what make a containment count unprovable.
+	//
+	// An action that ran and returned an error is taken, not skipped. The
+	// idiomatic Go failure is `return ActionResult{}, err`, which leaves Kind
+	// empty and normalises to ActionNone above, so keying the row off Kind
+	// alone would file every failed attempt as one that never happened and a
+	// scoring pass counting attempts against refusals would undercount.
 	kind := audit.KindActionTaken
-	if outcome.ActionKind == ActionNone {
+	if outcome.ActionKind == ActionNone && actionErr == nil {
 		kind = audit.KindActionSkipped
 	}
 	detail := map[string]string{"claimed_recovered": strconv.FormatBool(result.ClaimedRecovered)}

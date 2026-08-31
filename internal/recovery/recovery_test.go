@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -236,6 +237,30 @@ func TestOrchestratorClassifiesThenRecordsAuditEventPerOrder(t *testing.T) {
 	if len(outcome.Events) != len(rows) {
 		t.Errorf("outcome carries %d event(s) but the ledger holds %d row(s)", len(outcome.Events), len(rows))
 	}
+
+	// An action that ran and failed is not an action that was never tried. A
+	// scoring pass that counts attempts against refusals reads these two kinds,
+	// so a failed attempt filed as skipped undercounts attempts.
+	t.Run("an action that ran and failed is recorded as taken, not skipped", func(t *testing.T) {
+		failing := newRig(t)
+		o := failing.orchestrator(t, func(_ context.Context, _ batch.AgentVisibleOrder, _ classify.Class) (recovery.ActionResult, error) {
+			// The idiomatic Go shape: a zero result and an error.
+			return recovery.ActionResult{}, errors.New("gateway refused the retry")
+		})
+
+		_, err := o.ProcessOrder(context.Background(), failing.visible)
+		if err == nil {
+			t.Fatal("an action that returned an error produced no error from ProcessOrder")
+		}
+
+		kinds := kindsOf(failing.rows(t))
+		if slices.Contains(kinds, audit.KindActionSkipped) {
+			t.Errorf("a failed action was recorded as %s, got kinds %v", audit.KindActionSkipped, kinds)
+		}
+		if !slices.Contains(kinds, audit.KindActionTaken) {
+			t.Errorf("no %s row for an action that ran, got kinds %v", audit.KindActionTaken, kinds)
+		}
+	})
 }
 
 func TestOrchestratorRefetchesOrderStateForOutcomeRatherThanTrustingAction(t *testing.T) {

@@ -184,6 +184,11 @@ func TestPollerUsesInjectedClockForBackoff(t *testing.T) {
 
 	// Interval 100ms, doubling, capped at 400ms, with a 1s budget. The fourth
 	// wait would take the run past MaxWait, so the poller stops instead.
+	//
+	// This list is the assertion that the poller reads the injected clock. The
+	// run stops after exactly three waits because elapsed time, read from that
+	// clock, plus the next backoff crosses the budget. A poller reading the
+	// wall clock would see almost no elapsed time and keep going.
 	want := []time.Duration{
 		100 * time.Millisecond,
 		200 * time.Millisecond,
@@ -196,10 +201,8 @@ func TestPollerUsesInjectedClockForBackoff(t *testing.T) {
 		t.Errorf("Result.Waited = %v, want 700ms", res.Waited)
 	}
 
-	// The clock moved by exactly the waits, which is what proves the poller
-	// read time through the injected clock rather than the wall clock.
-	if got, want := w.clock.Now(), pollStart.Add(700*time.Millisecond); !got.Equal(want) {
-		t.Errorf("clock reads %v, want %v", got, want)
+	if !res.TimedOut {
+		t.Error("the run did not end on the wait budget, so the backoff never reached it")
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/clock"
+	"github.com/lopster568/rzp-recovery-agent/internal/redact"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -56,7 +57,10 @@ const maxResponseBytes = 1 << 20
 const maxErrorBodyBytes = 512
 
 // Redacted is what a credential becomes in anything that leaves this package.
-const Redacted = "[redacted]"
+// It is internal/redact's marker, because a capture line can be scrubbed by
+// both and two spellings of the same thing would read as two different things
+// having happened.
+const Redacted = redact.Marker
 
 // ErrRetryBudgetExhausted wraps the last error when every retry was spent.
 var ErrRetryBudgetExhausted = errors.New("razorpay: retry budget exhausted")
@@ -283,15 +287,22 @@ func (c *Client) redactErr(err error) error {
 }
 
 func (c *Client) apiError(method, path string, status int, body []byte) *APIError {
-	trimmed := string(body)
-	if len(trimmed) > maxErrorBodyBytes {
-		trimmed = trimmed[:maxErrorBodyBytes] + "(truncated)"
+	// Scrub first, then truncate. Cutting first splits a credential that
+	// straddles the boundary, and the surviving prefix is no longer the string
+	// the replacer is looking for, so it goes into the error message and from
+	// there into every log line that formats one. Measured on 2026-08-31 with
+	// the cut inside the secret: 11 of 22 characters survived.
+	scrubbed := redact.Value(c.Redact(string(body)))
+	if len(scrubbed) > maxErrorBodyBytes {
+		// Truncation is on a byte boundary and can split a rune, so drop what
+		// it broke rather than putting invalid UTF-8 in an error.
+		scrubbed = strings.ToValidUTF8(scrubbed[:maxErrorBodyBytes], "") + "(truncated)"
 	}
 	return &APIError{
 		StatusCode: status,
 		Method:     method,
 		Path:       path,
-		Body:       c.Redact(trimmed),
+		Body:       scrubbed,
 	}
 }
 
@@ -361,6 +372,12 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 		}
 	}
 
+	// Only reachable if maxAttempts is not positive, which newClient
+	// normalises away. Returning the nil last error here would be a silent
+	// success with out left unfilled, so say what happened instead.
+	if last == nil {
+		return fmt.Errorf("razorpay: %s %s made no attempt", method, path)
+	}
 	return c.redactErr(last)
 }
 
@@ -396,9 +413,15 @@ func (c *Client) roundTrip(ctx context.Context, method, path string, payload []b
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	// Read one byte past the cap so a response that hits it is reported as
+	// truncated rather than surfacing later as a JSON syntax error at some
+	// character offset, which says nothing about what actually went wrong.
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return resp.StatusCode, nil, fmt.Errorf("razorpay: read the response to %s %s: %w", method, path, err)
+	}
+	if len(respBody) > maxResponseBytes {
+		return resp.StatusCode, nil, fmt.Errorf("razorpay: the response to %s %s is larger than the %d byte cap", method, path, maxResponseBytes)
 	}
 	return resp.StatusCode, respBody, nil
 }
@@ -422,10 +445,12 @@ func (c *Client) captureResponse(method, path string, status int, body []byte) e
 	// Scrub before writing, not only on the error path. A capture line becomes
 	// a committed file under testdata/recorded/, and a gateway that echoes the
 	// request back inside a JSON error body would otherwise put a credential
-	// in git. Redacted holds no JSON metacharacter, so replacing inside a
-	// string value leaves the document parseable, and the check below covers
-	// the case where it did not.
-	scrubbed := c.Redact(string(body))
+	// in git. redact.Value runs too, because the card and key shapes it knows
+	// are worth catching in something that gets committed even though Razorpay
+	// returns a masked card rather than a full one. The marker holds no JSON
+	// metacharacter, so replacing inside a string value leaves the document
+	// parseable, and the check below covers the case where it did not.
+	scrubbed := redact.Value(c.Redact(string(body)))
 	if json.Valid(body) && json.Valid([]byte(scrubbed)) {
 		line.Body = json.RawMessage(scrubbed)
 	} else {

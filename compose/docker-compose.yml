@@ -10,7 +10,10 @@ version: "3.8"
 # Tear down: docker compose -f compose/docker-compose.yml down -v
 #
 # Health check after up: curl http://localhost:16686/api/services
-# Point the agent at it: OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+# Point the agent at it: OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
+# host:port with no scheme. internal/telemetry passes the value straight to
+# otlptracegrpc.WithEndpoint, which dials it as a host and a port, so a
+# scheme-prefixed value becomes a hostname that resolves nowhere.
 
 services:
   jaeger:

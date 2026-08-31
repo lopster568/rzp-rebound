@@ -415,6 +415,38 @@ func TestClientRedactsSecretFromErrorMessages(t *testing.T) {
 	if got := c.Redact("plain " + testKeySecret + " text"); strings.Contains(got, testKeySecret) {
 		t.Errorf("Redact left the secret in %q", got)
 	}
+
+	// The error body is truncated before it goes into a message. If the cut
+	// lands inside a credential, the surviving prefix is no longer the string
+	// the replacer looks for, so scrubbing has to happen before the cut.
+	t.Run("a secret straddling the truncation boundary", func(t *testing.T) {
+		straddling := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			// The body is written by hand so the byte offsets are exact: the
+			// secret has to start before the 512-byte error-body cap and end
+			// after it.
+			const prefix = `{"description":"`
+			padding := strings.Repeat("x", 512-len(prefix)-len(testKeySecret)/2)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(prefix + padding + testKeySecret + `"}`))
+		}))
+		defer straddling.Close()
+
+		c := newTestClient(t, straddling.URL+"/v1", nil)
+
+		_, err := c.FetchOrder(context.Background(), "order_straddle0001")
+		if err == nil {
+			t.Fatal("a 500 returned no error")
+		}
+
+		msg := err.Error()
+		for n := len(testKeySecret); n >= 4; n-- {
+			if strings.Contains(msg, testKeySecret[:n]) {
+				t.Fatalf("%d of the %d characters of the key secret survived truncation: %q",
+					n, len(testKeySecret), msg)
+			}
+		}
+	})
 }
 
 func TestClientCapsConcurrencyAtConfiguredLimit(t *testing.T) {
@@ -532,7 +564,10 @@ func TestClientCapturesRawResponseBody(t *testing.T) {
 	}
 
 	// A fixture file is committed. A request header in it would commit a
-	// credential with it.
+	// credential with it. This check cannot fail today, because RawResponse has
+	// no field a header could land in. It is a structural guard: it starts
+	// failing the day somebody adds one. The subtest below is the live half of
+	// this assertion.
 	if strings.Contains(lines[0], testKeySecret) || strings.Contains(lines[0], "Authorization") {
 		t.Errorf("the capture line carries request auth: %q", lines[0])
 	}
@@ -548,6 +583,10 @@ func TestClientCapturesRawResponseBody(t *testing.T) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{
 				"description":   "upstream failed for key " + testKeyID + " with secret " + testKeySecret,
 				"authorization": "Basic " + token,
+				// Razorpay returns a masked card, but a fixture file is
+				// committed and this stream is what becomes one, so a full
+				// number reaching it is worth failing over.
+				"card": "4111111111111111",
 			})
 		}))
 		defer leaky.Close()
@@ -569,6 +608,7 @@ func TestClientCapturesRawResponseBody(t *testing.T) {
 			"key id":           testKeyID,
 			"key secret":       testKeySecret,
 			"basic auth token": token,
+			"card number":      "4111111111111111",
 		} {
 			if strings.Contains(line, secret) {
 				t.Errorf("the %s reached the capture line: %q", name, line)

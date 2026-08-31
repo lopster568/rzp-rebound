@@ -283,3 +283,54 @@ Unsetting them is the point. NFR-2 says the unit suite runs offline with no
 credentials, and a target that inherits a developer's environment cannot
 demonstrate that on a machine where the keys are set. `verify-phase-0` stays as
 it is, so the phase 0 gate keeps meaning what its report says it meant.
+
+## 2026-08-31: card and key patterns live in `internal/redact`, and what they cannot do is stated
+
+`internal/redact` holds `cardLike`, `keyLike`, and `Value`. `internal/audit`
+and `internal/razorpay` both call it, and `audit.Redacted` and
+`razorpay.Redacted` are both `redact.Marker`.
+
+It started as a copy in `audit` alone. The client's capture path needed the same
+patterns, because a capture line becomes a committed fixture, and a second copy
+of a redaction pattern is the kind of thing that gets fixed in one place and not
+the other. This repository already made that argument once, for the card table
+in `internal/testcards`.
+
+Two spellings of the marker would have been the same mistake in miniature: a
+ledger holding both `[redacted]` and something else reads as two different
+things having happened.
+
+`cardLike` has no upper bound on the digit run. Bounding it at 19, the longest a
+card can be, meant a card pasted inside a longer run matched nothing and passed
+through whole, which is the wrong direction to fail in. The cost is that a
+genuinely long number loses its digits, and nothing this project writes to a
+ledger or a fixture is a 13-digit run that has to survive.
+
+The limit is on the function, not hidden: a Razorpay key secret is a bare
+alphanumeric string with no prefix and no checkable shape, so no pattern can
+find one in ordinary text. The control for a secret is the package holding it
+scrubbing before the string leaves, which `razorpay.Client.Redact` does on every
+error and every captured body. `audit.Event.Detail` says the same thing where a
+caller would read it. Claiming the regexes catch secrets would be the dishonest
+version of this, and it would be believed.
+
+## 2026-08-31: an action that ran and failed is `action_taken`, not `action_skipped`
+
+`Orchestrator.ProcessOrder` chooses the audit kind from the action kind and the
+action error together, not from the kind alone.
+
+The idiomatic Go failure from an `ActionFunc` is `return ActionResult{}, err`,
+which leaves `Kind` empty and normalises to `ActionNone`. Keying the row off
+`Kind` alone filed every failed attempt as one that never happened, and PRD
+section 7's containment and honesty metrics are counted by reading these rows:
+an attempt that errored is an attempt, and a refusal is not.
+
+## 2026-08-31: a resend the gateway did not accept is an error, not a quiet receipt
+
+`notify.SendPaymentLink` returns `ErrNotAccepted` when the call came back
+without `Accepted` set.
+
+It used to return the receipt and a nil error, with `APICallSucceeded` false. A
+caller that checks the error first, which is most of them, read that as a
+message having gone out. Given this package exists to be careful about exactly
+that claim, the quiet version was the wrong default.
