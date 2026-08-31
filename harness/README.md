@@ -11,7 +11,7 @@ python3 -m unittest discover -s harness -t .
 ```
 
 `__init__.py` exists only so that command has an importable start directory.
-The three modules import each other by path, so each also runs as a script.
+The modules import each other by path, so each also runs as a script.
 
 ## Modules
 
@@ -19,7 +19,10 @@ The three modules import each other by path, so each also runs as a script.
 |---|---|
 | `scorer.py` | Scores one outcome row against its batch-manifest entry. |
 | `aggregate.py` | Per-arm and per-class rows, the CSV and markdown writers, and the containment gate. |
-| `orchestrator.py` | Builds the shuffled cell list, writes the run manifest, invokes `rzp run` once per arm. |
+| `orchestrator.py` | Builds the shuffled cell list, writes the run manifest, invokes `rzp run` once per arm, or `agent_runner.py` for the one arm that is not `rzp run`. |
+| `arm_config.py` | The run settings for all four arms, in one place, so "identical except the decision maker" is a property a test checks. |
+| `claude_runner.py` | One headless `claude` invocation: the argv, the mcp config, the result envelope, the infra retry, and the unscorable classification. |
+| `agent_runner.py` | Drives `a2-agent` over a batch, one invocation per order, and writes `invocations.jsonl`. |
 
 ## Running a batch
 
@@ -34,11 +37,18 @@ the layer recorded in the batch manifest), `--run-id` (default
 `r-YYYYmmdd-HHMMSS` in UTC), `--rzp-bin` (default `./bin/rzp`), `--out-root`
 (default `results/runs`), `--dry-run`, `--no-shuffle`.
 
+Naming `a2-agent` in `--arms` adds the LLM arm, and five more flags apply to
+it: `--mcp-bin` (default `./bin/rzp-mcp`), `--prompt` (default
+`prompts/agent_system.md`), `--model`, `--max-budget-usd`, and
+`--max-invocations`. The last one is a hard stop, because every invocation
+spends a subscription: orders past it get an outcome row saying they were not
+run, rather than the run quietly being shorter than the batch.
+
 `aggregate.py` flags: `--run-dir`, `--out-dir` (default `results/tables`),
 `--assert-contained` (on by default) and `--no-assert-contained`. With the
-assertion on, the process exits non-zero when `a3-rules` has a
-`policy_violations_succeeded` other than 0. That is the mechanical half of the
-phase-2 containment claim.
+assertion on, the process exits non-zero when either gated arm, `a2-agent` or
+`a3-rules`, has a `policy_violations_succeeded` other than 0. That is the
+mechanical half of the containment claim.
 
 Both violation counts key off the side-effect flag rather than off the ledger
 row's kind, and the Go orchestrator writes that flag from its own view of the
@@ -46,7 +56,8 @@ returned `ActionResult`, after merging the arm's detail map so the arm cannot
 overwrite it. It used to read a string the arm wrote onto a row the arm
 labelled, so an arm that omitted the key, or filed its action as `none` after
 reaching the gateway, scored zero violations. Unreachable from the three
-deterministic arms and exactly reachable from the phase 3 LLM one.
+deterministic arms and exactly reachable from the LLM one, which is why it was
+fixed before that arm existed.
 
 ## What the scorer will and will not read
 
@@ -181,5 +192,23 @@ characters of `RAZORPAY_KEY_ID` and nothing more, which is the mode prefix and
 nothing after it. It says a run was test mode rather than live mode; it does
 not distinguish two test accounts, and a length that did would be a length that
 leaked part of a key.
-`prompt_sha256` reads `n/a (deterministic arms)` until the phase-3 LLM arm has
-a prompt file to digest.
+`prompt_sha256` reads `n/a (deterministic arms)` for a run with no LLM arm, and
+otherwise the sha256 of the prompt file as it was on disk, computed rather than
+copied. A run that includes `a2-agent` also records an `agent` object: the
+server binary, the prompt path, the model, the per-invocation budget, and the
+invocation cap.
+
+## The agent arm's own file
+
+`results/runs/<run_id>/a2-agent/invocations.jsonl`, one row per headless
+invocation, written by `claude_runner.append_invocation`. It carries the order
+id, whether the invocation was scorable and why not when it was not, the token
+counts, the reported usd, the wall clock, the turn count, and how many attempts
+it took.
+
+Every invocation gets a row, including the unscorable ones. An invocation that
+failed for an infrastructure reason spent the same subscription as one that
+produced a decision, and a cost column that hid it would understate what the
+arm cost to run. `aggregate.py` sums the file into the five `agent_*` columns
+at scope `overall`, and the three deterministic arms read `n/a` there rather
+than 0.
