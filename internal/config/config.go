@@ -15,6 +15,7 @@ const (
 	EnvArm          = "RZP_ARM"
 	EnvOTLPEndpoint = "OTEL_EXPORTER_OTLP_ENDPOINT"
 	EnvServiceName  = "OTEL_SERVICE_NAME"
+	EnvJaegerUIURL  = "RZP_JAEGER_UI_URL"
 )
 
 // Gateway values.
@@ -30,6 +31,9 @@ const (
 // otherwise.
 const DefaultServiceName = "rzp-recovery-agent"
 
+// DefaultJaegerUIURL is the query UI compose/docker-compose.yml publishes.
+const DefaultJaegerUIURL = "http://localhost:16686"
+
 // Config is the runtime settings, loaded from the environment.
 type Config struct {
 	RazorpayKeyID     string
@@ -44,6 +48,27 @@ type Config struct {
 	// them and puts them in the run record.
 	Layer string
 	Arm   string
+	// JaegerUIURL is the root of the Jaeger query UI, so a run can print a
+	// reviewer a link to the trace it produced. It is not always localhost:
+	// phase 1 ran its docker daemon on another machine over SSH.
+	JaegerUIURL string
+}
+
+// TraceURL returns the Jaeger link for one trace, or an empty string when
+// there is no trace id.
+//
+// An empty trace id means no span was recorded, and a link ending in /trace/
+// with nothing after it is a broken link presented as evidence. Callers print
+// nothing rather than that.
+func (c Config) TraceURL(traceID string) string {
+	if traceID == "" {
+		return ""
+	}
+	root := c.JaegerUIURL
+	if root == "" {
+		root = DefaultJaegerUIURL
+	}
+	return strings.TrimRight(root, "/") + "/trace/" + traceID
 }
 
 // Load reads the configuration from the process environment.
@@ -60,6 +85,7 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		ServiceName:       strings.TrimSpace(getenv(EnvServiceName)),
 		Layer:             strings.TrimSpace(getenv(EnvLayer)),
 		Arm:               strings.TrimSpace(getenv(EnvArm)),
+		JaegerUIURL:       strings.TrimSpace(getenv(EnvJaegerUIURL)),
 	}
 
 	if c.Gateway == "" {
@@ -67,6 +93,9 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 	}
 	if c.ServiceName == "" {
 		c.ServiceName = DefaultServiceName
+	}
+	if c.JaegerUIURL == "" {
+		c.JaegerUIURL = DefaultJaegerUIURL
 	}
 
 	switch c.Gateway {

@@ -147,3 +147,44 @@ func TestConfigFailsFastWhenKeyIDMissing(t *testing.T) {
 		t.Errorf("error %q does not name %s", err, config.EnvKeyID)
 	}
 }
+
+// TestConfigReadsJaegerUIURLAndBuildsATraceURL covers the live half's need to
+// print a reviewer a link to the trace a run produced. The UI can be on
+// another machine: phase 1's docker daemon runs over SSH on a build machine,
+// so the host cannot be hardcoded to localhost.
+func TestConfigReadsJaegerUIURLAndBuildsATraceURL(t *testing.T) {
+	cfg, err := config.LoadFrom(envMap(map[string]string{
+		config.EnvJaegerUIURL: "http://build-machine:16686/",
+	}))
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if cfg.JaegerUIURL != "http://build-machine:16686/" {
+		t.Errorf("JaegerUIURL = %q, want the value from %s", cfg.JaegerUIURL, config.EnvJaegerUIURL)
+	}
+
+	// The trailing slash in the configured URL must not produce a double
+	// slash in the link, because a reviewer pastes this into a browser.
+	got := cfg.TraceURL("4bf92f3577b34da6a3ce929d0e0e4736")
+	want := "http://build-machine:16686/trace/4bf92f3577b34da6a3ce929d0e0e4736"
+	if got != want {
+		t.Errorf("TraceURL = %q, want %q", got, want)
+	}
+
+	// An empty trace id means no span was recorded. A link to /trace/ with
+	// nothing after it is a broken link presented as evidence, so there is
+	// no link at all.
+	if empty := cfg.TraceURL(""); empty != "" {
+		t.Errorf("TraceURL with no trace id = %q, want an empty string", empty)
+	}
+
+	// Unset falls back to the port compose publishes, so a local run still
+	// prints a working link.
+	fallback, err := config.LoadFrom(envMap(map[string]string{}))
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if fallback.JaegerUIURL != config.DefaultJaegerUIURL {
+		t.Errorf("JaegerUIURL with %s unset = %q, want %q", config.EnvJaegerUIURL, fallback.JaegerUIURL, config.DefaultJaegerUIURL)
+	}
+}
