@@ -185,3 +185,44 @@ in prose is a claim, and it has to be checked against the run that produced it
 even when the same person wrote both an hour apart.
 
 Cost: 15 minutes.
+
+## 2026-08-31: the redactor scrubbed the middle out of four idempotency keys
+
+Symptom: found by grepping the committed ledgers for the redaction marker,
+expecting none. Four of the 80 rows carrying an idempotency key held something
+like `d6b28a75b9970358fe3a1ebcd4e3616107c97787fb[redacted]e8b41dd`.
+
+Cause: `internal/redact` replaces any run of 13 or more digits, because that is
+the shape of a card number. A sha256 digest rendered as 64 hex characters
+contains such a run about five percent of the time, and the arms were writing
+the full digest into the audit detail. The doc comment on that pattern said
+nothing in this project writes a run of 13 digits that has to survive, and
+phase 2 made it false without noticing.
+
+It moved no metric: nothing in the scorer reads the key. What it broke is the
+audit trail, which is the artifact the project's whole argument rests on. A row
+whose own key is unreadable is a row a reviewer cannot join to the store's key
+set.
+
+Fix on the writing side, not in the redactor. `policy.ShortKey` puts 12
+characters in the row, and 12 characters cannot hold a run of 13 digits
+whatever they hash to. Nothing is lost: the row already carries the order id,
+the proposed action, and the attempt number, which are the three inputs, so the
+full key is recomputable.
+
+The tempting fix was to loosen the card pattern so it does not match inside a
+longer alphanumeric token. That is a change to a security control made to solve
+a display problem, and it is the wrong direction to take one. The pattern is
+unchanged and its doc comment now records what phase 2 found.
+
+Two assertions went in, and the difference between them is worth recording.
+The end-to-end one in `TestRulesArmRecordsAPolicyVerdictBeforeEverySideEffect`
+walks the ledger for the marker and is probabilistic: with six orders and a one
+in twenty hit rate it stayed green against the unfixed code. The deterministic
+one is in `TestPolicyIdempotencyKeyIsSha256OfOrderActionAttempt`, which walks
+5000 keys through `redact.Value` and fails at attempt 25. Both were run against
+the unfixed code before being kept, which is the only reason the difference
+between them is known rather than assumed.
+
+Cost: 30 minutes, and the fake-layer run was regenerated. The table numbers did
+not move.

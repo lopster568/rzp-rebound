@@ -1,6 +1,6 @@
 {
   "run_id": "sample-phase-2-fake",
-  "started_at": "2026-08-31T22:11:29Z",
+  "started_at": "2026-08-31T22:24:23Z",
   "seed": 42,
   "arms": [
     "a0-control",
@@ -10,7 +10,7 @@
   "batch_id": "b-1234-40",
   "batch_path": "results/batches/b-1234-40.json",
   "layer": "fake",
-  "git_sha": "08d9118",
+  "git_sha": "74ae4bc",
   "prompt_sha256": "n/a (deterministic arms)",
   "key_id_prefix": "",
   "shuffled": true,

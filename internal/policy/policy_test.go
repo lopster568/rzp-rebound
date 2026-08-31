@@ -14,6 +14,7 @@ import (
 	"github.com/lopster568/rzp-recovery-agent/internal/classify"
 	"github.com/lopster568/rzp-recovery-agent/internal/clock"
 	"github.com/lopster568/rzp-recovery-agent/internal/policy"
+	"github.com/lopster568/rzp-recovery-agent/internal/redact"
 )
 
 // start is the instant every fake clock in this file reads. Any instant would
@@ -196,6 +197,31 @@ func TestPolicyIdempotencyKeyIsSha256OfOrderActionAttempt(t *testing.T) {
 	} {
 		if other == base {
 			t.Errorf("a different %s produced the same key", name)
+		}
+	}
+
+	// The short form is what goes in an audit row, and its whole job is to be
+	// too short to look like a card number to internal/redact, which replaces
+	// any run of 13 or more digits. Twelve characters cannot hold one.
+	if policy.ShortKeyLen >= 13 {
+		t.Fatalf("ShortKeyLen is %d, which can hold a 13 digit run and will be redacted out of the ledger",
+			policy.ShortKeyLen)
+	}
+	if got := policy.ShortKey(want); got != want[:policy.ShortKeyLen] {
+		t.Errorf("ShortKey = %q, want the first %d characters %q", got, policy.ShortKeyLen, want[:policy.ShortKeyLen])
+	}
+	if got := policy.ShortKey("abc"); got != "abc" {
+		t.Errorf("ShortKey truncated a string shorter than the prefix: %q", got)
+	}
+
+	// The case that actually happened: a digest whose first characters are all
+	// digits still has to survive redaction. Search for one rather than
+	// assuming, so this fails loudly if the key format ever changes.
+	for i := range 5000 {
+		key := policy.IdempotencyKey("order_x", policy.ActionRetrySameInstrument, i)
+		short := policy.ShortKey(key)
+		if redact.Value(short) != short {
+			t.Fatalf("attempt %d: the short key %q does not survive redaction", i, short)
 		}
 	}
 }

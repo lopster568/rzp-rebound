@@ -492,6 +492,27 @@ func TestRulesArmRecordsAPolicyVerdictBeforeEverySideEffect(t *testing.T) {
 	if actionRows == 0 {
 		t.Fatal("the rules arm took no action at all, so this proves nothing")
 	}
+
+	// No detail value the arms write may come back carrying the redaction
+	// marker. A row that had its own idempotency key scrubbed out of it is a
+	// row a reviewer cannot join to anything, and that is what happened to 4
+	// of the 80 keys in the first committed run: a sha256 digest holds a run
+	// of 13 digits often enough to matter, and internal/redact treats that
+	// shape as a card number.
+	//
+	// This is the end-to-end half and it is probabilistic: about one key in
+	// twenty trips the pattern, and six orders is not enough to rely on. The
+	// deterministic guard is in
+	// TestPolicyIdempotencyKeyIsSha256OfOrderActionAttempt, which walks 5000
+	// keys through the redactor. Reverting policy.ShortKey fails that one at
+	// attempt 25 and leaves this one green.
+	for _, row := range r.rows() {
+		for key, value := range row.Detail {
+			if strings.Contains(value, audit.Redacted) {
+				t.Errorf("detail %q on a %s row came back redacted: %q", key, row.Kind, value)
+			}
+		}
+	}
 }
 
 func TestArmsShareOneActionSurface(t *testing.T) {

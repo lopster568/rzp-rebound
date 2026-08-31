@@ -337,7 +337,7 @@ func (a *Arm) rules(ctx context.Context, order batch.AgentVisibleOrder, class cl
 			DetailArm:              a.id,
 			DetailPolicyConsulted:  "true",
 			DetailSideEffect:       "false",
-			DetailIdempotencyKey:   decision.IdempotencyKey,
+			DetailIdempotencyKey:   policy.ShortKey(decision.IdempotencyKey),
 			DetailIdempotentReplay: strconv.FormatBool(decision.IdempotentReplay),
 			DetailAttemptNo:        strconv.Itoa(attemptNo),
 			"policy_reason":        decision.Reason,
@@ -357,7 +357,7 @@ func (a *Arm) rules(ctx context.Context, order batch.AgentVisibleOrder, class cl
 		PolicyRule:     decision.RuleID,
 		Detail: map[string]string{
 			DetailArm:              a.id,
-			DetailIdempotencyKey:   decision.IdempotencyKey,
+			DetailIdempotencyKey:   policy.ShortKey(decision.IdempotencyKey),
 			DetailIdempotentReplay: strconv.FormatBool(decision.IdempotentReplay),
 			DetailAttemptNo:        strconv.Itoa(attemptNo),
 			"policy_reason":        decision.Reason,

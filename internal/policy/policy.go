@@ -305,6 +305,34 @@ func IdempotencyKey(orderID, action string, attemptNo int) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// ShortKeyLen is how much of an idempotency key goes in an audit row.
+//
+// Twelve, and the number is load-bearing rather than aesthetic.
+// internal/redact replaces any run of 13 or more digits with its marker,
+// because that is the shape of a card number, and a 64 character hex digest
+// contains such a run about five percent of the time. Four of the eighty keys
+// in the first committed fake-layer run came out of the ledger with
+// "[redacted]" in the middle of them.
+//
+// Twelve characters cannot contain a run of thirteen digits, so a short key
+// passes the redactor unchanged whatever it hashes to. Nothing is lost: the
+// audit row already carries the order id, the proposed action, and the attempt
+// number, which are the three inputs, so a reviewer who wants the full key can
+// recompute it.
+//
+// The alternative was to loosen the card pattern so it does not match inside a
+// longer alphanumeric token. That is a change to a security control, made to
+// fix a display problem, and it is the wrong direction to take one.
+const ShortKeyLen = 12
+
+// ShortKey is the prefix of an idempotency key that goes in an audit row.
+func ShortKey(key string) string {
+	if len(key) <= ShortKeyLen {
+		return key
+	}
+	return key[:ShortKeyLen]
+}
+
 // KillSwitchFile reports whether the kill-switch file at path exists.
 //
 // This is the I/O half of R8 and it lives outside Evaluate on purpose. An

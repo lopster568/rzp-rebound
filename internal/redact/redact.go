@@ -12,10 +12,21 @@ const Marker = "[redacted]"
 // There is no upper bound, on purpose. Capping the run at 19, the longest a
 // card number can be, means a card pasted into a longer run of digits matches
 // nothing and passes through whole, which is the wrong way for this to fail.
-// The cost is that a genuinely long number loses its digits: nothing this
-// project writes to a ledger or a fixture is a run of 13 digits that has to
-// survive, because amounts in paise are six, a unix timestamp in seconds is
-// ten, and every identifier in the system carries a letter prefix.
+// The cost is that a genuinely long number loses its digits, and phase 2 found
+// the first thing in this repository that pays it. A sha256 digest rendered as
+// 64 hex characters contains a run of 13 digits about five percent of the
+// time, so four of the eighty idempotency keys in the first committed
+// fake-layer run came out of the ledger with the marker in the middle of them.
+//
+// That was fixed on the writing side rather than here: policy.ShortKey puts 12
+// characters in the audit row, and 12 characters cannot hold a run of 13
+// digits. Loosening this pattern so it does not match inside a longer
+// alphanumeric token would have fixed the same symptom by weakening a security
+// control to solve a display problem.
+//
+// Everything else this project writes is still clear of the pattern by
+// construction: amounts in paise are six digits, a unix timestamp in seconds is
+// ten, and every Razorpay identifier carries a letter prefix.
 var cardLike = regexp.MustCompile(`\d(?:[ -]?\d){12,}`)
 
 // keyLike matches a Razorpay key. The prefix is assembled from fragments so

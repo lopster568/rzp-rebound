@@ -6,7 +6,7 @@
 | Layer | fake |
 | Batch id | b-1234-40 |
 | Seed | 42 |
-| Git sha | 08d9118 |
+| Git sha | 74ae4bc |
 
 Cost model: The cost model invents two numbers, 200 paise per payment attempt and 5000 paise per forbidden action, for the model only; neither is a measured Razorpay fee or a measured goodwill loss.
 
