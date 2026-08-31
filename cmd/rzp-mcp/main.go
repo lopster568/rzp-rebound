@@ -8,6 +8,12 @@
 // agent arm comes from the same FetchOrder the other three arms are scored on.
 //
 // It holds the Razorpay credentials. The model holds tool names (FR-MCP-2).
+//
+// Nothing in this process may write to stdout. Stdout is the MCP transport,
+// and one stray line on it is a protocol error the client reports as a
+// connection failure. Progress and errors go to stderr, and the trace exporter
+// is built only when an OTLP endpoint is configured, because the stdout
+// exporter internal/telemetry falls back to would corrupt the session.
 package main
 
 import (
@@ -17,9 +23,27 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"syscall"
+	"time"
 
+	"github.com/lopster568/rzp-recovery-agent/internal/audit"
+	"github.com/lopster568/rzp-recovery-agent/internal/batch"
+	"github.com/lopster568/rzp-recovery-agent/internal/classify"
+	"github.com/lopster568/rzp-recovery-agent/internal/clock"
+	"github.com/lopster568/rzp-recovery-agent/internal/config"
+	"github.com/lopster568/rzp-recovery-agent/internal/mcpserver"
+	"github.com/lopster568/rzp-recovery-agent/internal/notify"
+	"github.com/lopster568/rzp-recovery-agent/internal/policy"
+	"github.com/lopster568/rzp-recovery-agent/internal/razorpay"
+	"github.com/lopster568/rzp-recovery-agent/internal/recovery"
 	"github.com/lopster568/rzp-recovery-agent/internal/runner"
+	"github.com/lopster568/rzp-recovery-agent/internal/store"
+	"github.com/lopster568/rzp-recovery-agent/internal/telemetry"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 // ArmAgent is the arm id for the LLM arm. a2 was reserved for it in phase 2 so
@@ -30,6 +54,9 @@ const ArmAgent = "a2-agent"
 // cmd/rzp run defaults to, because an arm that re-presented a different card
 // would be a different experiment.
 const defaultCard = "4100280000080001"
+
+// tracerName names the tracer this process opens spans on.
+const tracerName = "github.com/lopster568/rzp-recovery-agent/cmd/rzp-mcp"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -87,10 +114,297 @@ func parseFlags(args []string) (options, error) {
 	return o, nil
 }
 
-func run(ctx context.Context, args []string) error {
-	if _, err := parseFlags(args); err != nil {
+func run(ctx context.Context, args []string) (runErr error) {
+	opts, err := parseFlags(args)
+	if err != nil {
 		return err
 	}
-	_ = ctx
-	return errors.New("serving is not implemented yet")
+
+	batchFile, err := runner.ReadBatchFile(opts.batchPath)
+	if err != nil {
+		return err
+	}
+	manifestOrder, ok := findOrder(batchFile, opts.orderID)
+	if !ok {
+		return fmt.Errorf("batch %s has no order %s", batchFile.BatchID, opts.orderID)
+	}
+
+	engaged, err := policy.KillSwitchFile(opts.killSwitchFile)
+	if err != nil {
+		return err
+	}
+
+	armDir := filepath.Join(opts.runDir, opts.arm)
+	if err := os.MkdirAll(armDir, 0o755); err != nil {
+		return fmt.Errorf("make %s: %w", armDir, err)
+	}
+
+	// Both files are opened for append, not truncate. One process serves one
+	// order and the harness runs them one after another, so the arm's ledger
+	// and outcomes are the concatenation of every invocation's rows. Truncating
+	// would leave the run with the last order and nothing else.
+	ledger, err := os.OpenFile(filepath.Join(armDir, "ledger.jsonl"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open the ledger: %w", err)
+	}
+	defer func() {
+		if err := ledger.Close(); err != nil && runErr == nil {
+			runErr = fmt.Errorf("close the ledger: %w", err)
+		}
+	}()
+
+	// The fake layer runs on a fake clock started at the same fixed instant
+	// cmd/rzp run uses, so the two arms see the same time and R2 means the
+	// same thing to both. The live layer runs on the wall clock, because real
+	// time passes between real API calls whatever this process thinks.
+	var runClock clock.Clock = clock.Real()
+	if opts.layer == runner.LayerFake {
+		runClock = clock.NewFake(time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC))
+	}
+
+	recorder, err := audit.NewRecorder(audit.Options{Writer: ledger, Clock: runClock})
+	if err != nil {
+		return err
+	}
+
+	rig, err := runner.NewGatewayRig(ctx, opts.layer, batchFile, runClock)
+	if err != nil {
+		return err
+	}
+	defer rig.Close(ctx)
+
+	materialised, err := rig.Materialise(ctx, []batch.Order{manifestOrder})
+	if err != nil {
+		return err
+	}
+	if len(materialised) != 1 {
+		return fmt.Errorf("materialised %d orders for one manifest order", len(materialised))
+	}
+	order := materialised[0]
+
+	tracer, shutdown, err := newTracer(ctx, rig, opts.layer)
+	if err != nil {
+		return err
+	}
+	defer shutdown()
+
+	ledgerStore := store.New(runClock)
+	ledgerStore.Observe(order.Visible.OrderID, order.Attempts)
+
+	notifier, err := notify.New(notify.Options{Port: rig.Port, Clock: runClock})
+	if err != nil {
+		return err
+	}
+
+	server, err := mcpserver.New(mcpserver.Options{
+		Surface: &recovery.Surface{
+			Port:      rig.Port,
+			Attempter: rig.Attempter(),
+			Notifier:  notifier,
+			Recorder:  recorder,
+			Card:      opts.card,
+			Currency:  "INR",
+		},
+		Store:             ledgerStore,
+		Policy:            policy.New(policy.Config{}, runClock),
+		Recorder:          recorder,
+		Tracer:            tracer,
+		Orders:            []batch.AgentVisibleOrder{order.Visible},
+		KillSwitchEngaged: engaged,
+		ActionBudget:      opts.actionBudget,
+		Arm:               opts.arm,
+	})
+	if err != nil {
+		return err
+	}
+
+	// The class goes on the record before the agent sees anything, so the
+	// ledger for this arm starts the same way the other three arms' ledgers
+	// do and the scorer needs no separate path.
+	beforeCalls := rig.Calls()
+	class, attemptsSeen, err := observeAndRecord(ctx, rig, recorder, order, opts.arm, tracer)
+	if err != nil {
+		return err
+	}
+
+	// Serve. This blocks until the client closes stdin.
+	serveErr := server.Run(ctx, &mcp.StdioTransport{})
+
+	// The outcome. Read from the gateway, after the session, whatever the
+	// agent did or said. One code path means there is no branch in which the
+	// agent's claim is believed.
+	tally := server.Tally(order.Visible.OrderID)
+	row := runner.OutcomeRow{
+		RunID:            filepath.Base(opts.runDir),
+		Arm:              opts.arm,
+		Layer:            opts.layer,
+		BatchID:          batchFile.BatchID,
+		ManifestOrderID:  order.ManifestID,
+		GatewayOrderID:   order.Visible.OrderID,
+		Class:            class.String(),
+		ActionKind:       tally.ActionKind,
+		ClaimedRecovered: tally.ClaimedRecovered,
+		AttemptsSeen:     attemptsSeen,
+		AttemptsAfter:    ledgerStore.Attempts(order.Visible.OrderID),
+		PolicyVerdict:    tally.PolicyVerdict,
+		PolicyRule:       tally.PolicyRule,
+		Escalated:        tally.Escalated,
+		SideEffect:       tally.SideEffect,
+	}
+	if serveErr != nil {
+		row.Error = serveErr.Error()
+	}
+
+	final, ferr := rig.Port.FetchOrder(ctx, order.Visible.OrderID)
+	if ferr != nil {
+		// An unobserved row is unscorable, which the scorer counts and keeps
+		// out of every denominator rather than folding into "not recovered".
+		if row.Error == "" {
+			row.Error = ferr.Error()
+		}
+	} else {
+		row.FinalOrderStatus = final.Status
+		row.Recovered = final.Status == razorpay.OrderStatusPaid
+		row.AmountPaidPaise = final.AmountPaid
+		row.Observed = true
+
+		if _, err := recorder.Record(ctx, audit.Event{
+			OrderID:        order.Visible.OrderID,
+			Kind:           audit.KindOutcomeObserved,
+			Class:          class.String(),
+			ProposedAction: tally.ActionKind,
+			PolicyVerdict:  tally.PolicyVerdict,
+			PolicyRule:     tally.PolicyRule,
+			Detail: map[string]string{
+				recovery.DetailArm:   opts.arm,
+				"final_order_status": final.Status,
+				"recovered":          strconv.FormatBool(row.Recovered),
+				"claimed_recovered":  strconv.FormatBool(row.ClaimedRecovered),
+				"amount_paid_paise":  strconv.FormatInt(final.AmountPaid, 10),
+				"tool_calls":         strconv.Itoa(tally.ToolCalls),
+				"denied_tool_calls":  strconv.Itoa(tally.DeniedToolCalls),
+				"decisions_recorded": strconv.Itoa(tally.DecisionsRecorded),
+			},
+		}); err != nil {
+			return err
+		}
+	}
+
+	// Port calls plus the ones an attempt made outside Port, the same sum
+	// cmd/rzp run writes. A payment attempt is four checkout calls on the live
+	// layer and Port has no method for any of them.
+	row.APICalls = rig.Calls() - beforeCalls + tally.GatewayCalls
+
+	if err := appendOutcome(filepath.Join(armDir, "outcomes.jsonl"), row); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(os.Stderr,
+		"rzp-mcp: %s %s tools=%d denied=%d action=%s status=%s\n",
+		opts.arm, order.ManifestID, tally.ToolCalls, tally.DeniedToolCalls,
+		row.ActionKind, row.FinalOrderStatus)
+
+	return serveErr
+}
+
+// recordOutcome is folded into run, but the classification is its own step so
+// that the row exists even when the agent never calls a tool.
+func observeAndRecord(
+	ctx context.Context,
+	rig *runner.GatewayRig,
+	recorder *audit.Recorder,
+	order runner.Materialised,
+	arm string,
+	tracer trace.Tracer,
+) (classify.Class, int, error) {
+	ctx, span := tracer.Start(ctx, "mcp.classify")
+	defer span.End()
+
+	payments, err := rig.Port.ListPaymentsForOrder(ctx, order.Visible.OrderID)
+	if err != nil {
+		return classify.Unclassified, 0, err
+	}
+	var failed *razorpay.Payment
+	for i := range payments {
+		if payments[i].Status == razorpay.PaymentStatusFailed {
+			failed = &payments[i]
+		}
+	}
+	class := classify.Classify(recovery.FailureFrom(failed))
+
+	polled, err := rig.Port.FetchOrder(ctx, order.Visible.OrderID)
+	if err != nil {
+		return class, len(payments), err
+	}
+
+	if _, err := recorder.Record(ctx, audit.Event{
+		OrderID: order.Visible.OrderID,
+		Kind:    audit.KindClassified,
+		Class:   class.String(),
+		Detail: map[string]string{
+			recovery.DetailArm:    arm,
+			"polled_order_status": polled.Status,
+			"attempts_seen":       strconv.Itoa(len(payments)),
+			"poll_timed_out":      "false",
+		},
+	}); err != nil {
+		return class, len(payments), err
+	}
+	return class, len(payments), nil
+}
+
+// newTracer builds the span exporter, or a tracer that records nothing.
+//
+// The live layer already has a provider on the rig. The fake layer gets one
+// only when an OTLP endpoint is configured, because internal/telemetry falls
+// back to the stdout exporter and stdout is the MCP transport: a span printed
+// there is a protocol error, not a trace.
+func newTracer(ctx context.Context, rig *runner.GatewayRig, layer string) (trace.Tracer, func(), error) {
+	if layer == runner.LayerLive {
+		return rig.Tracer, func() {}, nil
+	}
+
+	cfg, err := config.Load()
+	if err != nil || cfg.OTLPEndpoint == "" {
+		// A config that will not load is not a reason to refuse to serve the
+		// fake layer, which needs no credentials at all. It is a reason to
+		// record no spans.
+		return noop.NewTracerProvider().Tracer(tracerName), func() {}, nil
+	}
+
+	provider, err := telemetry.NewTracerProvider(ctx, telemetry.Config{
+		ServiceName:  cfg.ServiceName,
+		OTLPEndpoint: cfg.OTLPEndpoint,
+		Insecure:     true,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return provider.Tracer(tracerName), func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = provider.Shutdown(shutdownCtx)
+	}, nil
+}
+
+func findOrder(file *runner.BatchFile, orderID string) (batch.Order, bool) {
+	for _, o := range file.Orders {
+		if o.OrderID == orderID {
+			return o, true
+		}
+	}
+	return batch.Order{}, false
+}
+
+// appendOutcome adds one row to the arm's outcomes file.
+func appendOutcome(path string, row runner.OutcomeRow) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open the outcomes file: %w", err)
+	}
+	if err := runner.WriteJSONLine(f, row); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }

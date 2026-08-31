@@ -52,18 +52,51 @@ def build(
     action_budget: int = 0,
     policy: dict | None = None,
 ) -> dict:
-    """Return the run configuration for one arm."""
-    raise NotImplementedError("harness/arm_config.build")
+    """Return the run configuration for one arm.
+
+    Every value below is the same for every arm. The only two that read `arm`
+    are the label and the decision maker, which is the property
+    `differing_keys` exists to check.
+    """
+    return {
+        "arm": arm,
+        "decision_maker": decision_maker(arm),
+        "layer": layer,
+        "batch_path": batch_path,
+        "batch_id": batch_id,
+        "run_dir": run_dir,
+        "card": card,
+        "currency": currency,
+        "kill_switch_file": kill_switch_file,
+        "action_budget": action_budget,
+        "policy": policy if policy is not None else {},
+    }
 
 
 def differing_keys(left: dict, right: dict) -> set[str]:
     """Keys whose values differ between two configs, including keys present in
-    only one of them."""
-    raise NotImplementedError("harness/arm_config.differing_keys")
+    only one of them.
+
+    A missing key counts as a difference rather than as a match against a
+    default. Two configs where one omits `card` are not two configs that agree
+    about the card: they are one config that names it and one that leaves it to
+    whatever the binary happens to default to.
+    """
+    missing = object()
+    keys = set(left) | set(right)
+    return {k for k in keys if left.get(k, missing) != right.get(k, missing)}
 
 
 def decision_maker(arm: str) -> str:
-    """The decision maker for an arm. An unknown arm is an error rather than a
-    default, because a typo in an arm id would otherwise produce a config that
-    looks fine."""
-    raise NotImplementedError("harness/arm_config.decision_maker")
+    """The decision maker for an arm.
+
+    An unknown arm raises rather than returning a default. A typo in an arm id
+    that produced a config would produce a run, and a run that scored, and a
+    row in the table under a name nobody meant.
+    """
+    try:
+        return DECISION_MAKERS[arm]
+    except KeyError:
+        raise KeyError(
+            "unknown arm " + repr(arm) + ", want one of " + ", ".join(ARMS)
+        ) from None

@@ -93,7 +93,31 @@ COLUMNS = [
     "policy_violations_succeeded",
     "api_calls",
     "claim_disagreements",
+    # The cost of the arm that has one. Only a2-agent makes model invocations,
+    # so these read n/a for the three deterministic arms rather than 0: a zero
+    # token count is a claim about a model call that did not happen. Same
+    # reasoning as UNDEFINED below.
+    "agent_invocations",
+    "agent_input_tokens",
+    "agent_output_tokens",
+    "agent_cost_usd",
+    "agent_wall_clock_ms",
 ]
+
+# The cost columns are reported at scope overall and nowhere else.
+#
+# An invocation belongs to an order and an order belongs to a class, so a
+# per-class split is arithmetically possible. It is left out because it would
+# be read as the cost of handling that class, and what it would actually be is
+# the cost of however many orders of that class this batch happened to have.
+# The overall row is the number that answers "what did the agent arm cost".
+AGENT_COST_COLUMNS = (
+    "agent_invocations",
+    "agent_input_tokens",
+    "agent_output_tokens",
+    "agent_cost_usd",
+    "agent_wall_clock_ms",
+)
 
 
 # UNDEFINED is what a rate with an empty denominator prints.
@@ -138,12 +162,42 @@ def _class_scopes(batch_manifest: dict) -> list[str]:
     return ordered
 
 
+def _agent_cost(scope: str, invocations: list[dict] | None) -> dict:
+    """The agent arm's cost columns, or n/a.
+
+    Every invocation counts, including the unscorable ones. An invocation that
+    failed for an infrastructure reason spent the same subscription as one that
+    produced a decision, and a cost column that hid it would understate what
+    the arm cost to run.
+    """
+    if scope != SCOPE_OVERALL or not invocations:
+        return dict.fromkeys(AGENT_COST_COLUMNS, UNDEFINED)
+
+    def total(field):
+        out = 0
+        for row in invocations:
+            value = row.get(field)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            out += value
+        return out
+
+    return {
+        "agent_invocations": len(invocations),
+        "agent_input_tokens": int(total("input_tokens")),
+        "agent_output_tokens": int(total("output_tokens")),
+        "agent_cost_usd": round(total("cost_usd"), 6),
+        "agent_wall_clock_ms": int(total("duration_ms")),
+    }
+
+
 def _build_row(
     layer: str,
     arm: str,
     scope: str,
     pairs: list[tuple[dict, dict]],
     ledger_rows: list[dict],
+    invocations: list[dict] | None = None,
 ) -> dict:
     """One table row from (outcome, scorecard) pairs already filtered to scope."""
     cards = [card for _, card in pairs]
@@ -187,6 +241,7 @@ def _build_row(
     policy = scorer.policy_counts(ledger_rows)
 
     return {
+        **_agent_cost(scope, invocations),
         "layer": layer,
         "arm": arm,
         "scope": scope,
@@ -245,10 +300,11 @@ def aggregate(run_manifest: dict, batch_manifest: dict, per_arm: dict) -> list[d
         arm_data = per_arm.get(arm) or {}
         outcomes = arm_data.get("outcomes") or []
         ledger = arm_data.get("ledger") or []
+        invocations = arm_data.get("invocations") or []
         cards = scorer.score_run(outcomes, manifest_orders_by_id)
         pairs = list(zip(outcomes, cards))
 
-        rows.append(_build_row(layer, arm, SCOPE_OVERALL, pairs, ledger))
+        rows.append(_build_row(layer, arm, SCOPE_OVERALL, pairs, ledger, invocations))
 
         for cls in class_scopes:
             scoped = [p for p in pairs if p[1]["seeded_class"] == cls]
@@ -373,6 +429,10 @@ def load_run(run_dir) -> tuple[dict, dict, dict]:
         per_arm[arm] = {
             "outcomes": read_jsonl(run_dir / arm / "outcomes.jsonl"),
             "ledger": read_jsonl(run_dir / arm / "ledger.jsonl"),
+            # Only the agent arm writes this one. read_jsonl returns an empty
+            # list for a file that is not there, which is what the three
+            # deterministic arms have.
+            "invocations": read_jsonl(run_dir / arm / "invocations.jsonl"),
         }
     return run_manifest, batch_manifest, per_arm
 

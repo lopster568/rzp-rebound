@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/audit"
@@ -25,8 +26,26 @@ const (
 	ServerVersion = "0.1.0"
 )
 
+// Instructions is the server-side framing the model gets before its first tool
+// call. It states the domain and the one procedural rule the gate enforces,
+// and it stops there. Strategy belongs in the prompt, which is versioned and
+// whose digest goes in the run manifest.
+const Instructions = "These tools operate on failed Razorpay payments for one merchant. " +
+	"Read the order, decide what to do about it, record that decision with your reasoning, " +
+	"and then act. Actions are refused until a decision for that order is on the record."
+
 // TracerName names the tracer the middleware opens a span on per tool call.
 const TracerName = "github.com/lopster568/rzp-recovery-agent/internal/mcpserver"
+
+// Span attribute keys the middleware writes. They are namespaced under
+// rzp.mcp so a trace can be filtered to the tool surface without picking up
+// the recovery loop's own spans.
+const (
+	AttrTool        = "rzp.mcp.tool"
+	AttrGateVerdict = "rzp.mcp.gate_verdict"
+	AttrGateRule    = "rzp.mcp.gate_rule"
+	AttrOrderID     = "rzp.order_id"
+)
 
 // The seven tools. This list is the agent's entire reach, per ADR-0001. A
 // capability that is not on it does not exist for the model, and adding one
@@ -42,9 +61,14 @@ const (
 )
 
 // Middleware rule ids. They sit alongside the nine in internal/policy rather
-// than inside it, because these three are layer 1 concerns per ADR-0003: the
+// than inside it, because these two are layer 1 concerns per ADR-0003: the
 // middleware knows the tool name and the order id and nothing about what the
 // tool does.
+//
+// R8-KILL-SWITCH and R5-ACTION-BUDGET are reused rather than renamed when the
+// middleware is what refused. ADR-0003 says a budget-shaped rule can fire in
+// both layers and the row names which layer, so the rule id stays the rule and
+// the layer goes in the detail.
 const (
 	// RuleToolAllowlist refuses a tool name that is not one of the seven.
 	RuleToolAllowlist = "M1-TOOL-ALLOWLIST"
@@ -77,8 +101,17 @@ const (
 	DetailGateVerdict  = "gate_verdict"
 	DetailGateRule     = "gate_rule"
 	DetailGateReason   = "gate_reason"
+	DetailGateLayer    = "gate_layer"
 	DetailChosenAction = "chosen_action"
 	DetailReasoning    = "agent_reasoning"
+	DetailRequestedID  = "requested_order_id"
+)
+
+// The two gate layers, named in the audit row so a double refusal reads as one
+// denial with a known origin.
+const (
+	LayerMiddleware = "middleware"
+	LayerHandler    = "handler"
 )
 
 // DefaultActionBudget caps the action tool calls one invocation may make.
@@ -138,6 +171,34 @@ func IsActionTool(name string) bool {
 	return false
 }
 
+// IsKnownTool reports whether a tool name is one of the seven. It is the tool
+// allowlist, M1.
+func IsKnownTool(name string) bool {
+	for _, n := range ToolNames() {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
+// DecisionActions are the values record_decision accepts. They are the four
+// action strings the rest of the system uses plus "escalate", which is a
+// decision an arm can take and which batch.CorrectAction has no name for
+// because the manifest calls it do_nothing.
+func DecisionActions() []string {
+	return []string{
+		recovery.ActionRetrySameInstrument,
+		recovery.ActionRequestReauth,
+		recovery.ActionRequestNewInstrument,
+		DecisionEscalate,
+		recovery.ActionDoNothing,
+	}
+}
+
+// DecisionEscalate is the decision value that maps to escalate_to_human.
+const DecisionEscalate = "escalate"
+
 // Decision is what the agent stated through record_decision.
 type Decision struct {
 	OrderID   string `json:"order_id"`
@@ -145,8 +206,8 @@ type Decision struct {
 	Reasoning string `json:"reasoning"`
 }
 
-// Tally is what one invocation did to one order, in the shape
-// cmd/rzp-mcp needs to write the same OutcomeRow the deterministic arms write.
+// Tally is what one invocation did to one order, in the shape cmd/rzp-mcp
+// needs to write the same OutcomeRow the deterministic arms write.
 //
 // Nothing on it is the agent's account of itself. ClaimedRecovered is carried
 // because the scorer counts the disagreement between a claim and the gateway,
@@ -163,6 +224,21 @@ type Tally struct {
 	ToolCalls         int
 	DeniedToolCalls   int
 	DecisionsRecorded int
+}
+
+// orderTally is the mutable half. Tally is the copy a caller gets.
+//
+// lastAllowed and lastRefusal are kept apart because the outcome row wants the
+// action that happened, and an agent that acts and then makes one more refused
+// call would otherwise have its row read as a refusal.
+type orderTally struct {
+	Tally
+	lastAllowedVerdict string
+	lastAllowedRule    string
+	lastRefusedVerdict string
+	lastRefusedRule    string
+	haveAllowed        bool
+	haveRefused        bool
 }
 
 // Options configures a Server.
@@ -204,8 +280,10 @@ type Server struct {
 
 	mu           sync.Mutex
 	allowed      map[string]batch.AgentVisibleOrder
+	order        []string
 	decisions    map[string]Decision
-	tallies      map[string]*Tally
+	decisionLog  []Decision
+	tallies      map[string]*orderTally
 	actionsSpent int
 	toolCalls    int
 }
@@ -213,26 +291,150 @@ type Server struct {
 // New returns a Server with the seven tools registered and the middleware
 // installed.
 func New(opts Options) (*Server, error) {
-	return nil, errors.New("mcpserver: not implemented")
+	if opts.Surface == nil {
+		return nil, ErrNoSurface
+	}
+	if opts.Store == nil {
+		return nil, ErrNoStore
+	}
+	if opts.Policy == nil {
+		return nil, ErrNoPolicy
+	}
+	if opts.Recorder == nil {
+		return nil, ErrNoRecorder
+	}
+	if len(opts.Orders) == 0 {
+		return nil, ErrNoOrders
+	}
+	if opts.ActionBudget <= 0 {
+		opts.ActionBudget = DefaultActionBudget
+	}
+
+	s := &Server{
+		opts:      opts,
+		tracer:    opts.Tracer,
+		allowed:   make(map[string]batch.AgentVisibleOrder, len(opts.Orders)),
+		decisions: make(map[string]Decision),
+		tallies:   make(map[string]*orderTally),
+	}
+	if s.tracer == nil {
+		s.tracer = noop.NewTracerProvider().Tracer(TracerName)
+	}
+	for _, o := range opts.Orders {
+		s.allowed[o.OrderID] = o
+		s.order = append(s.order, o.OrderID)
+	}
+
+	s.mcp = mcp.NewServer(
+		&mcp.Implementation{Name: ServerName, Version: ServerVersion},
+		&mcp.ServerOptions{Instructions: Instructions},
+	)
+	// The middleware goes on before the tools, so there is no window in which
+	// a registered tool is reachable without the gate in front of it.
+	s.mcp.AddReceivingMiddleware(s.gate)
+	s.registerTools()
+
+	return s, nil
 }
 
 // MCP returns the underlying server, so a caller can connect it to a
 // transport or list its tools.
-func (s *Server) MCP() *mcp.Server { return nil }
+func (s *Server) MCP() *mcp.Server { return s.mcp }
 
 // Run serves until the transport closes.
 func (s *Server) Run(ctx context.Context, t mcp.Transport) error {
-	return errors.New("mcpserver: not implemented")
+	return s.mcp.Run(ctx, t)
 }
 
 // Tally returns what this invocation did to one order.
-func (s *Server) Tally(orderID string) Tally { return Tally{} }
+//
+// The verdict on it is the one behind the action that happened. An agent that
+// acted and then made one more call the gate refused has an outcome row about
+// the action, not about the refusal, and the refusals are counted separately
+// in DeniedToolCalls.
+func (s *Server) Tally(orderID string) Tally {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	t, ok := s.tallies[orderID]
+	if !ok {
+		return Tally{OrderID: orderID, ActionKind: recovery.ActionNone}
+	}
+	out := t.Tally
+	switch {
+	case t.haveAllowed:
+		out.PolicyVerdict, out.PolicyRule = t.lastAllowedVerdict, t.lastAllowedRule
+	case t.haveRefused:
+		out.PolicyVerdict, out.PolicyRule = t.lastRefusedVerdict, t.lastRefusedRule
+	}
+	if out.ActionKind == "" {
+		out.ActionKind = recovery.ActionNone
+	}
+	return out
+}
 
 // ToolCalls returns how many tool calls this invocation received.
-func (s *Server) ToolCalls() int { return 0 }
+func (s *Server) ToolCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.toolCalls
+}
 
 // Decisions returns every decision the agent recorded, in order.
-func (s *Server) Decisions() []Decision { return nil }
+func (s *Server) Decisions() []Decision {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Decision(nil), s.decisionLog...)
+}
 
-// noopTracer is what Options.Tracer nil means.
-func noopTracer() trace.Tracer { return noop.NewTracerProvider().Tracer(TracerName) }
+// Orders returns the invocation's allowlist, which is also everything
+// list_failed_payments shows.
+func (s *Server) Orders() []batch.AgentVisibleOrder {
+	return append([]batch.AgentVisibleOrder(nil), s.opts.Orders...)
+}
+
+// tally returns the mutable tally for an order, creating it. The caller holds
+// the lock.
+func (s *Server) tally(orderID string) *orderTally {
+	if t, ok := s.tallies[orderID]; ok {
+		return t
+	}
+	t := &orderTally{Tally: Tally{OrderID: orderID, ActionKind: recovery.ActionNone}}
+	s.tallies[orderID] = t
+	return t
+}
+
+// ledgerKey is the order id a ledger row is filed under when the tool named
+// none.
+//
+// One invocation serves one order, so this is that order. A server built with
+// several would file its list_failed_payments rows under the first, which is
+// stated here rather than being a surprise: audit.Recorder refuses a row with
+// no order id, and a row that cannot be joined to an order cannot be scored.
+func (s *Server) ledgerKey(orderID string) string {
+	if orderID != "" {
+		return orderID
+	}
+	if len(s.order) > 0 {
+		return s.order[0]
+	}
+	return ""
+}
+
+// record writes one audit row. A failure to write is not swallowed: it goes to
+// the caller, because a decision nobody wrote down did not happen as far as
+// the report is concerned.
+func (s *Server) record(ctx context.Context, ev audit.Event) error {
+	if ev.Detail == nil {
+		ev.Detail = map[string]string{}
+	}
+	ev.Detail[recovery.DetailArm] = s.opts.Arm
+	_, err := s.opts.Recorder.Record(ctx, ev)
+	return err
+}
+
+// itoa is strconv.Itoa, kept short because the detail maps are dense with it.
+func itoa(n int) string { return strconv.Itoa(n) }
+
+// btoa renders a bool the way every other detail value in this project does.
+func btoa(b bool) string { return strconv.FormatBool(b) }

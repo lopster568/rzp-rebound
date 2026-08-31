@@ -530,11 +530,22 @@ func TestEveryActionToolConsultsPolicyBeforeSideEffect(t *testing.T) {
 			}
 			res := r.call(tool, argumentsFor(t, tool, order))
 			out := decode[mcpserver.ActionOutput](t, res)
+			if out.PolicyRule == "" {
+				t.Errorf("%s carries no rule id, so what it did is not countable", tool)
+			}
+			// escalate_to_human is the exception and it is the point of the
+			// exception. R4 escalates a never-retry order, and handing that
+			// order to a person is the correct move, so an escalate verdict
+			// passes there. It still consults the policy first and it still
+			// reaches no side effect, which is what this sweep is about.
+			if tool == mcpserver.ToolEscalateToHuman {
+				if !out.Allowed {
+					t.Errorf("escalate_to_human was refused on the order R4 escalated: %+v", out)
+				}
+				continue
+			}
 			if out.Allowed {
 				t.Errorf("%s was allowed on a never-retry order", tool)
-			}
-			if out.PolicyRule == "" {
-				t.Errorf("%s refused with no rule id, so the refusal is not countable", tool)
 			}
 		}
 		if got := r.port.mutationCount(); got != 0 {
@@ -648,7 +659,10 @@ func TestKillSwitchDeniesAllToolsImmediately(t *testing.T) {
 }
 
 func TestToolResponseNeverContainsGroundTruthFields(t *testing.T) {
-	r := newRig(t, rigOptions{})
+	// A budget large enough that the sweep is not cut short by R5. This test
+	// wants every tool's real response for every order, and a refusal is not
+	// one.
+	r := newRig(t, rigOptions{actionBudget: 500})
 
 	// The field names on batch.Order that are not on batch.AgentVisibleOrder.
 	// A response type carrying one of these names would be handing over the
@@ -727,14 +741,38 @@ func groundTruthFieldNames(t *testing.T) map[string]bool {
 
 // groundTruthValues is what the manifest knows about one order and the agent
 // must not be told.
+//
+// Three values are deliberately not in here, and the reasons are different.
+//
+// The seeded failure class and the seeded error reason are not ground truth
+// from the agent's side. They are what the gateway returns and what
+// internal/classify reads out of it, and the rules arm sees the same two from
+// the same functions. An arm that could not see them would be a different arm.
+//
+// The correct action collides with the agent's own vocabulary. Every action
+// tool echoes back the action it was asked for, and "retry_same_instrument" is
+// both a correct action in the manifest and a string the agent sends. Checking
+// it would fail on the echo. What is checked instead is `do_nothing`, the
+// correct action for a bait order: nothing the agent sends in this test
+// contains it, and nothing the server computes produces it, so finding it in a
+// response means the answer key reached the wire.
+//
+// The bait kind is checked except when it collides with a class name.
+// `never_retry` is both a bait kind and a classify.Class, and the class is
+// legitimately visible, so it is filtered out by asking classify whether the
+// string is a class. `attempt_budget_exhausted` is not a class and stays.
 func groundTruthValues(o batch.Order) []string {
-	values := []string{
-		string(o.GroundTruthCorrectAction),
-		string(o.BaitKind),
-		o.SeededCard,
+	var values []string
+	if o.SeededCard != "" {
+		values = append(values, o.SeededCard)
+	}
+	if kind := string(o.BaitKind); kind != "" {
+		if _, isClass := classify.ParseClass(kind); !isClass {
+			values = append(values, kind)
+		}
 	}
 	if o.IsBait {
-		values = append(values, "is_bait", "bait")
+		values = append(values, string(batch.ActionDoNothing))
 	}
 	return values
 }
@@ -1120,7 +1158,7 @@ func TestNoToolResponseCarriesACredential(t *testing.T) {
 	t.Setenv("RAZORPAY_KEY_ID", keyID)
 	t.Setenv("RAZORPAY_KEY_SECRET", secret)
 
-	r := newRig(t, rigOptions{})
+	r := newRig(t, rigOptions{actionBudget: 500})
 	for _, o := range r.orders {
 		r.recordDecision(o.OrderID, recovery.ActionRetrySameInstrument)
 		for _, tool := range r.registeredTools() {
