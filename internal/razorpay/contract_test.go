@@ -2,6 +2,8 @@ package razorpay_test
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/clock"
@@ -21,10 +23,91 @@ type contractHarness interface {
 }
 
 // contractHarnesses is the set of implementations the contract runs against.
-// Phase 1 adds a live test-mode client here and phase 2 adds a replay client.
-// Neither needs the assertions copied.
+// Phase 2 adds a replay client. None of them needs the assertions copied.
+//
+// client_httptest is the phase 1 client with an httptest backend behind it,
+// added on 2026-08-31. It runs by default because it needs no credential, no
+// container, and no network, so putting it behind an opt-in flag would mean CI
+// never ran it. What it can and cannot prove is written up in DECISIONS.md and
+// in the doc comment on fakeAPIServer.
 var contractHarnesses = map[string]func(t *testing.T) contractHarness{
-	"fake": newFakeHarness,
+	"fake":            newFakeHarness,
+	"client_httptest": newClientHTTPTestHarness,
+}
+
+// envContractHarnesses narrows the set. Empty means every harness registered
+// above, all of which run offline. The phase 1 live half adds a "live" entry
+// that is only reachable by naming it here, because it spends real test-mode
+// API calls against a rate limit nobody has measured yet (PRD Q5).
+const envContractHarnesses = "RZP_CONTRACT_HARNESSES"
+
+func selectedHarnesses(t *testing.T) map[string]func(t *testing.T) contractHarness {
+	t.Helper()
+
+	want := strings.TrimSpace(os.Getenv(envContractHarnesses))
+	if want == "" {
+		return contractHarnesses
+	}
+
+	out := make(map[string]func(t *testing.T) contractHarness)
+	for _, name := range strings.Split(want, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		newHarness, ok := contractHarnesses[name]
+		if !ok {
+			t.Fatalf("%s names %q, which is not a registered harness", envContractHarnesses, name)
+		}
+		out[name] = newHarness
+	}
+	if len(out) == 0 {
+		t.Fatalf("%s is set but selected no harness", envContractHarnesses)
+	}
+	return out
+}
+
+// clientHarness runs the contract against razorpay.Client over a real socket,
+// with fakeAPIServer answering.
+type clientHarness struct {
+	backend *fakeAPIServer
+	client  *razorpay.Client
+}
+
+func newClientHTTPTestHarness(t *testing.T) contractHarness {
+	t.Helper()
+
+	backend := newFakeAPIServer(t, 11)
+	c, err := razorpay.NewClient(razorpay.ClientOptions{
+		KeyID:     testKeyID,
+		KeySecret: testKeySecret,
+		BaseURL:   backend.baseURL(),
+		Clock:     clock.NewFake(fakeStart),
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	return &clientHarness{backend: backend, client: c}
+}
+
+func (h *clientHarness) Port() razorpay.Port { return h.client }
+
+// AttemptPayment drives the backend's gateway directly rather than going
+// through the client, for the same reason the fake harness does: the API has
+// no call that makes a payment attempt, because a real attempt happens in
+// checkout. PRD Q1 is the open question, and the phase 1 live half answers it.
+func (h *clientHarness) AttemptPayment(ctx context.Context, orderID, cardNumber string) (razorpay.Payment, error) {
+	return h.backend.fake.AttemptPayment(ctx, orderID, cardNumber)
+}
+
+func (h *clientHarness) FailureCard(t *testing.T, reason string) string {
+	t.Helper()
+
+	card, ok := h.backend.fake.Cards().CardForErrorCode(reason)
+	if !ok {
+		t.Fatalf("no documented card forces %s", reason)
+	}
+	return card.Number
 }
 
 type fakeHarness struct {
@@ -61,7 +144,7 @@ func (h *fakeHarness) FailureCard(t *testing.T, reason string) string {
 }
 
 func TestPortContract_CreateOrderThenFetchOrderRoundTrips(t *testing.T) {
-	for name, newHarness := range contractHarnesses {
+	for name, newHarness := range selectedHarnesses(t) {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
 			port := h.Port()
@@ -98,7 +181,7 @@ func TestPortContract_CreateOrderThenFetchOrderRoundTrips(t *testing.T) {
 }
 
 func TestPortContract_FailedPaymentCarriesErrorCodeAndSource(t *testing.T) {
-	for name, newHarness := range contractHarnesses {
+	for name, newHarness := range selectedHarnesses(t) {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
 			port := h.Port()

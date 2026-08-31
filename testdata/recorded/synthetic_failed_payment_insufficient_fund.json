@@ -1,0 +1,28 @@
+{
+  "_meta": {
+    "synthetic": true,
+    "reason": "mechanism test only, real fixtures captured in Phase 1 live half",
+    "note": "Nobody captured this. It was written on 2026-08-31 from the json tags on razorpay.Payment in internal/razorpay/port.go so the replay client has something to serve. It is not evidence about Razorpay and it settles no open question. error_code and error_reason both carry the reason string because that is what razorpay.Fake does while PRD Q4 is open, and error_source and error_step carry the pending-fixture constants from port.go. TestClassifierHandlesEveryRecordedErrorPayload skips every file with the synthetic_ prefix for exactly this reason."
+  },
+  "request": {
+    "method": "GET",
+    "path": "/v1/payments/pay_synthetic00001"
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "id": "pay_synthetic00001",
+      "order_id": "order_synthetic00001",
+      "amount": 100000,
+      "currency": "INR",
+      "status": "failed",
+      "method": "card",
+      "created_at": 1788166800,
+      "error_code": "insufficient_fund",
+      "error_description": "synthetic fixture, not a captured Razorpay response",
+      "error_source": "pending_fixture_source",
+      "error_step": "pending_fixture_step",
+      "error_reason": "insufficient_fund"
+    }
+  }
+}
