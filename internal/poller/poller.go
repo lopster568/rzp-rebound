@@ -3,6 +3,7 @@ package poller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/clock"
@@ -82,10 +83,55 @@ type Result struct {
 //
 // Only paid does. An order at created has had no attempt yet, and an order at
 // attempted has had one that failed, and either can still become paid.
-func IsTerminal(status string) bool { return false }
+func IsTerminal(status string) bool { return status == razorpay.OrderStatusPaid }
 
 // New returns a Poller.
-func New(opts Options) (*Poller, error) { return &Poller{}, nil }
+func New(opts Options) (*Poller, error) {
+	if opts.Port == nil {
+		return nil, ErrNoPort
+	}
+
+	p := &Poller{
+		port:       opts.Port,
+		clock:      opts.Clock,
+		wait:       opts.Wait,
+		interval:   opts.Interval,
+		maxBackoff: opts.MaxBackoff,
+		maxWait:    opts.MaxWait,
+	}
+	if p.clock == nil {
+		p.clock = clock.Real()
+	}
+	if p.wait == nil {
+		p.wait = sleepWait
+	}
+	if p.interval <= 0 {
+		p.interval = DefaultInterval
+	}
+	if p.maxBackoff <= 0 {
+		p.maxBackoff = DefaultMaxBackoff
+	}
+	if p.maxBackoff < p.interval {
+		p.maxBackoff = p.interval
+	}
+	if p.maxWait <= 0 {
+		p.maxWait = DefaultMaxWait
+	}
+	return p, nil
+}
+
+// sleepWait is the default backoff: a timer that gives up when the context
+// does.
+func sleepWait(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
 
 // PollUntilTerminal reads the order and its payments until the order is
 // terminal or MaxWait runs out.
@@ -95,5 +141,54 @@ func New(opts Options) (*Poller, error) { return &Poller{}, nil }
 // needs that state more than it needs an error value. A gateway error is an
 // error, and the partial Result comes back with it.
 func (p *Poller) PollUntilTerminal(ctx context.Context, orderID string) (Result, error) {
-	return Result{}, nil
+	res := Result{OrderID: orderID}
+	start := p.clock.Now()
+	backoff := p.interval
+
+	for {
+		order, err := p.port.FetchOrder(ctx, orderID)
+		if err != nil {
+			return res, fmt.Errorf("poller: fetch %s: %w", orderID, err)
+		}
+		payments, err := p.port.ListPaymentsForOrder(ctx, orderID)
+		if err != nil {
+			return res, fmt.Errorf("poller: list payments for %s: %w", orderID, err)
+		}
+
+		res.Polls++
+		res.Order = order
+		res.Payments = payments
+		res.FailedPayment = lastFailed(payments)
+
+		if IsTerminal(order.Status) {
+			res.Terminal = true
+			return res, nil
+		}
+
+		// Stop before a wait that would run past the budget, rather than
+		// after it. Sleeping past a deadline and then noticing is a slower way
+		// to reach the same answer.
+		if p.clock.Now().Sub(start)+backoff > p.maxWait {
+			res.TimedOut = true
+			return res, nil
+		}
+
+		if err := p.wait(ctx, backoff); err != nil {
+			return res, fmt.Errorf("poller: backoff on %s: %w", orderID, err)
+		}
+		res.Waited += backoff
+		backoff = min(backoff*2, p.maxBackoff)
+	}
+}
+
+// lastFailed returns the most recent failed payment, or nil. Payments arrive
+// oldest first, so the last failure is the one a retry decision is made from.
+func lastFailed(payments []razorpay.Payment) *razorpay.Payment {
+	for i := len(payments) - 1; i >= 0; i-- {
+		if payments[i].Status == razorpay.PaymentStatusFailed {
+			found := payments[i]
+			return &found
+		}
+	}
+	return nil
 }
