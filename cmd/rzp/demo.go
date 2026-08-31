@@ -65,6 +65,12 @@ func runDemo(ctx context.Context, args []string) error {
 
 	tracer := rig.telemetry.Tracer(demoTracerName)
 	ctx, root := tracer.Start(ctx, "demo.recovery_loop")
+	// root.End and the exporter flush both happen explicitly at the bottom,
+	// before the trace link is printed. This defer is the safety net for the
+	// error paths in between, and it is ordered correctly for them: defers run
+	// last in first out, so this ends the root span and the rig.Close above
+	// then drains the exporter. Both are safe to run twice, because Span.End
+	// ignores a second call and Provider.Shutdown is behind a sync.Once.
 	defer root.End()
 
 	traceID := trace.SpanContextFromContext(ctx).TraceID().String()
@@ -181,10 +187,16 @@ func runDemo(ctx context.Context, args []string) error {
 	fmt.Println("  See docs/RAZORPAY-TEST-MODE-NOTES.md and ADR-0004.")
 	fmt.Println()
 
+	// End the root span and drain the exporter before printing the link. The
+	// deferred version of this would have printed a URL for spans that had not
+	// reached Jaeger yet, so a reviewer clicking it immediately would get an
+	// empty trace and reasonably conclude the run had not been traced.
+	root.End()
+	if err := rig.Close(); err != nil {
+		return fmt.Errorf("flush the trace exporter: %w", err)
+	}
+
 	if url := rig.cfg.TraceURL(traceID); url != "" {
-		// The span has to be flushed before a reviewer can open this. Close
-		// runs on the deferred path, so the link is printed and then the
-		// exporter drains.
 		fmt.Printf("trace: %s\n", url)
 	} else {
 		fmt.Println("trace: no trace id was recorded, so there is no link to print")

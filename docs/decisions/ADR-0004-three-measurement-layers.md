@@ -77,3 +77,36 @@ both real and deterministic.
 the drift the shared table exists to prevent. If a layer needs a different
 table, that is a fixture question answered in `testdata/`, not two tables in
 two packages.
+
+## What phase 1 changed, 2026-08-31
+
+The decision stands unchanged. Two statements in the context above were true
+when this was written and are not any more, and a reader should not take them
+for current fact.
+
+**`AttemptPayment` is no longer only on the fake.** PRD Q1 is answered.
+`razorpay.Attempter` drives a test-mode payment attempt through four
+undocumented checkout calls, so the live layer can now run a full recovery
+cycle. It is still deliberately off `Port`, so the sentence "adding a layer
+means adding a `contractHarnesses` entry" still holds and the `live` entry was
+added exactly that way.
+
+**The success card is not undocumented. There is no such card.** PRD Q3 turned
+out to have a different answer than the one it was asked for: the outcome of a
+test-mode attempt is chosen at the last checkout call by one form field
+carrying `S` or `F`, and the card number never reaches it.
+
+That last point makes the layer split matter more rather than less, and it is
+worth being blunt about what it does to the `live` row of the table above. A
+live-layer recovery rate is a rate for outcomes this project selected. It is
+evidence that the loop runs end to end against the real API, that the wire
+shapes are right, and that the state read back from the gateway is what it
+says. It is not evidence that a recovery decision caused a recovery, and no
+phase can make it one, because test mode has no mechanism that would decide
+differently based on the decision.
+
+`make demo` prints that caveat on every run rather than leaving it here, and
+`docs/RAZORPAY-TEST-MODE-NOTES.md` has the walk behind it.
+
+The rate limit in the `live` row's batch-size column is still unmeasured. No
+429 came back at 1.4 requests per second on 2026-08-31, which bounds nothing.
