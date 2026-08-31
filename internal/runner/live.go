@@ -1,4 +1,4 @@
-package main
+package runner
 
 import (
 	"context"
@@ -11,27 +11,27 @@ import (
 	"github.com/lopster568/rzp-recovery-agent/internal/telemetry"
 )
 
-// liveRig is the set of things a subcommand needs to talk to test mode: a
+// LiveRig is the set of things a subcommand needs to talk to test mode: a
 // client for the documented API, an attempter for the checkout sequence, and a
 // tracer provider pointed wherever the environment says.
 //
 // Both the client and the attempter get the same raw capture writer, so one
 // run records every response it saw in one stream, in order.
-type liveRig struct {
+type LiveRig struct {
 	cfg       config.Config
-	client    *razorpay.Client
-	attempter *razorpay.Attempter
-	telemetry *telemetry.Provider
+	Client    *razorpay.Client
+	Attempter *razorpay.Attempter
+	Telemetry *telemetry.Provider
 }
 
-// newLiveRig builds the rig. capture may be nil, and maxConcurrent zero means
+// NewLiveRig builds the rig. capture may be nil, and maxConcurrent zero means
 // razorpay.DefaultMaxConcurrent.
 //
 // The cap is a parameter rather than a constant because a batch run makes two
 // orders of magnitude more calls than a demo does, and PRD Q5 is open: no 429
 // has ever been observed here, which bounds nothing. The batch runner passes a
 // smaller number than the demo needs to.
-func newLiveRig(ctx context.Context, serviceName string, capture io.Writer, maxConcurrent int) (*liveRig, error) {
+func NewLiveRig(ctx context.Context, serviceName string, capture io.Writer, maxConcurrent int) (*LiveRig, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, err
@@ -79,20 +79,27 @@ func newLiveRig(ctx context.Context, serviceName string, capture io.Writer, maxC
 		return nil, err
 	}
 
-	return &liveRig{cfg: cfg, client: client, attempter: attempter, telemetry: provider}, nil
+	return &LiveRig{cfg: cfg, Client: client, Attempter: attempter, Telemetry: provider}, nil
 }
 
 // Close flushes the span exporter. A run that exits without this loses the
 // trace it just produced, which is the whole artefact.
-func (r *liveRig) Close() error {
+func (r *LiveRig) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return r.telemetry.Shutdown(ctx)
+	return r.Telemetry.Shutdown(ctx)
 }
 
-// receipt is the caller-facing label for an order this project created, so a
+// TraceURL returns the Jaeger link for one trace, or an empty string when
+// none applies. cfg stays unexported on LiveRig, so this is the accessor a
+// caller outside the package reaches it through.
+func (r *LiveRig) TraceURL(traceID string) string {
+	return r.cfg.TraceURL(traceID)
+}
+
+// Receipt is the caller-facing label for an order this project created, so a
 // reviewer looking at the Razorpay dashboard can tell a demo order from
 // anything else in the account.
-func receipt(prefix string) string {
+func Receipt(prefix string) string {
 	return fmt.Sprintf("%s_%d", prefix, time.Now().UTC().Unix())
 }

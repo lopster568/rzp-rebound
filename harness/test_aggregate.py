@@ -409,5 +409,84 @@ class TestAggregate(unittest.TestCase):
         self.assertFalse(card["recovered"])
 
 
+class TestAgentCostColumns(unittest.TestCase):
+    """The cost of the agent arm, which the three deterministic arms do not
+    have. Phase 3."""
+
+    def _run(self, invocations):
+        orders = [
+            order("o1", "transient_retry_eligible", True, "retry_same_instrument"),
+            order("o2", "transient_retry_eligible", True, "retry_same_instrument"),
+        ]
+        manifest = dict(RUN_MANIFEST)
+        manifest["arms"] = ["a2-agent", "a3-rules"]
+        per_arm = {
+            "a2-agent": {
+                "outcomes": [
+                    outcome("o1", arm="a2-agent"),
+                    outcome("o2", arm="a2-agent"),
+                ],
+                "ledger": [],
+                "invocations": invocations,
+            },
+            "a3-rules": {
+                "outcomes": [outcome("o1"), outcome("o2")],
+                "ledger": [],
+            },
+        }
+        return aggregate.aggregate(manifest, batch(orders), per_arm)
+
+    def test_agent_cost_columns_sum_the_invocation_rows(self):
+        rows = self._run(
+            [
+                {
+                    "order_id": "o1",
+                    "unscorable": False,
+                    "input_tokens": 100,
+                    "output_tokens": 20,
+                    "cost_usd": 0.01,
+                    "duration_ms": 1000,
+                },
+                {
+                    "order_id": "o2",
+                    "unscorable": True,
+                    "input_tokens": 50,
+                    "output_tokens": 5,
+                    "cost_usd": 0.02,
+                    "duration_ms": 2000,
+                },
+            ]
+        )
+        agent = row_for(rows, "a2-agent", aggregate.SCOPE_OVERALL)
+
+        self.assertEqual(agent["agent_input_tokens"], 150)
+        self.assertEqual(agent["agent_output_tokens"], 25)
+        self.assertAlmostEqual(agent["agent_cost_usd"], 0.03)
+        self.assertEqual(agent["agent_wall_clock_ms"], 3000)
+        self.assertEqual(
+            agent["agent_invocations"],
+            2,
+            "an unscorable invocation still spent money and still counts in the cost",
+        )
+
+    def test_agent_cost_columns_are_not_a_number_for_the_deterministic_arms(self):
+        rows = self._run([])
+        rules = row_for(rows, "a3-rules", aggregate.SCOPE_OVERALL)
+        for column in (
+            "agent_invocations",
+            "agent_input_tokens",
+            "agent_output_tokens",
+            "agent_cost_usd",
+            "agent_wall_clock_ms",
+        ):
+            self.assertEqual(
+                rules[column],
+                aggregate.UNDEFINED,
+                "an arm that made no model invocation has no "
+                + column
+                + ", and a zero there is a claim about something that did not happen",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -18,6 +18,7 @@ import (
 	"github.com/lopster568/rzp-recovery-agent/internal/poller"
 	"github.com/lopster568/rzp-recovery-agent/internal/razorpay"
 	"github.com/lopster568/rzp-recovery-agent/internal/recovery"
+	"github.com/lopster568/rzp-recovery-agent/internal/runner"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -46,7 +47,7 @@ func runDemo(ctx context.Context, args []string) error {
 			*secondOutcome, razorpay.AttemptSucceed, razorpay.AttemptFail)
 	}
 
-	rig, err := newLiveRig(ctx, "", nil, 0)
+	rig, err := runner.NewLiveRig(ctx, "", nil, 0)
 	if err != nil {
 		return err
 	}
@@ -63,7 +64,7 @@ func runDemo(ctx context.Context, args []string) error {
 		return err
 	}
 
-	tracer := rig.telemetry.Tracer(demoTracerName)
+	tracer := rig.Telemetry.Tracer(demoTracerName)
 	ctx, root := tracer.Start(ctx, "demo.recovery_loop")
 	// root.End and the exporter flush both happen explicitly at the bottom,
 	// before the trace link is printed. This defer is the safety net for the
@@ -77,15 +78,15 @@ func runDemo(ctx context.Context, args []string) error {
 
 	fmt.Println("rzp demo, against Razorpay TEST MODE")
 	fmt.Println("  gateway  live test mode")
-	fmt.Printf("  traces   %s\n", rig.telemetry.ExporterKind)
+	fmt.Printf("  traces   %s\n", rig.Telemetry.ExporterKind)
 	fmt.Printf("  ledger   %s\n", path)
 	fmt.Println()
 
 	// Stage 1. Create the order.
-	order, err := rig.client.CreateOrder(ctx, razorpay.CreateOrderRequest{
+	order, err := rig.Client.CreateOrder(ctx, razorpay.CreateOrderRequest{
 		AmountPaise: *amountPaise,
 		Currency:    "INR",
-		Receipt:     receipt("rcpt_demo"),
+		Receipt:     runner.Receipt("rcpt_demo"),
 		Notes:       map[string]string{"purpose": "phase-1 demo"},
 	})
 	if err != nil {
@@ -94,7 +95,7 @@ func runDemo(ctx context.Context, args []string) error {
 	fmt.Printf("1. created  %s  %d paise  status=%s\n", order.ID, order.AmountPaise, order.Status)
 
 	// Stage 2. Fail it, through the checkout sequence the spike found.
-	first, err := rig.attempter.Attempt(ctx, razorpay.AttemptRequest{
+	first, err := rig.Attempter.Attempt(ctx, razorpay.AttemptRequest{
 		OrderID:     order.ID,
 		AmountPaise: *amountPaise,
 		CardNumber:  *card,
@@ -109,7 +110,7 @@ func runDemo(ctx context.Context, args []string) error {
 	// Stages 3 to 6 are the orchestrator's: poll, classify, act, read the
 	// outcome back out of the gateway.
 	p, err := poller.New(poller.Options{
-		Port:     rig.client,
+		Port:     rig.Client,
 		Interval: time.Second,
 		MaxWait:  30 * time.Second,
 	})
@@ -117,7 +118,7 @@ func runDemo(ctx context.Context, args []string) error {
 		return err
 	}
 
-	notifier, err := notify.New(notify.Options{Port: rig.client})
+	notifier, err := notify.New(notify.Options{Port: rig.Client})
 	if err != nil {
 		return err
 	}
@@ -132,7 +133,7 @@ func runDemo(ctx context.Context, args []string) error {
 	}
 
 	orchestrator, err := recovery.New(recovery.Options{
-		Port:     rig.client,
+		Port:     rig.Client,
 		Poller:   p,
 		Recorder: recorder,
 		Tracer:   tracer,
@@ -196,7 +197,7 @@ func runDemo(ctx context.Context, args []string) error {
 		return fmt.Errorf("flush the trace exporter: %w", err)
 	}
 
-	if url := rig.cfg.TraceURL(traceID); url != "" {
+	if url := rig.TraceURL(traceID); url != "" {
 		fmt.Printf("trace: %s\n", url)
 	} else {
 		fmt.Println("trace: no trace id was recorded, so there is no link to print")
@@ -211,7 +212,7 @@ func runDemo(ctx context.Context, args []string) error {
 // gate, and the action says so in its own audit detail rather than leaving a
 // reader to assume there was one.
 type recoveryAction struct {
-	rig           *liveRig
+	rig           *runner.LiveRig
 	recorder      *audit.Recorder
 	notifier      *notify.Notifier
 	amountPaise   int64
@@ -234,11 +235,11 @@ func (a recoveryAction) run(ctx context.Context, order batch.AgentVisibleOrder, 
 	// 1. Raise a payment link. Notification flags stay off: this creates the
 	// link, and the resend call below is the one that asks Razorpay to send
 	// it, which keeps the two observable events separate in the trail.
-	link, err := a.rig.client.CreatePaymentLink(ctx, razorpay.CreatePaymentLinkRequest{
+	link, err := a.rig.Client.CreatePaymentLink(ctx, razorpay.CreatePaymentLinkRequest{
 		AmountPaise: a.amountPaise,
 		Currency:    "INR",
 		Description: "recovery for " + order.OrderID,
-		ReferenceID: receipt("ref_demo"),
+		ReferenceID: runner.Receipt("ref_demo"),
 	})
 	if err != nil {
 		return result, fmt.Errorf("create a payment link for %s: %w", order.OrderID, err)
@@ -274,7 +275,7 @@ func (a recoveryAction) run(ctx context.Context, order batch.AgentVisibleOrder, 
 
 	// 3. The second attempt. This is what the 2026-08-31 spike unlocked: the
 	// loop can close in test mode without a browser.
-	second, err := a.rig.attempter.Attempt(ctx, razorpay.AttemptRequest{
+	second, err := a.rig.Attempter.Attempt(ctx, razorpay.AttemptRequest{
 		OrderID:     order.OrderID,
 		AmountPaise: a.amountPaise,
 		CardNumber:  a.card,

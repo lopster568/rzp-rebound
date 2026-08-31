@@ -13,6 +13,7 @@ import (
 
 	"github.com/lopster568/rzp-recovery-agent/internal/batch"
 	"github.com/lopster568/rzp-recovery-agent/internal/classify"
+	"github.com/lopster568/rzp-recovery-agent/internal/runner"
 )
 
 // The batch composition. Four seedable classes plus bait.
@@ -35,19 +36,6 @@ var batchShape = []struct {
 	{classify.RetryEligible, 0.24},
 	{classify.ReauthRequired, 0.24},
 	{classify.NewInstrumentRequired, 0.24},
-}
-
-// BatchFile is what a seeded batch looks like on disk. It is the manifest plus
-// the two things a later run has to be able to name it by.
-//
-// It carries no timestamp, so the same seed and size produce a byte-identical
-// file and two runs can be compared without a diff full of clocks. The run
-// record under results/runs/ carries the time.
-type BatchFile struct {
-	BatchID string        `json:"batch_id"`
-	Seed    int64         `json:"seed"`
-	Layer   string        `json:"layer"`
-	Orders  []batch.Order `json:"orders"`
 }
 
 // runSeed writes a batch manifest under results/batches/.
@@ -76,7 +64,7 @@ func runSeed(_ context.Context, args []string) error {
 		return err
 	}
 
-	file := BatchFile{
+	file := runner.BatchFile{
 		BatchID: fmt.Sprintf("b-%d-%d", *seed, len(manifest.Orders)),
 		Seed:    *seed,
 		Layer:   *layer,
@@ -154,20 +142,4 @@ func writeJSON(path string, v any) error {
 		return fmt.Errorf("encode %s: %w", path, err)
 	}
 	return os.WriteFile(path, append(encoded, '\n'), 0o644)
-}
-
-// readBatchFile reads a manifest written by runSeed.
-func readBatchFile(path string) (*BatchFile, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read the batch manifest at %s: %w", path, err)
-	}
-	var file BatchFile
-	if err := json.Unmarshal(raw, &file); err != nil {
-		return nil, fmt.Errorf("parse the batch manifest at %s: %w", path, err)
-	}
-	if len(file.Orders) == 0 {
-		return nil, fmt.Errorf("the batch manifest at %s has no orders in it", path)
-	}
-	return &file, nil
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/razorpay"
+	"github.com/lopster568/rzp-recovery-agent/internal/runner"
 )
 
 // labeledCapture is the RawCapture writer the capture run installs. It tags
@@ -88,7 +89,7 @@ func runCapture(ctx context.Context, args []string) error {
 	}
 
 	capture := newLabeledCapture()
-	rig, err := newLiveRig(ctx, "rzp-capture", capture, 0)
+	rig, err := runner.NewLiveRig(ctx, "rzp-capture", capture, 0)
 	if err != nil {
 		return err
 	}
@@ -106,10 +107,10 @@ func runCapture(ctx context.Context, args []string) error {
 
 	// 1. The untouched order. It exists to give the empty states a home.
 	capture.setLabel("create_order")
-	quiet, err := rig.client.CreateOrder(ctx, razorpay.CreateOrderRequest{
+	quiet, err := rig.Client.CreateOrder(ctx, razorpay.CreateOrderRequest{
 		AmountPaise: amountPaise,
 		Currency:    "INR",
-		Receipt:     receipt("rcpt_capture_quiet"),
+		Receipt:     runner.Receipt("rcpt_capture_quiet"),
 		Notes:       map[string]string{"purpose": "phase-1 fixture capture, never attempted"},
 	})
 	if err != nil {
@@ -118,13 +119,13 @@ func runCapture(ctx context.Context, args []string) error {
 	fmt.Printf("capture: created %s and will leave it alone\n", quiet.ID)
 
 	capture.setLabel("fetch_order")
-	if _, err := rig.client.FetchOrder(ctx, quiet.ID); err != nil {
+	if _, err := rig.Client.FetchOrder(ctx, quiet.ID); err != nil {
 		return fmt.Errorf("fetch the untouched order: %w", err)
 	}
 
 	// The envelope is the point here: it is what paymentCollection decodes.
 	capture.setLabel("list_payments_empty")
-	if _, err := rig.client.ListPaymentsForOrder(ctx, quiet.ID); err != nil {
+	if _, err := rig.Client.ListPaymentsForOrder(ctx, quiet.ID); err != nil {
 		return fmt.Errorf("list payments on the untouched order: %w", err)
 	}
 
@@ -135,10 +136,10 @@ func runCapture(ctx context.Context, args []string) error {
 	// only wrote the right fixture because writeFixtures takes the first
 	// response per label. Review finding, 2026-08-31.
 	capture.setLabel("create_order_to_fail")
-	failed, err := rig.client.CreateOrder(ctx, razorpay.CreateOrderRequest{
+	failed, err := rig.Client.CreateOrder(ctx, razorpay.CreateOrderRequest{
 		AmountPaise: amountPaise,
 		Currency:    "INR",
-		Receipt:     receipt("rcpt_capture_failed"),
+		Receipt:     runner.Receipt("rcpt_capture_failed"),
 		Notes:       map[string]string{"purpose": "phase-1 fixture capture, driven to a failed payment"},
 	})
 	if err != nil {
@@ -150,7 +151,7 @@ func runCapture(ctx context.Context, args []string) error {
 	// although the capture hook redacts it, a fixture built out of an HTML
 	// page serves nothing the replay client can use.
 	capture.setLabel("checkout_failed_attempt")
-	attempt, err := rig.attempter.Attempt(ctx, razorpay.AttemptRequest{
+	attempt, err := rig.Attempter.Attempt(ctx, razorpay.AttemptRequest{
 		OrderID:     failed.ID,
 		AmountPaise: amountPaise,
 		CardNumber:  "4100280000080001",
@@ -164,7 +165,7 @@ func runCapture(ctx context.Context, args []string) error {
 	// 3. The failed payment, read back through the documented API. This is the
 	// capture PRD Q4 turns on.
 	capture.setLabel("fetch_failed_payment")
-	payment, err := rig.client.FetchPayment(ctx, attempt.PaymentID)
+	payment, err := rig.Client.FetchPayment(ctx, attempt.PaymentID)
 	if err != nil {
 		return fmt.Errorf("fetch the failed payment: %w", err)
 	}
@@ -173,13 +174,13 @@ func runCapture(ctx context.Context, args []string) error {
 		payment.ErrorSource, payment.ErrorStep)
 
 	capture.setLabel("list_payments_after_failure")
-	if _, err := rig.client.ListPaymentsForOrder(ctx, failed.ID); err != nil {
+	if _, err := rig.Client.ListPaymentsForOrder(ctx, failed.ID); err != nil {
 		return fmt.Errorf("list payments after the attempt: %w", err)
 	}
 
 	// The state the poller must not treat as terminal.
 	capture.setLabel("fetch_order_after_failure")
-	if _, err := rig.client.FetchOrder(ctx, failed.ID); err != nil {
+	if _, err := rig.Client.FetchOrder(ctx, failed.ID); err != nil {
 		return fmt.Errorf("fetch the order after the failure: %w", err)
 	}
 
@@ -187,11 +188,11 @@ func runCapture(ctx context.Context, args []string) error {
 	// contact anybody, and the address is in a domain that cannot receive
 	// mail.
 	capture.setLabel("create_payment_link")
-	link, err := rig.client.CreatePaymentLink(ctx, razorpay.CreatePaymentLinkRequest{
+	link, err := rig.Client.CreatePaymentLink(ctx, razorpay.CreatePaymentLinkRequest{
 		AmountPaise: amountPaise,
 		Currency:    "INR",
 		Description: "phase-1 fixture capture",
-		ReferenceID: receipt("ref_capture"),
+		ReferenceID: runner.Receipt("ref_capture"),
 	})
 	if err != nil {
 		return fmt.Errorf("create a payment link: %w", err)
@@ -201,14 +202,14 @@ func runCapture(ctx context.Context, args []string) error {
 	// 5. The resend call. What comes back is an HTTP response about an API
 	// call, and the fixture records exactly that.
 	capture.setLabel("resend_payment_link_notification")
-	if _, err := rig.client.ResendPaymentLinkNotification(ctx, link.ID, razorpay.MediumEmail); err != nil {
+	if _, err := rig.Client.ResendPaymentLinkNotification(ctx, link.ID, razorpay.MediumEmail); err != nil {
 		return fmt.Errorf("resend the payment link notification: %w", err)
 	}
 
 	// 6. A missing resource, which is a 400 rather than a 404 and is the
 	// capture mapNotFound's behaviour rests on.
 	capture.setLabel("fetch_missing_order")
-	if _, err := rig.client.FetchOrder(ctx, missingOrderID); err == nil {
+	if _, err := rig.Client.FetchOrder(ctx, missingOrderID); err == nil {
 		return fmt.Errorf("an order id nobody created came back as an order")
 	}
 

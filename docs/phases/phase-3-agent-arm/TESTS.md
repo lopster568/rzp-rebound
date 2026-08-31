@@ -4,9 +4,11 @@ Written before the phase 3 test code, which is written before the phase 3
 implementation. The `## Red run` section at the bottom holds the failing output
 of the whole list, captured before any function body was written.
 
-20 Go test functions in `internal/mcpserver`, and 12 Python test methods across
-two new files, as planned. `PROBLEMS.md` records any addition and which number
-was written first.
+20 Go test functions, 17 in `internal/mcpserver` and 3 in `cmd/rzp-mcp`, plus
+12 Python test methods across two new files, as planned. The tree ended at 20
+Go and 18 Python. The section at the bottom records every addition rather than
+editing the tables below, so this list stays a record of what was named before
+the code existed.
 
 The technique is the phase 0 and phase 2 one: the declarations go in with the
 tests and the bodies do not. A red run that will not compile cannot be
@@ -92,6 +94,53 @@ exercises the artefact that ships rather than a server built in the test.
 
 Captured 2026-09-01, before any function body in `internal/mcpserver`,
 `cmd/rzp-mcp`, `harness/claude_runner.py`, or `harness/arm_config.py` was
-written.
+written. The declarations went in with the tests and the bodies did not.
 
-Filled in at the red commit.
+```
+$ go test ./internal/mcpserver/ ./cmd/rzp-mcp/ -count=1
+--- FAIL: TestEveryActionToolConsultsPolicyBeforeSideEffect (0.00s)
+    --- FAIL: .../refused_in_the_middleware
+        mcpserver_test.go:495: build the mcp server: mcpserver: not implemented
+    --- FAIL: .../refused_by_policy.Evaluate_in_the_handler
+    --- FAIL: .../every_action_row_carries_a_verdict
+--- FAIL: TestMiddlewareOpensSpanForEveryToolCall (0.00s)
+[... 17 of 17 in internal/mcpserver ...]
+FAIL	github.com/lopster568/rzp-recovery-agent/internal/mcpserver	0.005s
+rzp-mcp: serving is not implemented yet
+--- FAIL: TestCompiledServerListsItsToolsOverStdio (0.01s)
+    main_test.go:262: connect to the compiled server: connection closed:
+        calling "initialize": client is closing: EOF
+--- FAIL: TestCompiledServerRefusesAnActionWithNoDecisionRecorded (0.00s)
+--- FAIL: TestCompiledServerWritesAnOutcomeRowReadBackFromTheGateway (0.00s)
+FAIL	github.com/lopster568/rzp-recovery-agent/cmd/rzp-mcp	0.613s
+
+$ python3 -m unittest discover -s harness -t .
+Ran 34 tests
+FAILED (errors=17)
+```
+
+All 20 Go test functions failed. None of them passed vacuously, because every
+one of them builds a server first and `mcpserver.New` returned an error, and
+the three subprocess tests could not open a session against a binary that
+exits rather than serving.
+
+Of the 18 new Python test methods, 17 errored and one passed vacuously:
+`test_an_unknown_arm_is_an_error` asserts that `decision_maker` raises, and a
+stub that raises `NotImplementedError` satisfies it. That is recorded rather
+than counted as a win, the same way phase 2 named the four Go tests that
+passed against its stub tree. A test that only forbids something cannot go red
+against a function that does nothing.
+
+## Changes to this list while the tests were written
+
+The list above named 20 Go tests and 12 Python. The tree ended at 20 Go and 18
+Python. The six extra Python methods are:
+
+| Test | File | Why |
+|---|---|---|
+| `test_an_unknown_arm_is_an_error` | `test_arm_config.py` | A typo in an arm id must not fall through to a default config. |
+| `test_the_agent_is_the_only_llm_decision_maker` | `test_arm_config.py` | Pins which arm is the one under test, so a config that quietly made two arms agentic fails. |
+| `test_a_nonzero_exit_with_an_envelope_is_read_from_the_envelope` | `test_claude_runner.py` | The first of the four transplanted lessons: parse `subtype` before `returncode`. It was in the module doc and had no test. |
+| `test_a_retry_that_succeeds_is_scorable` | `test_claude_runner.py` | The other half of the retry test. Without it, a runner that always returned unscorable would pass. |
+| `test_unparseable_output_is_unscorable_rather_than_an_answer` | `test_claude_runner.py` | Output that is not JSON is not an empty answer. |
+| `test_the_clean_settings_file_is_written_every_call` | `test_claude_runner.py` | The third transplanted lesson, which cost the source project 56 trials. |
