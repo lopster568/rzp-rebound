@@ -144,7 +144,7 @@ Three test weaknesses the review named, and what was done about each:
   rather than deleting it or weakening it into one that can.
 
 The review also left a scratch probe file behind, which a concurrent commit
-swept into `d89c0c0`. It was removed in `aa3c251`. It held only the two
+swept into `5dd5e56`. It was removed in `2205320`. It held only the two
 placeholder credentials this suite already uses and the well-known 4111 test
 card, so nothing needed rewriting out of history, and that was checked rather
 than assumed.

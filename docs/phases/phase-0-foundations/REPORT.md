@@ -20,19 +20,19 @@ and docker was not running for any of it.
 Commits, in order:
 
 ```
-101ff2b build(phase-0): bump go.mod to 1.25.0 so the pinned deps resolve
-b459ef5 test(phase-0): all seams red
-f9de9e3 feat(clock): real and fake Clock
-a8e4632 feat(classify,testcards): error code to recovery class, fail closed
-afc0e3e feat(razorpay): port interface and the deterministic in-memory fake
-c741d4d feat(batch): seeded generator, ground-truth manifest, agent-visible projection
-843072b feat(telemetry): tracer provider, OTLP when configured and stdout when not
-44b0725 feat(config): env loading that fails fast and never prints a credential
-56aaf9c docs(phase-0): green run, decisions, problems, and the phase report
-7935966 refactor(classify,testcards): drop three exported functions nothing calls
+b4e35ac build(phase-0): bump go.mod to 1.25.0 so the pinned deps resolve
+6f6db67 test(phase-0): all seams red
+5c63b19 feat(clock): real and fake Clock
+9a93106 feat(classify,testcards): error code to recovery class, fail closed
+c4f7f37 feat(razorpay): port interface and the deterministic in-memory fake
+c910fe0 feat(batch): seeded generator, ground-truth manifest, agent-visible projection
+75de246 feat(telemetry): tracer provider, OTLP when configured and stdout when not
+b39bf24 feat(config): env loading that fails fast and never prints a credential
+9b5bb05 docs(phase-0): green run, decisions, problems, and the phase report
+bc49432 refactor(classify,testcards): drop three exported functions nothing calls
 ```
 
-`b459ef5` is the red commit. It holds all 28 tests and the six packages with
+`6f6db67` is the red commit. It holds all 28 tests and the six packages with
 nothing but type declarations and zero-value function bodies in them, and the
 red output in `TESTS.md` was produced from that tree. Every commit after it
 adds behaviour to a package whose tests were already failing.
@@ -71,7 +71,7 @@ down and the phase passed anyway.
 **`TESTS.md` contains real red output from before the implementation existed.**
 Met, with one qualification worth stating plainly.
 
-The output in the `## Red run` section came from commit `b459ef5`, where no
+The output in the `## Red run` section came from commit `6f6db67`, where no
 package had a working body. It is assertion failures rather than compile
 errors, because the pre-commit hook runs `go vet ./...`, which type-checks test
 files, so a tree where the tests name symbols that do not exist cannot be

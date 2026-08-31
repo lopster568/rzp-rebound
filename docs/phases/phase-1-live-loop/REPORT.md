@@ -33,26 +33,26 @@ gained a client, and the operator got three scripts.
 Commits, in order:
 
 ```
-db671e8 docs(phase-1): plan and test list for the offline half, before any code
-0c10bc7 test(phase-1): the offline half red, with declarations and no bodies
-50f66a0 feat(razorpay): net/http client with basic auth, 429 backoff, spans, redaction, and a capture hook
-ae0577b feat(razorpay): replay client over recorded fixtures, with one labelled synthetic file
-0efb1a5 feat(poller): poll to a terminal order state on an injected clock, timeout reports last state
-975aebf feat(audit): dual-sink recorder, span attributes and a JSONL ledger with redaction
-c9cd785 feat(notify): notifier port, mock, and a receipt that reports an API call and nothing about a person
-e890ede feat(recovery): orchestrator first slice, outcome read back from the gateway
-666b392 build(scripts): jaeger up and down with a health wait, seed skeleton, make targets
-d89c0c0 docs(phase-1): decisions, problems, and the offline-half report
-aa3c251 fix(razorpay): scrub credentials out of captured JSON response bodies
-1217c80 test(razorpay): assert no credential reaches an otelhttp span attribute
-118226e fix: redact before truncating, close the card-pattern gap, and correct four review findings
+96cab4e docs(phase-1): plan and test list for the offline half, before any code
+bff7b18 test(phase-1): the offline half red, with declarations and no bodies
+94ddf8c feat(razorpay): net/http client with basic auth, 429 backoff, spans, redaction, and a capture hook
+6034a74 feat(razorpay): replay client over recorded fixtures, with one labelled synthetic file
+0b1c937 feat(poller): poll to a terminal order state on an injected clock, timeout reports last state
+f3ccf71 feat(audit): dual-sink recorder, span attributes and a JSONL ledger with redaction
+aca9991 feat(notify): notifier port, mock, and a receipt that reports an API call and nothing about a person
+1672062 feat(recovery): orchestrator first slice, outcome read back from the gateway
+ffc9fe7 build(scripts): jaeger up and down with a health wait, seed skeleton, make targets
+5dd5e56 docs(phase-1): decisions, problems, and the offline-half report
+2205320 fix(razorpay): scrub credentials out of captured JSON response bodies
+99dbbfa test(razorpay): assert no credential reaches an otelhttp span attribute
+fcaf281 fix: redact before truncating, close the card-pattern gap, and correct four review findings
 ```
 
-The last three are the review round. `aa3c251` and `118226e` each close a
+The last three are the review round. `2205320` and `fcaf281` each close a
 credential leak that the green suite had not been asking about, and
 `PROBLEMS.md` has both with the measurement that found them.
 
-`db671e8` holds `PLAN.md` and `TESTS.md` and no code. `0c10bc7` is the red
+`96cab4e` holds `PLAN.md` and `TESTS.md` and no code. `bff7b18` is the red
 commit: it carries all 24 new tests, the second contract harness, and six files
 of type declarations, constants, interfaces, and signatures whose bodies return
 zero values. The red output pasted into `TESTS.md` came from that tree. Every
@@ -119,7 +119,7 @@ criterion being demonstrated rather than a problem: the daemon was down and the
 phase passed anyway.
 
 **`TESTS.md` holds real red output from before the implementations existed.**
-Met, from commit `0c10bc7`. The `## Red run` section carries the full output and
+Met, from commit `bff7b18`. The `## Red run` section carries the full output and
 the two qualifications on it.
 
 **The two `TestPortContract_*` functions run against a client-backed harness
@@ -154,7 +154,7 @@ $ env -u RAZORPAY_KEY_ID -u RAZORPAY_KEY_SECRET go test ./... -count=1 -race
 10 packages ok, 0 failures
 ```
 
-**CI green.** The last push, `118226e`, completed successfully on
+**CI green.** The last push, `fcaf281`, completed successfully on
 `ubuntu-latest` with `go-version: "1.25.x"`, as did every push before it in
 this phase.
 
