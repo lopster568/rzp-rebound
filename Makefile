@@ -2,7 +2,7 @@
 .PHONY: help hooks preflight test test-go test-race test-python test-integration lint \
 	docs-check ci verify-phase-0 verify-offline verify-live verify-phase-2 \
 	verify-phase-3 jaeger-up jaeger-down seed run-arm run-all report auth-probe \
-	capture demo agent-smoke
+	capture demo agent-smoke trace-links
 
 # Live targets read .env so a run does not depend on the caller having
 # exported the key pair by hand. .env is gitignored and chmod 600, and nothing
@@ -67,6 +67,9 @@ run-all: ## Run every arm over one batch in a seeded shuffle. BATCH= [LAYER=fake
 
 agent-smoke: ## Drive a2-agent over N fake orders from a batch. BATCH= [N=2] [RUN_DIR=]
 	@bash scripts/agent-smoke.sh --batch "$(BATCH)" --n "$(or $(N),2)" --run-dir "$(RUN_DIR)"
+
+trace-links: ## Print the Jaeger link for one refused action and one recovery. RUN_DIR= [ARM=a2-agent]
+	@bash scripts/trace-links.sh --run-dir "$(RUN_DIR)" --arm "$(or $(ARM),a2-agent)"
 
 report: ## Score the newest run and write results/tables/<run_id>.{csv,md}
 	@bash scripts/report.sh $(REPORT_ARGS)
