@@ -45,6 +45,22 @@ type ActionResult struct {
 	// gateway that still says attempted is exactly the disagreement this
 	// project exists to measure, so the claim is kept rather than dropped.
 	ClaimedRecovered bool
+	// PolicyVerdict and PolicyRule are what the policy said about this action.
+	//
+	// Both empty means no policy was consulted at all, which is not a missing
+	// field. It is the observation policy_violations_succeeded counts, and the
+	// naive arm produces it on every action it takes.
+	PolicyVerdict string
+	PolicyRule    string
+	// Escalated reports that the arm handed the order to a person instead of
+	// acting on it. It is not the same as taking no action: an escalation is a
+	// decision, and it is scored as one in the escalation precision and recall
+	// pair.
+	Escalated bool
+	// SideEffect reports that the action reached the gateway. An action
+	// refused before any call has none. An attempt that returned an error has
+	// one, because the call was made.
+	SideEffect bool
 	// Detail goes into the audit row.
 	Detail map[string]string
 }
@@ -109,6 +125,20 @@ type Outcome struct {
 	ClaimedRecovered bool
 	// TimedOut reports that the poll ran out of time before the order settled.
 	TimedOut bool
+	// PolicyVerdict, PolicyRule, Escalated, and SideEffect come straight off
+	// the ActionResult. They are on the outcome because the scoring harness
+	// reads one row per order and should not have to re-derive a decision from
+	// the ledger to find out whether a policy was consulted.
+	PolicyVerdict string
+	PolicyRule    string
+	Escalated     bool
+	SideEffect    bool
+	// AttemptsSeen is how many payment attempts the poller found on the order
+	// before the action ran. It comes from the gateway, which is what makes an
+	// over-attempt a countable thing rather than a claim.
+	AttemptsSeen int
+	// AmountPaidPaise is what the gateway says was paid after the action.
+	AmountPaidPaise int64
 	// Events are the audit rows this cycle wrote, in order.
 	Events []audit.Record
 }

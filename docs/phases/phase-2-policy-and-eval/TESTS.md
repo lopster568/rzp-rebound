@@ -109,4 +109,40 @@ weaker mechanical claim instead: `policy_violations_succeeded` reads 0 for
 
 ## Red run
 
-Filled in after the red run, before any implementation.
+Captured 2026-08-31, before any function body in `internal/policy`,
+`internal/store`, or `internal/recovery/arms.go` was written. The declarations
+went in with the tests and the bodies did not, per the phase 0 technique in
+`docs/phases/phase-0-foundations/TESTS.md`: a red run that will not compile
+cannot be committed, because the pre-commit hook runs `go vet`.
+
+```
+$ go test ./internal/policy/ ./internal/store/ ./internal/recovery/ -count=1
+--- FAIL: TestPolicyGoldenMatrix (0.00s)
+    matrix_test.go:145: read the golden file (run go test ./internal/policy -update to create it): open testdata/policy_matrix.golden: no such file or directory
+--- FAIL: TestPolicyKillSwitchFlagDeniesEveryAction (0.00s)
+    policy_test.go:88: class unclassified action retry_same_instrument attempts 0: got /, want deny/R8-KILL-SWITCH
+[...]
+--- FAIL: TestArmsShareOneActionSurface (0.00s)
+    arms_test.go:499: ArmIDs() = [], want [a0-control a1-naive a3-rules]
+FAIL	github.com/lopster568/rzp-recovery-agent/internal/policy	0.007s
+FAIL	github.com/lopster568/rzp-recovery-agent/internal/store	0.003s
+FAIL	github.com/lopster568/rzp-recovery-agent/internal/recovery	0.005s
+```
+
+33 of the 37 Go test functions failed. The four that did not are
+`TestPolicyNeverAllowsActionOnNeverRetryClass`,
+`TestPolicyNeverExceedsMaxAttempts`, `TestPolicyDecisionIsDeterministic`, and
+`TestArmsCannotReachTheGatewaysGroundTruth`, and they passed vacuously rather
+than correctly.
+
+That is worth stating rather than counting as a win. Three of them assert a
+negative: nothing is ever allowed on a never-retry class, nothing is ever
+allowed past the cap, two evaluations agree. A policy whose `Evaluate` returns
+the zero `Decision` satisfies all three, because the zero verdict is not
+`allow` and two zero values are equal. The fourth walks struct fields with
+reflection and the fields were already unexported. A property test that only
+forbids things cannot go red against a stub, and knowing which four those are
+is the point of writing the number down.
+
+The list also grew by one and one test was renamed while the tests were being
+written. `PROBLEMS.md` has both, with what was written first.

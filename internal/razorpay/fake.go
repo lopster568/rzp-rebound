@@ -273,3 +273,30 @@ func (f *Fake) AttemptPayment(_ context.Context, orderID, cardNumber string) (Pa
 	f.paymentsByOrder[orderID] = append(f.paymentsByOrder[orderID], payment.ID)
 	return *payment, nil
 }
+
+// SeedFailedPayment records a failed payment on an order with the given
+// error.reason, without going through AttemptPayment.
+//
+// It exists because a batch has to be able to materialise a failure whose
+// reason has no card behind it. The risk-block reason is the case: PRD Q2 is
+// open, testcards has no number for it, and AttemptPayment decides an outcome
+// by looking a card up. Seeding the payment directly is also what keeps the
+// materialiser honest about which reason an order carries, rather than
+// inferring it from whichever card happened to be picked.
+//
+// The order moves to attempted, exactly as a real failed attempt leaves it.
+func (f *Fake) SeedFailedPayment(_ context.Context, orderID, reason string) (Payment, error) {
+	return Payment{}, nil
+}
+
+// SeedRecoversAfter tells the fake that an attempt on orderID, made once the
+// order already carries priorAttempts attempts, authorizes whatever card is
+// presented.
+//
+// This is the gateway's own knowledge of the world, not the agent's. Live test
+// mode picks an outcome from one form field at the last checkout call rather
+// than from the card (docs/RAZORPAY-TEST-MODE-NOTES.md), so on both layers
+// something has to stand in for the cause having cleared. Putting it on the
+// gateway is what lets an arm retry the same instrument and find out, instead
+// of being told.
+func (f *Fake) SeedRecoversAfter(orderID string, priorAttempts int) {}
