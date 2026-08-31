@@ -1,0 +1,7 @@
+.env
+results/runs/
+results/batches/
+bin/
+*.pem
+__pycache__/
+.pytest_cache/
