@@ -15,49 +15,39 @@ for what they are not evidence of, and `docs/PRD.md` for scope.
 
 ```mermaid
 flowchart TB
-  SEED["rzp seed<br/>internal/batch"]
-  MAN["batch manifest<br/>ground truth<br/>no arm can read it"]
-  MAT["internal/runner<br/>materialise one order,<br/>drive its seeded failure"]
-  GW["internal/razorpay.Port<br/>live client, replay, fake"]
-  POLL["internal/poller<br/>FetchOrder, ListPaymentsForOrder"]
-  CLS["internal/classify<br/>six classes, total, fails closed"]
-  MCP["internal/mcpserver<br/>seven tools<br/>layer 1 gate"]
-  POL["internal/policy.Evaluate<br/>layer 2 gate, pure"]
-  ACT["internal/razorpay.Attempter<br/>internal/notify<br/>the only side effects"]
-  AUD["internal/audit.Recorder"]
+  SEED["1. rzp seed<br/>internal/batch"]
+  MAN["batch manifest<br/>the ground truth no arm can read"]
+  MAT["2. internal/runner<br/>materialise the order and drive its seeded failure"]
+  GW["3. internal/razorpay.Port<br/>live test mode, replay fixtures, or the deterministic fake"]
+  POLL["4. internal/poller<br/>FetchOrder, ListPaymentsForOrder"]
+  CLS["5. internal/classify<br/>six classes, total, an unknown reason fails closed"]
+  ARMS["6. one recovery.Surface, four arms<br/>a0-control, a1-naive, a3-rules, a2-agent"]
+  MCP["7a. internal/mcpserver, gate layer 1<br/>seven tools, R8 M1 M2 M3 R5<br/>the only hands the agent arm has"]
+  POL["7b. internal/policy.Evaluate, gate layer 2<br/>nine rules, first match wins, three verdicts"]
+  ACT["8. internal/razorpay.Attempter and internal/notify<br/>the only side effects in the system"]
+  AUD["9. internal/audit.Recorder"]
   SPAN["span attributes<br/>internal/telemetry to Jaeger"]
-  LED["ledger.jsonl<br/>outcomes.jsonl"]
-  SCORE["harness/scorer.py"]
-  AGG["harness/aggregate.py"]
+  LED["ledger.jsonl and outcomes.jsonl"]
+  SCORE["10. harness/scorer.py, then harness/aggregate.py"]
   TAB["results/tables"]
 
-  SEED --> MAN --> MAT --> GW --> POLL --> CLS
-
-  subgraph arms["Four arms, one recovery.Surface"]
-    A0["a0-control<br/>never act"]
-    A1["a1-naive<br/>retry everything"]
-    A2["a2-agent<br/>headless model,<br/>one invocation per order"]
-    A3["a3-rules<br/>classify, evaluate, act"]
-  end
-
-  CLS --> arms
-  A2 --> MCP --> POL
-  A3 --> POL
-  A0 -->|"no action to evaluate"| AUD
-  A1 -->|"consults nothing"| ACT
+  SEED --> MAN --> MAT --> GW --> POLL --> CLS --> ARMS
+  ARMS -->|"a2-agent"| MCP
+  MCP --> POL
+  ARMS -->|"a3-rules"| POL
+  ARMS -->|"a1-naive consults nothing"| ACT
   POL -->|"allow"| ACT
   POL -->|"deny or escalate"| AUD
-  ACT --> GW
   ACT --> AUD
+  ACT -.->|"the side effect lands here"| GW
   AUD --> SPAN
-  AUD --> LED
-  LED --> SCORE
+  AUD --> LED --> SCORE --> TAB
   MAN -.->|"answer key, scoring side only"| SCORE
-  SCORE --> AGG --> TAB
 ```
 
-The dotted line is the one that matters. The manifest holds the answer for
-every order, and it reaches the scorer and never an arm.
+The dotted line from the manifest to the scorer is the one that matters. The
+manifest holds the answer for every order, and it reaches the scorer and never
+an arm.
 `TestManifestGroundTruthNeverLeaksIntoAgentVisibleFields` walks the projection
 an arm is handed, and `TestArmsCannotReachTheGatewaysGroundTruth` walks the
 action surface and both `Attempter` adapters by reflection. The gateway is
