@@ -1,6 +1,8 @@
 package classify_test
 
 import (
+	"encoding/json"
+	"os"
 	"slices"
 	"testing"
 
@@ -328,5 +330,67 @@ func TestNetworkDeclineCodesClassifyThroughTheNetworkLists(t *testing.T) {
 	}
 	if got := classify.ClassifyNetworkDeclineCode("", "41"); got != classify.Unclassified {
 		t.Errorf("a code with no network classified as %v, want unclassified", got)
+	}
+}
+
+// TestErrorCodeFileLabelsEveryEntry is the phase 5 rule applied to the one file
+// the classifier's totality test reads. Before phase 5 every row in it carried
+// a date and nothing about where the string came from, so a reader could not
+// tell a live-mode documented reason from a spelling only test mode returns.
+// That distinction is the whole finding of phase 1.
+func TestErrorCodeFileLabelsEveryEntry(t *testing.T) {
+	raw, err := os.ReadFile(errorCodesPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", errorCodesPath, err)
+	}
+	var f struct {
+		Meta struct {
+			Labels map[string]string `json:"labels"`
+		} `json:"_meta"`
+		Codes []struct {
+			Code   string `json:"code"`
+			Kind   string `json:"kind"`
+			Label  string `json:"label"`
+			Source string `json:"source"`
+			Method string `json:"method"`
+		} `json:"codes"`
+	}
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatalf("parse %s: %v", errorCodesPath, err)
+	}
+	if len(f.Meta.Labels) == 0 {
+		t.Errorf("%s has no _meta.labels explaining what each label means", errorCodesPath)
+	}
+
+	valid := []string{"documented-live", "documented-test-mode", "observed-test-mode"}
+	documentedLive := 0
+	for _, entry := range f.Codes {
+		if !slices.Contains(valid, entry.Label) {
+			t.Errorf("%s has label %q, want one of %v", entry.Code, entry.Label, valid)
+		}
+		if entry.Source == "" {
+			t.Errorf("%s has no source", entry.Code)
+		}
+		if _, ok := f.Meta.Labels[entry.Label]; entry.Label != "" && !ok {
+			t.Errorf("%s uses label %q and _meta.labels does not define it", entry.Code, entry.Label)
+		}
+		if entry.Label != "documented-live" {
+			continue
+		}
+		documentedLive++
+		if entry.Kind != "reason" {
+			continue
+		}
+		// A row claiming to be documented live-mode vocabulary has to be in the
+		// live-mode table for the method it names, or the label is decoration.
+		if _, ok := classify.DocumentedReasons(classify.Method(entry.Method))[entry.Code]; !ok {
+			t.Errorf("%s is labelled documented-live for method %q and is not in that method's documented table",
+				entry.Code, entry.Method)
+		}
+	}
+	// 15 card reasons plus 8 UPI reasons, three of which are shared and get a
+	// row each because they are documented on both pages.
+	if want := 23; documentedLive < want {
+		t.Errorf("%s carries %d documented-live rows, want at least %d", errorCodesPath, documentedLive, want)
 	}
 }
