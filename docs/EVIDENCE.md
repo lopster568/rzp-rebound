@@ -71,6 +71,16 @@ percent and business decline targets below 5 percent for participants. A body
 that has to set a target for a decline rate is a body whose members do not
 automatically meet it.
 
+NPCI also publishes per-member decline and uptime statistics at
+`npci.org.in/statistics/bd-td-and-uptime`. That page returns 403 to every
+non-browser fetch, so it is cited here as published by NPCI with figures via
+secondary coverage, and no figure from it is used anywhere in this repository.
+
+NPCI additionally maintains a technical-decline and business-decline taxonomy
+for every UPI response code, which is the closest thing to external support any
+part of this project's design has. It belongs to the classifier rather than to
+the market case, so it is in section 3.
+
 **There is almost no academic literature on this.** *Searched 2026-09-01.* No
 direct arXiv or ACM paper on card-payment retry optimization was found. The
 nearest artifacts are adjacent arXiv work on causal label recovery in payment
@@ -112,9 +122,24 @@ never-retry codes. `internal/networkcodes` carries them under
 `WasVisaCategory1BeforeApril2021` so a reader arriving with one of those posts
 finds the correction rather than an unexplained gap.
 
-**Mastercard merchant advice code `03` means do not try again.** *Network rule.*
-Mastercard also publishes an automated-clearing retry schedule, whose shortest
-interval is one hour.
+**Mastercard merchant advice code `03` means do not try again, and a
+resubmission after it is charged for.** *Network rule, verified through TabaPay's
+PSP documentation at `developers.tabapay.com/docs/merchant-advice-code-mac`,
+read 2026-09-01.* A fee is assessed for each authorization request resubmitted
+following a MAC 03 decline within a 30 day period. That is the mirror of the
+Visa side: Visa caps how many times a merchant may reattempt, Mastercard charges
+for reattempting what it said not to.
+
+**Merchant advice codes 24 through 30 are Mastercard's own retry ladder: 1 hour,
+24 hours, 2 days, 4 days, 6 days, 8 days, 10 days.** *Same source.* These are
+Mastercard-use-only codes, so a merchant does not pick a rung. The ladder is in
+`networkcodes.MastercardRetryScheduleHours` because it is the only scheme-native
+retry timing anybody publishes, and it is what `R2-COOLDOWN` is measured against
+rather than derived from: that interval is 30 seconds, two orders of magnitude
+below the shortest rung.
+
+The source is a PSP restating a scheme rule and not the scheme's own
+publication, which is what the source string in that package says.
 
 **The Mastercard reattempt thresholds are contested and are not used here.**
 Several secondary sources quote a specific per-merchant reattempt limit per
@@ -139,7 +164,9 @@ payments, and does not apply to a general merchant charge.
 **The RBI e-mandate 24 hour pre-debit notice is a notice floor and not a retry
 rate.** *Regulator.* It is in this document because it is the closest thing to a
 citable interval in Indian payments, and it does not answer the question
-`R2-COOLDOWN` asks. See section 5.
+`R2-COOLDOWN` asks. Neither does the Mastercard ladder, which is about
+reattempting an authorization rather than about contacting anyone, and nothing
+at all answers the question `R6-NOTIFY-RATE` asks. Both stay configured choices.
 
 ## 3. The failure vocabulary
 
@@ -166,18 +193,50 @@ from a reason to "retry this" or "ask for a different card", and adopting a
 documented vocabulary does not make the mapping documented. Every class in
 `internal/classify` is an argument in a comment, not a citation.
 
-**The shape of that judgment has scheme precedent: NPCI classifies every UPI
-response code as a technical decline or a business decline.** *Scheme
-specification,* NPCI "UPI Error and Response Codes" version 2.9, a public PDF,
-text extracted and read 2026-09-01. Verified rows from the spec: insufficient
-funds (`Z9`) and invalid MPIN (`ZM`) are business declines; debit timeout
-(`U67`), credit timeout (`U68`), a mismatch in payment details (`B6`), and a
-bank HSM being down (`HS`) are technical declines; a risk-score decline (code
-`59`) is a business decline. Splitting failures into infrastructure problems
-worth retrying and business outcomes that must not be blindly retried is the
-taxonomy the scheme operator itself maintains. What stays this project's
-judgment is which Razorpay reason lands in which class, not the idea that such
-a split exists.
+**The shape of that judgment has scheme precedent. NPCI splits every UPI
+failure into a technical decline or a business decline, and this project's
+classifier splits failures the same way.** *Regulator, NPCI "UPI Error and
+Response Codes" version `2.9`, public PDF, text extracted and read
+2026-09-01.*
+
+Every response code in that specification is labelled TD or BD. Rows verified
+first-hand:
+
+| Code | Meaning | NPCI class |
+|---|---|---|
+| `U67` | debit timeout | TD |
+| `U68` | credit timeout | TD |
+| `B6` | mismatch in payment details | TD |
+| `HS` | bank HSM down | TD |
+| `Z9` | insufficient funds | BD |
+| `ZM` | invalid MPIN | BD |
+| `U69` | collect expired | BD |
+| `59` | suspected fraud, risk score decline | BD |
+
+That is the same cut `internal/classify` makes: a technical decline is
+infrastructure and the same attempt can clear it, while a business decline is
+the customer, the balance, the instrument, or a risk engine, and repeating the
+attempt repeats the answer. The classifier's `transient_retry_eligible` sits
+where NPCI puts TD, and `reauth_required`, `new_instrument_required`, and
+`never_retry` sit where it puts BD.
+
+**This is the strongest external support any part of this project has**, and it
+is worth being exact about what it supports. It supports the *shape* of the
+taxonomy: that splitting failures into retry-worthy infrastructure classes and
+do-not-blind-retry business classes is how the national payments operator itself
+models the problem, rather than a convenience this project invented. It does not
+supply the mapping. Which Razorpay reason belongs in which class is still this
+project's judgment, which the paragraph above this one says in as many words.
+
+`retry_eligible` is the one class that does not line up cleanly:
+`insufficient_funds` is a business decline by NPCI's cut and this project treats
+it as retry eligible, because a balance changes on its own and a technical
+failure and an empty account are different reasons to try again. That
+disagreement is a mapping choice, it is disclosed here, and it is exactly the
+kind of thing the TD/BD split does not settle.
+
+Adopting the U-code vocabulary into `internal/networkcodes` is roadmap and not
+this phase. Nothing in any run reads a UPI response code.
 
 ## 4. What a mistake costs
 
@@ -295,6 +354,16 @@ payment to an authentication timeout, and nothing ever re-attempted it or asked
 the customer to try again. That is the exact failure class the payment-link
 nudge in this system targets.
 
+**And NPCI's own taxonomy says what the right response to it is.** A UPI collect
+request the customer did not act on is `U69`, collect expired, which the version
+`2.9` specification classes as a **business** decline: the infrastructure worked
+and the person did not answer. A business decline is not something to retry
+against the same instrument, it is something to re-engage the customer about.
+That is precisely the action this system takes for the class, a payment link
+rather than a silent reattempt. The specification, one real production failure,
+and the product's action mapping agree, and that is as close to end-to-end
+external validation as anything here gets.
+
 NPCI's own specification agrees on what that failure needs. An expired collect
 request (`U69`) is classified there as a business decline: the customer did not
 act, so the infrastructure has nothing to retry. The response a business
@@ -355,6 +424,9 @@ project has observed carries a raw network response code, so
 | Mastercard merchant advice codes | network rule | 2026-09-01 |
 | RBI circular on e-mandates for recurring transactions, 2022-06-16 | regulator | 2026-09-01 |
 | NPCI circular OC-149 | regulator | 2026-09-01 |
+| NPCI "UPI Error and Response Codes" version `2.9`, public PDF | regulator, text extracted and read | 2026-09-01 |
+| NPCI decline and uptime statistics, `npci.org.in/statistics/bd-td-and-uptime` | regulator, page 403s to non-browser fetches, figures via secondary coverage and unused here | 2026-09-01 |
+| TabaPay PSP documentation on merchant advice codes | vendor documentation restating a scheme rule | 2026-09-01 |
 | `razorpay.com/docs/errors/payments/cards/` | vendor documentation | 2026-09-01 |
 | `razorpay.com/docs/errors/payments/upi/` | vendor documentation | 2026-09-01 |
 | Razorpay payment error parameters page | vendor documentation | 2026-09-01 |

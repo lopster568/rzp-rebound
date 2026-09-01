@@ -211,3 +211,44 @@ defect was about the figure still being narrated as if it were current. Fixed by
 having the presenter say "above the ceiling" and read both figures off the span,
 because the rule firing, the verdict, and the absent side effect are what the
 shot is for and all three are unchanged.
+
+## 10. A cited external number passed the gate by coincidence
+
+`docs/EVIDENCE.md` cites NPCI's UPI error specification by version, and that
+version number is 2.9. `scripts/claims_check.py` passed it, and not because
+anyone had put it on the allow-list: a rate somewhere in a committed run rounds
+to 2.9, so it was already in the fact set.
+
+That is check 2's documented weakness arriving in the one document written to
+stop unsourced numbers. The file's own header says the check is deliberately
+weaker than check 1 and that a number existing somewhere in a run passes it even
+when the sentence around it is wrong. It had not been seen happening before.
+
+The fix is typographic and correct on its own terms: a version string belongs in
+backticks, backticks are stripped before the number scan, and the citation is
+now checked by a reader rather than by a coincidence. What the incident is worth
+keeping for is the demonstration. A cited external figure that happens to collide
+with a run artifact gets no scrutiny at all, and the allow-list entry that would
+have recorded its provenance is dead code the moment the collision exists.
+
+## 11. An unauthored edit to a document was swept in by a broad stage
+
+`git add -A` before the merchant-advice-code commit picked up a 19 line addition
+to `docs/EVIDENCE.md` that was not part of that change and was not written as
+part of it. It landed in `8af67e7` under a commit message about the Mastercard
+retry ladder, which describes the rest of that commit and not those 19 lines.
+
+It was found by reading the file afterwards, not by the commit. The content was
+a second NPCI technical-decline and business-decline passage, duplicating one
+being added to another section of the same file at the same time, so the file
+briefly argued the same point twice in two voices.
+
+Resolved by merging both into one passage in section 3, which is where the
+argument belongs: it is about the classifier's design rather than about the
+market case. The commit that carried the stray lines is left alone rather than
+rewritten, because the history is public and a misleading message is a smaller
+problem than a rewritten branch.
+
+The rule this repository already had is the one that would have caught it:
+stage the paths the change touches. `git add -A` in a tree that anything else
+can write to is a commit message that becomes untrue without anyone editing it.
