@@ -158,3 +158,56 @@ passed.
 exactly, and the layer fallback now points at the current headline run. A table
 left at an older run's numbers fails. All four documents were regenerated and
 the gate was seen failing on every one of them first.
+
+## 8. The correction stopped one file short of the file the rule is about
+
+An adversarial review pass on 2026-09-01, after everything was pushed and
+Actions was green, found that the citation corrections in problem 1 had landed
+in `internal/networkcodes` and in the prose and not in `internal/policy`.
+
+`citedValues[RuleMaxAttempts]` still read "Visa bulletin AI10325: 15 reattempts
+per declined transaction per 30 rolling days, Categories 2 and 3." That is the
+map ADR-0008 points at as the mechanism, in the package the rule is about, and
+it carried the wrong citation for four commits.
+
+Four more of the same shape: `docs/EVIDENCE.md` and `docs/PRD.md` still called
+`error.source` a nine-value enumeration, which is the exact claim the correction
+removed and the reason `issuer` was ever in the code; the PRD cited
+`TestDocumentedErrorSourcesAreTheNinePublishedValues`, which the correction
+renamed, and `TestRecorderRedactsCardShapedAndKeyShapedValues`, which phase 1
+renamed; and `docs/EVAL-DESIGN.md` and ADR-0008 still named the profile
+`ethoca-card-mix-2019` in four places between them.
+
+**Why the suite did not catch any of it.** No test asserts the *content* of a
+string in `citedValues`. `TestEveryRuleDeclaresItsCitationStatus` checks that
+every rule id is in exactly one of the two maps and that its value is non-empty,
+which is a check on shape. And `claims_check.py` checks that a number in prose
+appears in a run or on the allow-list, and none of these is a number: they are
+a category name, a count written as an English word, a test name, and a profile
+name.
+
+**The general finding.** The phase built a gate for the class of error it had
+already been bitten by, which is a number that drifts from its run, and the
+class of error it actually produced is a *word* that drifts from its source.
+The gates are orthogonal to it. Writing a gate for that is not obviously
+possible, so what is here instead is this entry, and `CLAUDE.md` now carries the
+rule that a citation names a document and naming a document is not the same as
+the document saying it.
+
+## 9. The demo script had the presenter read out a retired constant
+
+The narration for the refusal trace said "456700 paise is above the 450000 paise
+ceiling for an unattended action", in the block the script itself flags as the
+longest in the video.
+
+The ceiling is 1500000 now. That order would be allowed rather than escalated
+under the policy the published tables were produced by, so the shot would have
+had a presenter explaining current behaviour with a number more than three times
+off, out loud, on camera.
+
+The trace ids are from `results/runs/phase-3-fake` and the script already said
+so, which is what made this survive: the disclosure was about provenance and the
+defect was about the figure still being narrated as if it were current. Fixed by
+having the presenter say "above the ceiling" and read both figures off the span,
+because the rule firing, the verdict, and the absent side effect are what the
+shot is for and all three are unchanged.

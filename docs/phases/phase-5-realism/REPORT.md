@@ -84,6 +84,20 @@ particular gap between a citation and its document into the code where it cannot
 be skimmed past. `PROBLEMS.md` entry 1 has the full account, and the corrections
 in `docs/EVIDENCE.md` are marked in place rather than silently applied.
 
+**And the correction itself stopped one file short.** An adversarial review pass
+after everything was pushed and Actions was green found that the citation fixes
+had landed in `internal/networkcodes` and in the prose but not in
+`internal/policy`, where `citedValues[RuleMaxAttempts]` carried the wrong
+category for four commits. Four more stale strings alongside it: two documents
+still calling `error.source` a nine-value enumeration, two renamed test names,
+and the profile's old vintage in four places.
+
+No gate could catch those either, and for a sharper reason than problem 1. The
+phase built its gates against the class of error it had already been bitten by,
+a number that drifts from its run. What it produced was a *word* that drifts
+from its source: a category name, a count written in English, a test name, a
+profile name. `PROBLEMS.md` entry 8.
+
 ## The other findings
 
 **The agent arm's ledger lost its trace ids and every gate stayed green.** 443
