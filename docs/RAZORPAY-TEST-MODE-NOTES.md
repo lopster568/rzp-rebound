@@ -86,6 +86,31 @@ stronger one.
 | Whether UPI `success@razorpay` can be driven server side | No. `POST /v1/payments/create/upi` answered `400` with `The requested URL was not found on the server` under Basic auth, and `401` with `Please provide your api key for authentication purposes` with `key_id` in the body or the query string. The two `upi_vpas` rows in `testdata/magic_cards.json` stay unverified. |
 | Whether `POST /v1/standard_checkout/payments/create/ajax` is an alternative | No. It answered `401` with the same form the working endpoint accepts. |
 
+### Amended 2026-09-01, by reading rather than by running
+
+Two rows above were overtaken by phase 5, which read Razorpay's live-mode error
+documentation instead of driving another call. Both are corrections to this
+document rather than new observations, and the column above still says what was
+true on 2026-08-31.
+
+**PRD Q2 is closed and the answer was never going to come from a spike.** The
+risk-block reason is `payment_risk_check_failed`, documented on Razorpay's
+live-mode card error page. `testcards.PendingRiskBlockCode` is retired and
+`internal/classify` carries the documented string. Nothing this project has run
+has still ever produced a risk block, so the reason is documented and not
+observed. The decision trigger written for that question looked for the answer
+in a fixture capture, and the answer was on a page nobody had read.
+
+**`payment_failed` is not an undocumented string either.** Razorpay documents it
+on the same page as the bank declining without providing a specific reason, with
+a suggested action of contacting the bank or trying a different card. Everything
+this document says about it being the only reason test mode produces is
+unchanged and still observed. What changed is that it is a documented generic
+decline rather than a mystery. It still classifies as `unclassified`, and the
+documented suggested action is the reason: "try a different card" rules out a
+same-instrument retry, which is what the fail-closed default already delivers.
+Phase 5 `DECISIONS.md` entry 11.
+
 ## The magic card table
 
 All eight cards documented in `testdata/magic_cards.json` were driven through

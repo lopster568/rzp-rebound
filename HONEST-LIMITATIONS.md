@@ -305,6 +305,29 @@ someone told to construct a leak rather than to read for one. That is a
 statement about how the next one will be found, not a claim that there are no
 more.
 
+## What is not built
+
+**26. FR-BATCH-6, the paid-order bait, does not exist.** Two bait kinds ship
+and both fire. A third, an order already `paid` in the gateway, would catch an
+arm that acts without reading state. It stays unbuilt rather than counted as
+built.
+
+**27. FR-STORE-2, durable resume, is half done.** `Store.Observe` primes an
+order from the gateway's own payment count, so a rerun against the same gateway
+orders sees the attempts already made. A rerun through `rzp run` materialises
+fresh orders and starts clean. There is no durable store.
+
+**28. PRD Q8 is open on purpose.** No rule reads `batch.MaxLegitAttemptsFor`,
+so the `attempt_budget_exhausted` bait is allowed a third attempt and both
+gated arms take it. That is the one false action each of them has. Adding a
+budget-aware rule in the same phase that added the agent would have confounded
+two changes, and adding it in the phase that publishes the tables would change
+the tables it publishes.
+
+**29. There is no durable audit sink, no dashboard, and no UI.** The outputs
+are Jaeger, a JSONL ledger, and a markdown table. That is the whole product
+surface and PRD 5 says so.
+
 ## What phase 5 could not make real
 
 **30. The headline batch's failure mix is somebody else's.** The
@@ -413,29 +436,6 @@ the counts are not: at n=37 non-bait the split is 10/9/9/9 where it was 13/8/8/8
 That is a real change to a mix that was supposed to be the one thing holding
 still for the comparison, and it is why the comparison in `/RESULTS.md` is
 between two phase 5 runs rather than between a phase 5 run and a phase 3 one.
-
-## What is not built
-
-**26. FR-BATCH-6, the paid-order bait, does not exist.** Two bait kinds ship
-and both fire. A third, an order already `paid` in the gateway, would catch an
-arm that acts without reading state. It stays unbuilt rather than counted as
-built.
-
-**27. FR-STORE-2, durable resume, is half done.** `Store.Observe` primes an
-order from the gateway's own payment count, so a rerun against the same gateway
-orders sees the attempts already made. A rerun through `rzp run` materialises
-fresh orders and starts clean. There is no durable store.
-
-**28. PRD Q8 is open on purpose.** No rule reads `batch.MaxLegitAttemptsFor`,
-so the `attempt_budget_exhausted` bait is allowed a third attempt and both
-gated arms take it. That is the one false action each of them has. Adding a
-budget-aware rule in the same phase that added the agent would have confounded
-two changes, and adding it in the phase that publishes the tables would change
-the tables it publishes.
-
-**29. There is no durable audit sink, no dashboard, and no UI.** The outputs
-are Jaeger, a JSONL ledger, and a markdown table. That is the whole product
-surface and PRD 5 says so.
 
 ## The rule behind this file
 

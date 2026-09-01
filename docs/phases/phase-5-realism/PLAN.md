@@ -203,3 +203,22 @@ can be told apart from the rule set.
 - It does not claim the documented live-mode reasons are what a merchant will
   see. Test mode returns one reason for every card, and this project has still
   never observed the documented vocabulary at scale.
+
+## Amendment, 2026-09-01, after the work
+
+This plan is not edited to match what shipped, on the same rule the phase
+`TESTS.md` follows: it is the record of what was intended before any code
+existed. Four things above are wrong, and all four are wrong because the plan
+was written from a research brief rather than from the primary documents. That
+is the phase's own finding and `PROBLEMS.md` entry 1 has it.
+
+| This plan says | What is true |
+|---|---|
+| The Visa Category 1 list comes from bulletin AI10325 | The bulletin defines the category and does not enumerate it. The list is a processor reconstruction, and `VisaCategory1IsReconstructed` says so in the code. |
+| The reattempt cap covers Categories 2 and 3 | The bulletin states it for Category 2. |
+| `error.source` documents nine values | It documents five for cards and eight for UPI, per method, and `issuer` is on neither list. |
+| The profile is `ethoca-card-mix-2019` | The source article is dated 2017-04-28. The profile is `ethoca-card-mix-2017`. |
+
+A fifth item the plan carried, that response codes 05 and 51 are together about
+80 percent of declines, is not in the article it was attributed to and could not
+be traced anywhere. It is dropped rather than hedged.
