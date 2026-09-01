@@ -84,6 +84,7 @@ pause
 heading "ACT 2 of 4   WATCH IT RUN FOR REAL"
 
 missing=""
+demo_ran=0
 [ -n "${RAZORPAY_KEY_ID:-}" ] || missing="$missing RAZORPAY_KEY_ID"
 [ -n "${RAZORPAY_KEY_SECRET:-}" ] || missing="$missing RAZORPAY_KEY_SECRET"
 
@@ -121,6 +122,7 @@ else
 	fi
 	say "Running the same loop 'make demo' runs, against Razorpay test mode."
 	say ""
+	demo_ran=1
 	go run ./cmd/rzp demo || say "the demo returned an error above, and it is printed rather than hidden"
 fi
 
@@ -280,6 +282,15 @@ say ""
 say "Those two are from the phase 3 run. Every ledger row in the phase 5 fake runs"
 say "came out with an empty trace_id and the cause was not isolated:"
 say "HONEST-LIMITATIONS.md item 36 has the counts."
+say ""
+say "Jaeger stores spans in memory, so those two links are empty until the traces"
+say "are produced again on this instance. docs/DEMO-SCRIPT.md has the one command"
+say "that does it."
+if [ "$demo_ran" = "1" ] && [ "$jaeger_up" = "1" ]; then
+	say ""
+	say "The trace act 2 printed above is on this instance now, and it is the one"
+	say "to open if these two are empty."
+fi
 say ""
 say "Every published number is gated. 'make claims-check' reads every cell of every"
 say "results table in the docs back against the committed run that produced it, and"
