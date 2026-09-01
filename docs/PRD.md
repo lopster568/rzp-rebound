@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v1.2. Updated at the end of phase 3. |
+| Status | v1.3. Updated at the end of phase 4. |
 | Date | 2026-09-01 |
 | Owner | Roshan Singh |
 
@@ -17,10 +17,15 @@ that action through a policy gate it cannot go around. Three arms run over the
 same seeded batch: do nothing, retry everything, and the agent. The report puts
 all three in one table.
 
-Headline result: not filled in. It comes from a phase 4 run whose output is in
-`results/`, and it will read as recovered orders and recovered amount for each
-of the three arms on one batch of seeded test-mode failures, alongside the
-false-action count for each. No number goes in this line until that run exists.
+Headline result, from the phase 3 fake-layer run over a seeded batch of 40 and
+the phase 3 live run over 8, both in `results/`, neither summed with the other.
+On the fake layer the naive arm recovers 21 of 37 recoverable orders and pays
+19 false actions and 40 actions with no policy verdict behind them; the agent
+and the rule set each recover 18 with 1 false action and 0 through the gate,
+and they agreed on all 40 orders. On the live layer, which is Razorpay test
+mode, every order classifies as unclassified and both gated arms escalate
+everything. `/RESULTS.md` has the tables and `/HONEST-LIMITATIONS.md` has what
+they are not evidence of.
 
 ## 2. Problem
 
@@ -103,13 +108,14 @@ four of them are not written yet.
 | `make run-all` | One progress line per arm per order, then a per-arm summary: orders touched, actions taken, orders recovered, escalated, and unobserved, and the gateway call count. | Works for all four arms. `cmd/rzp/run.go` and `harness/orchestrator.py` for three of them; `cmd/rzp-mcp` and `harness/agent_runner.py` for `a2-agent`, which needs the `claude` CLI and spends one headless invocation per order. |
 | `make report` | The four-arm comparison table, the per-failure-class breakdown, the honesty metrics, and the agent arm's cost, written to `results/tables/` as CSV and markdown and echoed to the terminal. Exits non-zero when `policy_violations_succeeded` is not 0 for `a2-agent` or `a3-rules`. | Works. `harness/aggregate.py`. |
 | `make run-arm` | The same, for one arm. | Works. Phase 2. |
-| `make demo` | The scripted end-to-end run: seed, three arms, report, and the Jaeger URL for the trace of one recovered order. | Planned, phase 4. |
+| `make demo` | One order end to end against Razorpay test mode: create it, drive a real attempt to a decline, classify, evaluate, act, read the state back, and print the ledger path and the trace URL. | Works since phase 1. `cmd/rzp/demo.go`, and `docs/AUDIT-TRACE-SCHEMA.md` is written from one of its runs. The row used to describe a scripted multi-arm sequence and mark it planned; that sequence is `make run-all` plus `make report`, which have rows of their own. Phase 4 `PROBLEMS.md`. |
+| `make claims-check` | One line per published document, or a file, line, and the value the run actually holds. | Works. Phase 4. `scripts/claims-check.sh`, and a prerequisite of `make ci`. |
 
 Supporting targets that exist today: `make hooks`, `make test` (Go and
 Python), `make test-go`, `make test-python`, `make lint`, `make docs-check`,
-`make ci`, `make verify-phase-0`, `make verify-offline`, `make verify-live`,
-`make verify-phase-2`, `make verify-phase-3`, `make agent-smoke`, and
-`make trace-links`.
+`make claims-check`, `make ci`, `make verify-phase-0`, `make verify-offline`,
+`make verify-live`, `make verify-phase-2`, `make verify-phase-3`,
+`make verify-phase-4`, `make agent-smoke`, and `make trace-links`.
 
 ## 7. Success metrics
 
@@ -295,7 +301,7 @@ covers them today. Later components name the test that will.
 | NFR-2 | The full unit suite runs offline with no credentials and no docker. | Met. `make verify-phase-0` passed on 2026-08-31 with both key variables unset and the docker daemon unreachable; output is in the phase 0 report. |
 | NFR-3 | No secret in git, logs, spans, or the ledger. | Met, and it took three fixes to get there. `Config.String` redacts both credentials, `razorpay.Client.Redact` scrubs every error and every captured body, `internal/audit` redacts both sinks, the pre-commit hook blocks key-shaped strings in any staged file, `scripts/capture-fixtures.sh` scans what it writes, and `.env` is gitignored. Phase 1 found and fixed three real leaks: two in the offline review round and one in a live Jaeger trace. `docs/phases/phase-1-live-loop/PROBLEMS.md` has all three. |
 | NFR-4 | Live calls run under a concurrency cap with 429 backoff. | Met in code, unmeasured in the field. `TestClientCapsConcurrencyAtConfiguredLimit` and `TestClientRetriesOn429WithBackoffUpToCap` cover both. No 429 was observed on 2026-08-31 at 1.4 requests per second, so the four constants remain a starting point rather than a measurement (Q5). |
-| NFR-5 | A full three-arm run finishes in under 20 minutes. | Target. Measured in phase 4, on the dev laptop, labelled as such. |
+| NFR-5 | A full three-arm run finishes in under 20 minutes. | **Not measured, and phase 4 did not measure it.** Phase 4 drove no run on purpose (phase 4 `DECISIONS.md` 4), so no wall clock for a whole run exists. The closest number that does is `agent_wall_clock_ms` on the phase 3 fake run, 835 seconds for `a2-agent`'s 40 headless invocations, which is the sum of the invocations rather than the run. The three deterministic arms are not timed anywhere. Writing a number here without a run would be the thing 9.2 forbids. |
 
 ## 9. Constraints
 
@@ -370,6 +376,7 @@ and to stdout when it is not. The scoring harness joins the audit rows to the
 manifest and produces the comparison table.
 
 Full diagram and component contracts: `/ARCHITECTURE.md`, written in phase 4.
+What none of it is evidence of: `/HONEST-LIMITATIONS.md`.
 
 ## 11. Risks
 
@@ -392,7 +399,7 @@ Detail lives in `docs/phases/README.md` and in each phase directory.
 | 1 live loop | 2026-09-01 | Drive a real test-mode order to a documented failure and back to paid, and confirm the card table against live responses. | Done 2026-08-31. The loop closes; none of the eight cards confirmed, which is the finding. |
 | 2 policy and eval | 2026-09-02 | Retry policy plus a batch harness that scores decisions against the ground-truth manifest. | Done 2026-08-31. 9 rules, 3 arms, 53 tests, and a three-arm table on two layers. `docs/phases/phase-2-policy-and-eval/REPORT.md`. |
 | 3 agent arm | 2026-09-03 | An agent drives the loop over MCP and is scored on the same batches. | Done 2026-09-01. Seven tools, two gate layers, 44 tests, and a four-arm table on two layers. The agent matched the rules arm on all 40 fake-layer orders. `docs/phases/phase-3-agent-arm/REPORT.md`. |
-| 4 submission | 2026-09-04 | Demo, writeup, and the numbers that back them. | Not started |
+| 4 submission | 2026-09-04 | Demo, writeup, and the numbers that back them. | Repository done 2026-09-01. `ARCHITECTURE.md`, `README.md`, `HONEST-LIMITATIONS.md`, `docs/DEMO-SCRIPT.md`, and a claims gate that checks every published number against the run behind it. The pitch video and the submission form are Roshan's and are not done. `docs/phases/phase-4-submission/REPORT.md`. |
 
 ## 13. Open questions
 
@@ -448,6 +455,7 @@ reported, never dropped from a denominator.
 
 | Date | Version | Change |
 |---|---|---|
+| 2026-09-01 | v1.3 | End of phase 4. Section 1's headline result is filled in from the phase 3 runs. Section 6 corrects the `make demo` row, which had said planned since phase 0 while the target had existed since phase 1, and adds `make claims-check`. Section 8.2 marks NFR-5 not measured rather than leaving it as a phase 4 target the phase deliberately did not meet. Section 10 points at `/HONEST-LIMITATIONS.md`. Section 12 marks the phase 4 repository work done and the video and the form not done. |
 | 2026-08-31 | v1.0 draft | First version, written at the end of phase 0. |
 | 2026-09-01 | v1.2 | End of phase 3. Section 6 marks `run-all` and `report` as covering four arms. Section 8 marks FR-MCP-1, FR-MCP-2, FR-MCP-3, FR-POL-4, and FR-POL-7 met with their covering tests, and FR-BATCH-6 still not built. Section 11 gains the raced-rule risk, which the containment metric cannot see. Section 12 marks phase 3 done. Q8 stays open on purpose and Q9 is opened and closed. |
 | 2026-08-31 | v1.1 | End of phase 2. Section 6 marks `seed`, `run-all`, and `report` as working. Section 8 replaces "planned, phase 2" with the covering test for policy, store, recovery, notify, audit, telemetry, poller, and clock, and marks the three requirements phase 2 did not meet as not met rather than leaving them ambiguous: FR-POL-4 (the order allowlist, unreachable until an arm can name an order id), FR-STORE-2 (durable resume), and FR-BATCH-6 (the paid-order bait). Q7 closed, Q6 answered on a different axis, Q8 opened. |
