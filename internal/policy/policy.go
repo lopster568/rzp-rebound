@@ -359,6 +359,14 @@ func IsNotifyAction(action string) bool {
 	return action == ActionRequestReauth || action == ActionRequestNewInstrument
 }
 
+// CitedValues returns the rules whose value comes from a published source,
+// keyed by rule id, with the source as the value.
+func CitedValues() map[string]string { return nil }
+
+// ConfiguredChoices returns the rules whose value this project chose, keyed by
+// rule id, with the reason no citation is attached as the value.
+func ConfiguredChoices() map[string]string { return nil }
+
 // RuleIDs returns every rule id, in evaluation order, with the default allow
 // last because it is what is left when nothing refused.
 func RuleIDs() []string {
