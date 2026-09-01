@@ -3,6 +3,12 @@
 #
 # Usage:
 #   scripts/seed-batch.sh [--seed N] [--n N] [--bait N] [--layer fake|live]
+#                         [--profile NAME]
+#
+# --profile names the failure mix: uniform-invented (the default, and the shares
+# every batch before phase 5 used), ethoca-card-mix-2019 (published card-decline
+# shares, which set their own bait count and refuse --bait), or
+# observed-live-mix (reads RZP_OBSERVED_MIX_FILE and errors when it is unset).
 #
 # The manifest lands under results/batches/, which is gitignored apart from the
 # one batch the committed results table is recomputed from. It is the answer key
@@ -27,6 +33,7 @@ SEED="1234"
 N="40"
 BAIT="3"
 LAYER="fake"
+PROFILE=""
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -34,8 +41,9 @@ while [ $# -gt 0 ]; do
 	--n) N=${2:-}; shift 2 ;;
 	--bait) BAIT=${2:-}; shift 2 ;;
 	--layer) LAYER=${2:-}; shift 2 ;;
+	--profile) PROFILE=${2:-}; shift 2 ;;
 	-h | --help)
-		sed -n '2,9p' "$0"
+		sed -n '2,15p' "$0"
 		exit 0
 		;;
 	*) die "unknown argument: $1" ;;
@@ -45,5 +53,15 @@ done
 require_cmd go "the seeder is a Go binary"
 go build -o "$ROOT/bin/rzp" ./cmd/rzp || die "the seeder did not build"
 
-"$ROOT/bin/rzp" seed -seed "$SEED" -n "$N" -bait "$BAIT" -layer "$LAYER" ||
-	die "no batch was written"
+# --bait is only passed on when the caller asked for it or when no profile was
+# named, because a profile that sets its own bait share refuses the flag rather
+# than ignoring it.
+ARGS=(seed -seed "$SEED" -n "$N" -layer "$LAYER")
+if [ -n "$PROFILE" ]; then
+	ARGS+=(-profile "$PROFILE")
+fi
+if [ -z "$PROFILE" ] || [ "$PROFILE" = "uniform-invented" ]; then
+	ARGS+=(-bait "$BAIT")
+fi
+
+"$ROOT/bin/rzp" "${ARGS[@]}" || die "no batch was written"

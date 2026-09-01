@@ -41,10 +41,22 @@ const (
 // seed reproduces the same mix.
 var baitKinds = []BaitKind{BaitNeverRetry, BaitAttemptBudgetExhausted}
 
-// Default amount bounds, in paise. 500 to 5000 rupees.
+// Default amount bounds, in paise. Rs 500 to Rs 17,000.
+//
+// The range is a configured choice and the reason it is this one is cited. It
+// has to straddle policy.DefaultAmountCeilingPaise, which is Rs 15,000, the RBI
+// e-mandate threshold above which an additional factor of authentication is
+// required: a batch whose largest order is below the ceiling would retire R3 by
+// accident. The upper bound is set so the ceiling sits in roughly the top
+// eighth of the distribution rather than the middle, which is the phase 2
+// finding about a ceiling that escalated a quarter of the batch on amount alone
+// and swamped every escalation number.
+//
+// The old range was 50000 to 500000, which was entirely below the new ceiling.
+// TestGeneratedAmountsStraddleTheAmountCeiling holds both ends of this.
 const (
 	defaultMinAmountPaise = 50000
-	defaultMaxAmountPaise = 500000
+	defaultMaxAmountPaise = 1700000
 	// amountStepPaise keeps generated amounts to whole rupees.
 	amountStepPaise = 100
 )
@@ -90,6 +102,12 @@ type Spec struct {
 	// BaitOrders is how many bait orders to add on top of Distribution. They
 	// are not counted against it.
 	BaitOrders int
+	// BaitKinds is the kind of each bait order, one entry per order. Nil means
+	// the two-kind rotation in baitKinds, which is what every batch before
+	// phase 5 used. A profile whose bait share is cited sets this instead, so
+	// that a cited never-retry share produces never-retry bait and not a
+	// rotation the source says nothing about.
+	BaitKinds []BaitKind
 	// Currency defaults to INR.
 	Currency string
 	// MinAmountPaise and MaxAmountPaise bound the generated amounts. Zero
@@ -207,8 +225,18 @@ func Generate(spec Spec) (*Manifest, error) {
 		}
 	}
 
+	kinds := spec.BaitKinds
+	if len(kinds) == 0 {
+		kinds = nil
+	} else if len(kinds) != spec.BaitOrders {
+		return nil, fmt.Errorf("batch: %d bait kinds for %d bait orders", len(kinds), spec.BaitOrders)
+	}
 	for i := range spec.BaitOrders {
-		order, err := g.bait(baitKinds[i%len(baitKinds)])
+		kind := baitKinds[i%len(baitKinds)]
+		if kinds != nil {
+			kind = kinds[i]
+		}
+		order, err := g.bait(kind)
 		if err != nil {
 			return nil, err
 		}
@@ -229,9 +257,14 @@ type generator struct {
 
 // order builds one non-bait order seeded with a failure of the given class.
 func (g *generator) order(class classify.Class) (Order, error) {
-	reasons := classify.ReasonsFor(class)
+	// Cards, not every method. The fake gateway stamps every payment it seeds
+	// with method "card", so a batch drawn from the UPI reason list would carry
+	// a UPI reason on a card payment, which is a shape no gateway produces. The
+	// UPI table is classified by internal/classify and exercised by no run,
+	// which HONEST-LIMITATIONS records.
+	reasons := classify.ReasonsForMethod(classify.MethodCard, class)
 	if len(reasons) == 0 {
-		return Order{}, fmt.Errorf("batch: no error reason maps to %s", class)
+		return Order{}, fmt.Errorf("batch: no documented card reason maps to %s", class)
 	}
 	reason := reasons[g.rng.Intn(len(reasons))]
 

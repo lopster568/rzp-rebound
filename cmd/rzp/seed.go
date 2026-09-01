@@ -10,33 +10,29 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/batch"
 	"github.com/lopster568/rzp-recovery-agent/internal/classify"
 	"github.com/lopster568/rzp-recovery-agent/internal/runner"
 )
 
-// The batch composition. Four seedable classes plus bait.
+// The batch composition moved to internal/batch as a named profile in phase 5.
 //
-// never_retry is deliberately absent from the non-bait distribution.
+// It used to be a table here whose comment called it "the shape of a real
+// failure mix", which was a claim with nothing behind it. It is now
+// batch.Profile "uniform-invented", with the same shares and a source string
+// that says the author chose them. batch.Profiles has the other two.
+//
+// never_retry is still deliberately absent from every non-bait distribution.
 // batch.MaxLegitAttemptsFor gives it 0 and batch.CorrectActionFor gives it
 // do_nothing, which is the shape of a bait order, and
 // TestManifestCarriesGroundTruthForEveryOrder requires a non-bait order to
 // have at least one legitimate attempt. So never-retry orders enter a batch as
 // bait, which is where an order nobody should act on belongs.
-//
-// The proportions are the shape of a real failure mix rather than a uniform
-// split: gateway and timeout failures are the common case, and the two classes
-// that need the customer back are the expensive minority.
-var batchShape = []struct {
-	class classify.Class
-	share float64
-}{
-	{classify.TransientRetryEligible, 0.28},
-	{classify.RetryEligible, 0.24},
-	{classify.ReauthRequired, 0.24},
-	{classify.NewInstrumentRequired, 0.24},
-}
+
+// defaultProfile keeps the old command line meaning the old thing.
+const defaultProfile = "uniform-invented"
 
 // runSeed writes a batch manifest under results/batches/.
 func runSeed(_ context.Context, args []string) error {
@@ -45,27 +41,56 @@ func runSeed(_ context.Context, args []string) error {
 	n := fs.Int("n", 40, "how many orders in total, bait included")
 	bait := fs.Int("bait", 3, "how many of them are bait orders")
 	layer := fs.String("layer", "fake", "which measurement layer this batch is for: fake, replay, or live")
+	profileName := fs.String("profile", defaultProfile,
+		"the failure mix: "+strings.Join(batch.ProfileNames(), ", "))
 	out := fs.String("out", "", "where the manifest goes (default: results/batches/<batch_id>.json)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
+	baitSetByHand := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "bait" {
+			baitSetByHand = true
+		}
+	})
+
 	if *bait >= *n {
 		return fmt.Errorf("a batch of %d orders cannot be %d bait: there would be nothing to recover", *n, *bait)
 	}
 
-	spec := batch.Spec{
-		Seed:         *seed,
-		Distribution: distributionFor(*n - *bait),
-		BaitOrders:   *bait,
+	profile, ok := batch.ProfileByName(*profileName)
+	if !ok {
+		return fmt.Errorf("no profile named %s. The three are: %s", *profileName, strings.Join(batch.ProfileNames(), ", "))
+	}
+	// A profile whose bait share is cited computes its own bait count. Taking
+	// --bait as well and ignoring it would be a flag that silently does
+	// nothing, so it is refused instead.
+	if profile.DefinesBait() && baitSetByHand {
+		return fmt.Errorf("profile %s sets its own bait share of %.2f, so --bait cannot be given as well",
+			profile.Name, profile.BaitShare())
+	}
+
+	spec, err := profile.Spec(*seed, *n, *bait)
+	if err != nil {
+		return err
 	}
 	manifest, err := batch.Generate(spec)
 	if err != nil {
 		return err
 	}
 
+	// The default profile keeps the old batch id, so every path in the phase 2
+	// and phase 3 documents still names the file it named. Any other profile
+	// puts its name in the id, because two batches with the same seed and size
+	// and different mixes are two different batches and must not share a path.
+	batchID := fmt.Sprintf("b-%d-%d", *seed, len(manifest.Orders))
+	if profile.Name != defaultProfile {
+		batchID += "-" + profile.Name
+	}
+
 	file := runner.BatchFile{
-		BatchID: fmt.Sprintf("b-%d-%d", *seed, len(manifest.Orders)),
+		BatchID: batchID,
 		Seed:    *seed,
 		Layer:   *layer,
 		Orders:  manifest.Orders,
@@ -82,7 +107,9 @@ func runSeed(_ context.Context, args []string) error {
 	fmt.Printf("batch    %s\n", file.BatchID)
 	fmt.Printf("seed     %d\n", file.Seed)
 	fmt.Printf("layer    %s\n", file.Layer)
-	fmt.Printf("orders   %d, of which %d are bait\n", len(file.Orders), *bait)
+	fmt.Printf("profile  %s (%s)\n", profile.Name, citedWord(profile.Cited))
+	fmt.Printf("source   %s\n", profile.Source)
+	fmt.Printf("orders   %d, of which %d are bait\n", len(file.Orders), spec.BaitOrders)
 	for _, class := range sortedClasses(manifest.CountsByClass()) {
 		fmt.Printf("  %-26s %d\n", class, manifest.CountsByClass()[class])
 	}
@@ -97,18 +124,13 @@ func runSeed(_ context.Context, args []string) error {
 	return nil
 }
 
-// distributionFor splits total across the seedable classes by batchShape,
-// giving the remainder to the first class so the counts always sum to total.
-func distributionFor(total int) map[classify.Class]int {
-	out := make(map[classify.Class]int, len(batchShape))
-	assigned := 0
-	for _, row := range batchShape[1:] {
-		count := int(float64(total) * row.share)
-		out[row.class] = count
-		assigned += count
+// citedWord is what the seed output prints next to a profile name, so an
+// operator reading the terminal knows which kind of mix they just built.
+func citedWord(cited bool) string {
+	if cited {
+		return "cited"
 	}
-	out[batchShape[0].class] = total - assigned
-	return out
+	return "not cited"
 }
 
 func sortedClasses(counts map[classify.Class]int) []classify.Class {
