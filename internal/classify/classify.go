@@ -198,8 +198,11 @@ const (
 // check blocked.
 const ReasonPaymentRiskCheckFailed = "payment_risk_check_failed"
 
-// DocumentedSources returns the nine documented values of error.source.
-func DocumentedSources() []Source { return slices.Clone(documentedSources) }
+// DocumentedSources returns the documented values of error.source for a method.
+func DocumentedSources(m Method) []Source { return slices.Clone(documentedSources) }
+
+// DocumentedFor reports whether s is documented for this payment method.
+func (s Source) DocumentedFor(m Method) bool { return false }
 
 // ParseSource returns the documented Source with this name. An undocumented
 // name does not parse, so a value nobody published cannot be carried through

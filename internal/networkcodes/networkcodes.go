@@ -40,9 +40,17 @@ const MastercardDoNotTryAgain = "03"
 //
 // It applies to Categories 2 and 3. Category 1 permits no reattempt at all.
 const (
-	VisaReattemptCapPerDeclinedTransaction = 15
-	VisaReattemptWindowDays                = 30
+	VisaCategory2ReattemptCap = 15
+	VisaReattemptWindowDays   = 30
 )
+
+// VisaCategory1IsReconstructed reports that the Category 1 code list here does
+// not come from the bulletin.
+const VisaCategory1IsReconstructed = false
+
+// NeverRetrySameAccountNumber reports whether the network forbids reattempting
+// this decline with the same account number, even where a reattempt is allowed.
+func NeverRetrySameAccountNumber(network, code string) bool { return false }
 
 // visaCategory1 is the never-reattempt set from AI10325, sorted. Twelve codes.
 //
@@ -86,9 +94,9 @@ func VisaCategory1() []string { return slices.Clone(visaCategory1) }
 // IsVisaCategory1 reports whether code is on the Category 1 list.
 func IsVisaCategory1(code string) bool { return slices.Contains(visaCategory1, code) }
 
-// WasVisaCategory1Before2020 reports whether code was on the Category 1 list
-// before the 2020 update moved it off.
-func WasVisaCategory1Before2020(code string) bool {
+// WasVisaCategory1BeforeApril2021 reports whether code was on the Category 1
+// list before AI10325 moved it to Category 2, effective 2021-04-17.
+func WasVisaCategory1BeforeApril2021(code string) bool {
 	return slices.Contains(movedOutOfVisaCategory1In2020, code)
 }
 

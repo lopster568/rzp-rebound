@@ -216,22 +216,41 @@ func TestAmbiguousReasonAcrossMethodsIsUnclassified(t *testing.T) {
 	}
 }
 
-func TestDocumentedErrorSourcesAreTheNinePublishedValues(t *testing.T) {
-	want := []string{
+// TestDocumentedErrorSourcesArePerMethod pins a correction. This project first
+// modelled error.source as one flat nine-value enumeration, and Razorpay
+// documents it per payment method: five values for cards, eight for UPI, and
+// "issuer" is not one of them. A first-hand re-read of the documentation on
+// 2026-09-01 found it.
+func TestDocumentedErrorSourcesArePerMethod(t *testing.T) {
+	card := []string{"business", "customer", "gateway", "internal", "issuer_bank"}
+	upi := []string{
 		"beneficiary_bank", "business", "customer", "customer_psp", "gateway",
-		"internal", "issuer", "issuer_bank", "network",
+		"internal", "issuer_bank", "network",
 	}
 
-	var got []string
-	for _, s := range classify.DocumentedSources() {
-		got = append(got, string(s))
+	for _, tc := range []struct {
+		method classify.Method
+		want   []string
+	}{
+		{classify.MethodCard, card},
+		{classify.MethodUPI, upi},
+		// No method means the union, which is the UPI list because it is a
+		// superset of the card one.
+		{classify.MethodAny, upi},
+	} {
+		t.Run(string(tc.method)+"_method", func(t *testing.T) {
+			var got []string
+			for _, s := range classify.DocumentedSources(tc.method) {
+				got = append(got, string(s))
+			}
+			slices.Sort(got)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("DocumentedSources(%q) = %v, want %v", tc.method, got, tc.want)
+			}
+		})
 	}
-	slices.Sort(got)
 
-	if !slices.Equal(got, want) {
-		t.Errorf("DocumentedSources() = %v, want %v", got, want)
-	}
-	for _, name := range want {
+	for _, name := range upi {
 		source, ok := classify.ParseSource(name)
 		if !ok {
 			t.Errorf("ParseSource(%q) failed, and it is on the documented list", name)
@@ -240,16 +259,64 @@ func TestDocumentedErrorSourcesAreTheNinePublishedValues(t *testing.T) {
 			t.Errorf("%q parsed and then reported itself undocumented", name)
 		}
 	}
+
+	// The three UPI-only values are not documented for cards, and a Source has
+	// to be able to say so, because a card payment carrying customer_psp would
+	// be a shape the documentation does not describe.
+	for _, name := range []string{"beneficiary_bank", "customer_psp", "network"} {
+		if classify.Source(name).DocumentedFor(classify.MethodCard) {
+			t.Errorf("%q reports itself documented for cards, and it is on the UPI list only", name)
+		}
+		if !classify.Source(name).DocumentedFor(classify.MethodUPI) {
+			t.Errorf("%q is not documented for UPI, and it is on that list", name)
+		}
+	}
 }
 
 func TestUndocumentedErrorSourceDoesNotParse(t *testing.T) {
-	for _, name := range []string{"", "bank", "Customer", "issuer_bank ", "acquirer"} {
+	// "issuer" is here on purpose. It was in this project's first, wrong,
+	// flat enumeration and it is on neither documented list.
+	for _, name := range []string{"", "bank", "Customer", "issuer_bank ", "acquirer", "issuer"} {
 		if source, ok := classify.ParseSource(name); ok {
-			t.Errorf("ParseSource(%q) returned %v, and it is not one of the nine documented values", name, source)
+			t.Errorf("ParseSource(%q) returned %v, and it is on neither documented list", name, source)
 		}
 	}
 	if classify.Source("acquirer").Documented() {
 		t.Error("an undocumented source reported itself documented")
+	}
+}
+
+// TestPaymentFailedIsDocumentedAndStillUnclassified is the second correction
+// from the 2026-09-01 re-read, and it is the uncomfortable one.
+//
+// payment_failed is not an undocumented string this project stumbled on in test
+// mode. Razorpay documents it as a live-mode card reason: the bank declined the
+// payment without giving a specific reason. Its suggested action is to contact
+// the bank or try a different card.
+//
+// The classification does not change, and the reason it does not is worth
+// stating. The suggested action rules out a same-instrument retry, which is
+// exactly what unclassified already delivers through R7-UNKNOWN-FAIL-CLOSED. It
+// is not promoted to new_instrument_required, because a support instruction
+// written for a human reading one order is not a class: acting on it would mean
+// messaging every customer whose payment failed for a reason the bank did not
+// give, which is the over-messaging R4 and R7 exist to prevent. DECISIONS.md
+// entry 11 has the argument.
+func TestPaymentFailedIsDocumentedAndStillUnclassified(t *testing.T) {
+	got := classify.Classify(classify.Failure{Method: classify.MethodCard, Reason: razorpay.ReasonPaymentFailed})
+
+	if got != classify.Unclassified {
+		t.Errorf("%s classified as %v, want unclassified", razorpay.ReasonPaymentFailed, got)
+	}
+	if got.IsRetryEligible() {
+		t.Errorf("%s is retry eligible, and the documented suggested action is to try a different card",
+			razorpay.ReasonPaymentFailed)
+	}
+	// It is documented, so it must not be in the documented reason table, and
+	// the file has to record both facts. The table is the classifier's, and a
+	// reason with no class does not belong in it.
+	if _, ok := classify.DocumentedReasons(classify.MethodCard)[razorpay.ReasonPaymentFailed]; ok {
+		t.Errorf("%s is in the classifier's card table, and it has no class", razorpay.ReasonPaymentFailed)
 	}
 }
 

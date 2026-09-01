@@ -53,10 +53,10 @@ func TestAmountCeilingDefaultIsTheRBIEMandateThreshold(t *testing.T) {
 // under the Visa 15-in-30 cap, and that sentence is only true while the
 // constant is at or under the cap.
 func TestMaxAttemptsSitsUnderTheVisaReattemptCap(t *testing.T) {
-	if policy.DefaultMaxAttemptsPerOrder > networkcodes.VisaReattemptCapPerDeclinedTransaction {
-		t.Errorf("DefaultMaxAttemptsPerOrder = %d, above the published Visa cap of %d per %d rolling days",
+	if policy.DefaultMaxAttemptsPerOrder > networkcodes.VisaCategory2ReattemptCap {
+		t.Errorf("DefaultMaxAttemptsPerOrder = %d, above the published Visa Category 2 cap of %d per %d rolling days",
 			policy.DefaultMaxAttemptsPerOrder,
-			networkcodes.VisaReattemptCapPerDeclinedTransaction,
+			networkcodes.VisaCategory2ReattemptCap,
 			networkcodes.VisaReattemptWindowDays)
 	}
 	if policy.DefaultMaxAttemptsPerOrder != 3 {
