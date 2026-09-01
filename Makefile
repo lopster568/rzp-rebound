@@ -1,8 +1,8 @@
 .DEFAULT_GOAL := help
 .PHONY: help hooks preflight test test-go test-race test-python test-integration lint \
-	docs-check ci verify-phase-0 verify-offline verify-live verify-phase-2 \
-	verify-phase-3 jaeger-up jaeger-down seed run-arm run-all report auth-probe \
-	capture demo agent-smoke trace-links
+	docs-check claims-check ci verify-phase-0 verify-offline verify-live verify-phase-2 \
+	verify-phase-3 verify-phase-4 jaeger-up jaeger-down seed run-arm run-all report \
+	auth-probe capture demo agent-smoke trace-links
 
 # Live targets read .env so a run does not depend on the caller having
 # exported the key pair by hand. .env is gitignored and chmod 600, and nothing
@@ -48,7 +48,10 @@ lint: ## gofmt and go vet, including the integration-tagged files
 docs-check: ## Run the prose gate over every tracked .md and .txt
 	@bash scripts/check-docs.sh
 
-ci: lint test docs-check ## What CI runs
+claims-check: ## Check every published number against the committed run behind it
+	@bash scripts/claims-check.sh
+
+ci: lint test docs-check claims-check ## What CI runs
 
 jaeger-up: ## Start Jaeger and wait for its query API
 	@bash scripts/jaeger-up.sh
@@ -134,3 +137,12 @@ verify-phase-3: ## Phase 3 gate: suite, seed 40, four arms with a2 capped, repor
 		--arms a0-control,a1-naive,a2-agent,a3-rules \
 		--max-invocations $(VERIFY3_INVOCATIONS) --run-id verify-phase-3
 	@bash scripts/report.sh --run-dir $(VERIFY3_RUN)
+
+# The phase 4 gate. Phase 4 produces no run, so this one drives no arm: the
+# gates that do are verify-phase-2 and verify-phase-3, and driving forty
+# headless invocations to publish a document would spend a subscription on a
+# proofreading step. What it gates instead is the published prose against the
+# runs already committed, which is the failure this phase exists to prevent.
+verify-phase-4: ## Phase 4 gate: the suite, then every published number against its run
+	@env -u RAZORPAY_KEY_ID -u RAZORPAY_KEY_SECRET $(MAKE) --no-print-directory lint test docs-check
+	@bash scripts/claims-check.sh

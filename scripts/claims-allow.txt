@@ -1,0 +1,19 @@
+# Numbers a published document is allowed to carry that are not run output.
+# One per line: the number, then the reason it is not in results/. Checked by
+# scripts/claims_check.py, which refuses a line carrying no reason.
+#
+# Rule for adding a line: the number has to be a setting, a protocol constant,
+# or a piece of documented history with its source named in the reason. A
+# result does not go here. If a number came out of a run then the run belongs
+# in results/ and the number belongs in the fact set.
+
+1.25    the Go language version declared in go.mod and asked of actions/setup-go
+429     the HTTP status the client backs off on, internal/razorpay/client.go
+401     the status a wrong secret produces, observed 2026-08-31, RAZORPAY-TEST-MODE-NOTES
+8080    the seed for the live batch b-8080-8, recorded in that run's manifest
+32      eight live manifest orders times four arms, the test-mode orders one live run creates
+576     cells in internal/policy/testdata/policy_matrix.golden
+400000  the amount ceiling in paise before 2026-08-31, phase 2 DECISIONS.md records the change
+30.009  seconds for the rate-limit probe on 2026-08-31, RAZORPAY-TEST-MODE-NOTES
+1.3     calls per second in that same probe
+100     the approximate count of further live calls that day, written as approximate at both sites
