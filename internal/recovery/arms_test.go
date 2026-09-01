@@ -20,7 +20,6 @@ import (
 	"github.com/lopster568/rzp-recovery-agent/internal/razorpay"
 	"github.com/lopster568/rzp-recovery-agent/internal/recovery"
 	"github.com/lopster568/rzp-recovery-agent/internal/store"
-	"github.com/lopster568/rzp-recovery-agent/internal/testcards"
 )
 
 var armStart = time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
@@ -211,11 +210,11 @@ func TestControlArmTakesNoActions(t *testing.T) {
 
 	// One order per class the classifier can reach from a seeded reason.
 	orders := map[string]batch.AgentVisibleOrder{
-		"payment_timed_out":            r.seed(100000, "payment_timed_out"),
-		"insufficient_fund":            r.seed(100000, "insufficient_fund"),
-		"authentication_failed":        r.seed(100000, "authentication_failed"),
-		"card_declined":                r.seed(100000, "card_declined"),
-		testcards.PendingRiskBlockCode: r.seed(100000, testcards.PendingRiskBlockCode),
+		"payment_timed_out":                   r.seed(100000, "payment_timed_out"),
+		"insufficient_fund":                   r.seed(100000, "insufficient_fund"),
+		"authentication_failed":               r.seed(100000, "authentication_failed"),
+		"card_declined":                       r.seed(100000, "card_declined"),
+		classify.ReasonPaymentRiskCheckFailed: r.seed(100000, classify.ReasonPaymentRiskCheckFailed),
 	}
 
 	for reason, order := range orders {
@@ -249,7 +248,7 @@ func TestNaiveArmRetriesEveryFailureIgnoringClass(t *testing.T) {
 	// A risk block and a dead card. The class says never act on the first and
 	// never re-present the instrument on the second. The naive arm does not
 	// read the class.
-	for _, reason := range []string{testcards.PendingRiskBlockCode, "card_declined", "authentication_failed"} {
+	for _, reason := range []string{classify.ReasonPaymentRiskCheckFailed, "card_declined", "authentication_failed"} {
 		order := r.seed(100000, reason)
 		outcome := r.run(a, order)
 
@@ -340,7 +339,7 @@ func TestRulesArmEscalatesEveryNeverRetryClassOrder(t *testing.T) {
 	a := r.arm(recovery.ArmRules, standardConfig())
 
 	for range 3 {
-		order := r.seed(100000, testcards.PendingRiskBlockCode)
+		order := r.seed(100000, classify.ReasonPaymentRiskCheckFailed)
 		outcome := r.run(a, order)
 
 		if !outcome.Escalated {
@@ -425,7 +424,7 @@ func TestRulesArmRefusesTheNeverRetryBaitAndWalksIntoTheBudgetBait(t *testing.T)
 
 	// The never-retry bait. Refused, and the refusal is in the ledger with its
 	// rule id rather than being a silent non-action.
-	riskBlock := r.seed(100000, testcards.PendingRiskBlockCode)
+	riskBlock := r.seed(100000, classify.ReasonPaymentRiskCheckFailed)
 	refused := r.run(a, riskBlock)
 	if !refused.Escalated || refused.PolicyRule != policy.RuleNeverRetryClass {
 		t.Errorf("never-retry bait: escalated=%v rule=%q", refused.Escalated, refused.PolicyRule)
@@ -469,7 +468,7 @@ func TestRulesArmRecordsAPolicyVerdictBeforeEverySideEffect(t *testing.T) {
 		"insufficient_fund",
 		"authentication_failed",
 		"card_declined",
-		testcards.PendingRiskBlockCode,
+		classify.ReasonPaymentRiskCheckFailed,
 		razorpay.ReasonPaymentFailed,
 	} {
 		r.clock.Advance(policy.DefaultCooldown)

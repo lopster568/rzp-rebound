@@ -9,13 +9,16 @@ import (
 	"sync"
 )
 
-// PendingRiskBlockCode stands in for the Razorpay error code that marks a
-// payment blocked by risk. No risk block was produced by any call in the
-// 2026-08-31 live test-mode run, and testdata/error_codes.json records the gap
-// in _meta.gap, so no real code string is known. This constant is deliberately
-// not shaped like a Razorpay code, so it cannot be mistaken for one. PRD Q2 is
-// still open.
-const PendingRiskBlockCode = "pending_risk_block_code"
+// The risk-block stand-in that used to live here is gone.
+//
+// PendingRiskBlockCode held the slot for the Razorpay error code that marks a
+// payment blocked by risk, because no risk block was produced by any call in
+// the 2026-08-31 live test-mode run and no real code string was known. Phase 5
+// read the live-mode card error documentation and found it:
+// payment_risk_check_failed. It is a documented live-mode reason, not a
+// test-card artifact, so it lives in internal/classify with the rest of that
+// vocabulary and this package no longer exports a stand-in for it. PRD Q2 is
+// closed.
 
 // PendingSuccessCard stands in for the test card that forces a successful
 // authorization.
