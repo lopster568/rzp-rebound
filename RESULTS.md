@@ -60,14 +60,16 @@ Batch `b-1234-40`, seed 1234: 13 transient, 8 retry-eligible, 8 reauth, 8
 new-instrument, and 3 bait. Run `phase-3-fake`, cell order shuffled with seed
 42. Both the batch and the run are committed.
 
-| arm | recovered | rate | actions | FA-1 | FA-2 | modelled cost | escalations | precision | recall | evaluations | refusals | violations succeeded | gateway calls |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `a0-control` | 0 | 0.000 | 0 | 0 | 0 | 0 | 0 | n/a | 0.000 | 0 | 0 | 0 | 360 |
-| `a1-naive` | 21 | 0.568 | 40 | 3 | 16 | 18200 | 0 | n/a | 0.000 | 0 | 0 | **40** | 400 |
-| `a2-agent` | 18 | 0.486 | 31 | 1 | 0 | 5000 | 9 | 0.222 | 0.667 | 59 | **16** | **0** | 380 |
-| `a3-rules` | 18 | 0.486 | 31 | 1 | 0 | 5000 | 9 | 0.222 | 0.667 | 40 | 9 | **0** | 403 |
+| layer | arm | recovered | rate | actions | FA-1 | FA-2 | modelled cost | escalations | precision | recall | evaluations | refusals | violations succeeded | gateway calls |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| fake | `a0-control` | 0 | 0.000 | 0 | 0 | 0 | 0 | 0 | n/a | 0.000 | 0 | 0 | 0 | 360 |
+| fake | `a1-naive` | 21 | 0.568 | 40 | 3 | 16 | 18200 | 0 | n/a | 0.000 | 0 | 0 | **40** | 400 |
+| fake | `a2-agent` | 18 | 0.486 | 31 | 1 | 0 | 5000 | 9 | 0.222 | 0.667 | 59 | **16** | **0** | 380 |
+| fake | `a3-rules` | 18 | 0.486 | 31 | 1 | 0 | 5000 | 9 | 0.222 | 0.667 | 40 | 9 | **0** | 403 |
 
-Layer: synthetic (`fake`). Not evidence about Razorpay.
+The layer column is on the row so it travels with the number. `fake` is a model
+of documented behaviour and evidence about this code only. Not evidence about
+Razorpay.
 
 Cost, `a2-agent` only. The three deterministic arms make no model invocation.
 
@@ -139,8 +141,11 @@ The PRD says: if the naive-retry arm recovers as much with equal or fewer false
 actions, the agent adds nothing and the report says so.
 
 It does not fire. `a1-naive` recovers more, 21 against 18, and pays 19 false
-actions against 1 to do it, and reaches the gateway 40 times with no policy
-verdict behind any of them.
+actions against 1 to do it. Its `policy_violations_succeeded` is 40: every one
+of its 40 actions reached the gateway with no policy verdict behind it, which
+is the column the two gated arms read 0 on. Three recoveries bought with 18
+extra false actions and no verdict on any action taken is the trade, and the
+clause the PRD wrote asks for equal or fewer false actions.
 
 The clause the PRD does not have is the one this table calls for: **on this
 batch, `a2-agent` adds nothing over `a3-rules` that the table can see.** It
@@ -187,14 +192,14 @@ Batch `b-8080-8`, seed 8080: 3 transient, 1 retry-eligible, 1 reauth, 1
 new-instrument, 2 bait. Run `phase-3-live` on 2026-09-01, concurrency 2, 429
 backoff on. 32 real test-mode orders were created, 8 per arm.
 
-| arm | scorable | unscorable | recovered | rate | actions | FA-1 | FA-2 | escalations | precision | recall | class acc | evaluations | refusals | violations succeeded | gateway calls |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `a0-control` | 8 | 0 | 0 | 0.000 | 0 | 0 | 0 | 0 | n/a | 0.000 | **0.000** | 0 | 0 | 0 | 24 |
-| `a1-naive` | 8 | 0 | 4 | 0.667 | 8 | 2 | 2 | 0 | n/a | 0.000 | **0.000** | 0 | 0 | **8** | 56 |
-| `a2-agent` | 7 | **1** | 0 | **0.000** | 0 | 0 | 0 | 7 | 0.286 | **1.000** | **0.000** | 8 | 8 | **0** | 49 |
-| `a3-rules` | 8 | 0 | 0 | **0.000** | 0 | 0 | 0 | 8 | 0.250 | **1.000** | **0.000** | 8 | 8 | **0** | 24 |
+| layer | arm | scorable | unscorable | recovered | rate | actions | FA-1 | FA-2 | escalations | precision | recall | class acc | evaluations | refusals | violations succeeded | gateway calls |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| live | `a0-control` | 8 | 0 | 0 | 0.000 | 0 | 0 | 0 | 0 | n/a | 0.000 | **0.000** | 0 | 0 | 0 | 24 |
+| live | `a1-naive` | 8 | 0 | 4 | 0.667 | 8 | 2 | 2 | 0 | n/a | 0.000 | **0.000** | 0 | 0 | **8** | 56 |
+| live | `a2-agent` | 7 | **1** | 0 | **0.000** | 0 | 0 | 0 | 7 | 0.286 | **1.000** | **0.000** | 8 | 8 | **0** | 49 |
+| live | `a3-rules` | 8 | 0 | 0 | **0.000** | 0 | 0 | 0 | 8 | 0.250 | **1.000** | **0.000** | 8 | 8 | **0** | 24 |
 
-Layer: Razorpay **test mode**. Not evidence about real customers, and not
+`live` is Razorpay **test mode**. Not evidence about real customers, and not
 evidence that a recovery decision caused a recovery. See below.
 
 Cost, `a2-agent` only:
@@ -285,50 +290,21 @@ layer.
 
 ## Honest limitations
 
-1. **The highest reachable recovery rate on the fake batch is 0.568, not 1.0.**
-   All 37 non-bait orders are marked ground-truth recoverable, and only the 21
-   retry-class ones can reach `paid` in a run. The correct action for the other
-   16 is to raise a payment link, this project observes an API call and never a
-   person, and nothing here can model a customer coming back. The denominator
-   was not narrowed to hide that; the ceiling is stated instead.
-2. **Classification accuracy carries no information on the fake layer.** The
-   fake seeds the reason and the classifier reads it, so it is 1.000 for every
-   arm. The number that matters is the live 0.000.
-3. **`policy_violations_attempted` is 0 for all four arms.** See above and
-   phase 3 `DECISIONS.md` 8. `refusals` is the column that moved.
-4. **One run per layer, and the agent arm is not deterministic.** The other
-   three reproduce from a seed. `a2-agent` does not, and it was sampled once
-   per order with no repeats, so there is no spread. A second run could land
-   somewhere else and nothing here would know. That is the phase 3 limitation
-   the PRD risk table names, and repeats are the honest fix.
-5. **The modelled false-action cost is invented.** 200 paise and 5000 paise,
-   chosen so FA-1 and FA-2 sit on one scale. Do not quote it as a figure
-   Razorpay would recognise.
-6. **The arms ran sequentially, not interleaved.** The seed shuffles order
-   position within an arm. It does not remove the between-arm time confound.
-   `docs/EVAL-DESIGN.md` section 4 has the trade.
-7. **The amount ceiling moved once, after a run.** It was 400000 paise and is
-   450000, because at 400000 it escalated a quarter of the batch on amount
-   alone. The change is recorded in the phase 2 `DECISIONS.md` with the number
-   it was before, because a threshold moved after seeing a result has to be
-   disclosed.
-8. **The run exercises 4 of the 9 policy rules, and 0 of the 3 middleware
-   rules.** The fake run's evaluations carry `R0-DEFAULT-ALLOW`,
-   `R3-AMOUNT-CEILING`, and `R4-NEVER-RETRY-CLASS` and nothing else, and the
-   agent tripped none of `M1-TOOL-ALLOWLIST`, `M2-ORDER-ALLOWLIST`, or
-   `M3-DECISION-REQUIRED`: it followed the procedure every time. Those three
-   are covered by unit tests and by a deliberate drive, not by these tables. An
-   agent that never names an order it was not given is a good result and it is
-   not evidence that the allowlist works, which is what the test is for.
-9. **`do_nothing` as a recorded decision would score as neither.** An arm that
-   decides `do_nothing` and calls no action tool takes no action and makes no
-   escalation, so it earns no escalation credit for a bait order it handled
-   correctly. The charter asks for `escalate_to_human` instead and every
-   non-action in this run was an escalation, so the case did not arise. It is
-   an asymmetry in the scoring, not in the arm.
-10. **The naive arm's attempt cap never engages.** One action per order, and
-    nothing arrives with 3 prior attempts. It is a safety bound, not a shaper
-    of these numbers.
+All of them are in `/HONEST-LIMITATIONS.md`, which is the one home for them so
+two files cannot drift apart. Three bear directly on the tables above and are
+worth carrying here:
+
+- **The highest reachable recovery rate on the fake batch is 0.568, not 1.0.**
+  All 37 non-bait orders are ground-truth recoverable and only the 21
+  retry-class ones can reach `paid` in a run, because the correct action for
+  the other 16 is a payment link and nothing here models a customer coming
+  back. The denominator was not narrowed to hide that.
+- **Classification accuracy carries no information on the fake layer.** The
+  fake seeds the reason and the classifier reads it, so it is 1.000 for every
+  arm. The number that carries information is the live 0.000.
+- **One run per layer, and `a2-agent` is not deterministic.** Sampled once per
+  order with no repeats, so there is no spread and a second run could land
+  somewhere else.
 
 ## Reproducing the fake-layer table
 
