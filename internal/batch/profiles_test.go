@@ -79,13 +79,13 @@ func TestUniformInventedProfileKeepsTheSharesItAlwaysHad(t *testing.T) {
 // residual across the other classes and marked uncited, rather than being
 // folded into one of the three to make the arithmetic tidy.
 func TestEthocaProfileSharesMatchThePublishedFigures(t *testing.T) {
-	p := profile(t, "ethoca-card-mix-2019")
+	p := profile(t, "ethoca-card-mix-2017")
 
 	if !p.Cited {
-		t.Error("ethoca-card-mix-2019 does not report itself cited")
+		t.Error("ethoca-card-mix-2017 does not report itself cited")
 	}
-	if p.Vintage != "2019" {
-		t.Errorf("Vintage = %q, want 2019: the year is in the name because a 2019 mix is a 2019 mix", p.Vintage)
+	if p.Vintage != "2017" {
+		t.Errorf("Vintage = %q, want 2017: the source article is dated 2017-04-28, and this project recorded 2019 until a first-hand check corrected it", p.Vintage)
 	}
 	if !strings.Contains(p.Source, "ethoca.com") {
 		t.Errorf("Source = %q, and it does not name the publisher", p.Source)
@@ -133,10 +133,10 @@ func TestEthocaProfileSharesMatchThePublishedFigures(t *testing.T) {
 // act on, which is what this repository calls bait, and the source puts them at
 // 35 percent of card declines. That share is not the author's.
 func TestEthocaProfileBaitIsTheCitedNeverRetryShare(t *testing.T) {
-	p := profile(t, "ethoca-card-mix-2019")
+	p := profile(t, "ethoca-card-mix-2017")
 
 	if !p.DefinesBait() {
-		t.Fatal("ethoca-card-mix-2019 defines no bait share, and 35 percent of its cited mix is unactionable")
+		t.Fatal("ethoca-card-mix-2017 defines no bait share, and 35 percent of its cited mix is unactionable")
 	}
 	if math.Abs(p.BaitShare()-0.35) > 1e-9 {
 		t.Errorf("BaitShare() = %v, want 0.35 (lost or stolen 0.26 plus fraud 0.09)", p.BaitShare())

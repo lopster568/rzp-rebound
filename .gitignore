@@ -34,6 +34,11 @@ results/batches/*
 # can be read off one comparison rather than confounded with a reseed.
 !results/batches/b-5150-40.json
 !results/batches/b-5150-40-ethoca-card-mix-2019.json
+# The same batch under the profile's corrected vintage. Both are tracked and
+# scripts/verify-batches.sh proves they differ only in batch_id: the run
+# consumed the first, the profile is now named after the second, and the shares
+# never changed. Phase 5 PROBLEMS.md has why the run was not re-driven.
+!results/batches/b-5150-40-ethoca-card-mix-2017.json
 
 # make verify-phase-2 regenerates this pair on every run from the same seeded
 # batch as the committed sample, so tracking it would put two identical tables

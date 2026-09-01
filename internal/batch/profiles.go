@@ -75,9 +75,9 @@ var profiles = []Profile{
 		},
 	},
 	{
-		Name:    "ethoca-card-mix-2019",
-		Vintage: "2019",
-		Source:  "Mastercard/Ethoca published card-decline shares: insufficient funds 44 percent, lost or stolen 26 percent, fraud 9 percent, with codes 05 and 51 together about 80 percent of declines. https://www.ethoca.com/in-the-media/ Read 2026-09-01.",
+		Name:    "ethoca-card-mix-2017",
+		Vintage: "2017",
+		Source:  "Mastercard/Ethoca published card-decline shares: insufficient funds 44 percent, lost or stolen 26 percent, fraud 9 percent. https://www.ethoca.com/in-the-media/ article dated 2017-04-28, read 2026-09-01. The vintage was recorded as 2019 until a first-hand check of the article's date on 2026-09-01 corrected it. A widely quoted companion claim, that response codes 05 and 51 together are about 80 percent of declines, is not in this article and could not be verified anywhere, so it is not carried.",
 		Cited:   true,
 		shares: []ClassShare{
 			{

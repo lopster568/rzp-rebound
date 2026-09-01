@@ -412,7 +412,8 @@ func TestErrorCodeFileLabelsEveryEntry(t *testing.T) {
 	}
 	var f struct {
 		Meta struct {
-			Labels map[string]string `json:"labels"`
+			Labels  map[string]string `json:"labels"`
+			Pending []string          `json:"pending"`
 		} `json:"_meta"`
 		Codes []struct {
 			Code   string `json:"code"`
@@ -446,6 +447,17 @@ func TestErrorCodeFileLabelsEveryEntry(t *testing.T) {
 		}
 		documentedLive++
 		if entry.Kind != "reason" {
+			continue
+		}
+		// A pending row is a documented string with no class, which is what
+		// _meta.pending means and what _meta.pending_reason explains. There is
+		// exactly one, payment_failed, and it is documented live-mode
+		// vocabulary that this classifier deliberately leaves unclassified.
+		if slices.Contains(f.Meta.Pending, entry.Code) {
+			if _, ok := classify.DocumentedReasons(classify.Method(entry.Method))[entry.Code]; ok {
+				t.Errorf("%s is listed in _meta.pending and is in the classifier's table for %q",
+					entry.Code, entry.Method)
+			}
 			continue
 		}
 		// A row claiming to be documented live-mode vocabulary has to be in the

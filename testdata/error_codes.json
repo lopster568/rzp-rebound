@@ -3,7 +3,7 @@
     "source": "Razorpay's live-mode payment error documentation, read 2026-09-01, plus the test-card page read 2026-08-31 and this project's own observations.",
     "documented_date": "2026-09-01",
     "labels": {
-      "documented-live": "A string Razorpay publishes as live-mode vocabulary. Cited by the source field on the row.",
+      "documented-live": "A string Razorpay publishes as live-mode vocabulary. Cited by the source field on the row. A row can be documented-live and still carry no class: payment_failed is both.",
       "documented-test-mode": "A string the Razorpay test-card page carries. It may or may not be live-mode vocabulary, and where it differs from the live spelling the row says so.",
       "observed-test-mode": "A string this project observed coming back from Razorpay test mode and which appears on no documentation page."
     },
@@ -12,7 +12,7 @@
       "error_class": "a top-level Razorpay error class returned in error.code"
     },
     "method_values": "card or upi for a reason, empty for an error class. Razorpay documents its failure reasons per method and the two lists are not the same list.",
-    "error_source": "The nine documented values of error.source are in internal/classify as the Source type, sourced from https://razorpay.com/docs/payments/payment-gateway/rainy-day/errors/payment-error-parameters/. error.step has no published enumeration on the same page and stays a free string.",
+    "error_source": "error.source is documented PER METHOD, not as one flat list: five values for cards (customer, business, internal, gateway, issuer_bank) and eight for UPI (those plus customer_psp, network, beneficiary_bank). Source: https://razorpay.com/docs/payments/payment-gateway/rainy-day/errors/payment-error-parameters/, read 2026-09-01. internal/classify carries both lists as the Source type. This project first modelled it as one flat nine-value list including 'issuer', which is on neither. error.step has no published enumeration on the same page and stays a free string.",
     "network_codes": "The Visa Category 1 and Mastercard merchant advice code lists are in internal/networkcodes, not here. They are card-network rules with their own sources, and they are not Razorpay vocabulary.",
     "read_by": "TestClassifierIsTotalOverKnownRazorpayErrorCodes asserts the classifier returns a class for every code listed here and never panics. TestErrorCodeFileLabelsEveryEntry asserts every row carries a label from _meta.labels and a source, and that a documented-live reason is in the classifier's table for the method it names.",
     "live_observation_2026_08_31": "Every one of the eight documented test cards, driven through the only mechanism that makes a test-mode payment attempt happen, came back with error.reason payment_failed and error.code BAD_REQUEST_ERROR. Not one documented reason string was produced. docs/RAZORPAY-TEST-MODE-NOTES.md has the walk.",
@@ -20,7 +20,7 @@
     "pending": [
       "payment_failed"
     ],
-    "pending_reason": "payment_failed names no cause, so there is no basis on which to call a retry eligible and no honest class to give it. It falls to the fail-closed Unclassified default, which is asserted by TestClassifierLeavesTheObservedLiveReasonUnclassified rather than left implicit."
+    "pending_reason": "payment_failed is documented and still has no class, and the documented suggested action is the reason rather than an argument against it. Razorpay's suggested handling is to contact the bank or try a different card, which rules out a same-instrument retry, which is exactly what the fail-closed Unclassified default delivers through R7-UNKNOWN-FAIL-CLOSED. It is not promoted to new_instrument_required: a support instruction written for a human looking at one order is not a class, and acting on it would mean messaging every customer whose payment a bank declined without saying why. TestClassifierLeavesTheObservedLiveReasonUnclassified and TestPaymentFailedIsDocumentedAndStillUnclassified assert both halves. Phase 5 DECISIONS.md entry 11."
   },
   "codes": [
     {
@@ -260,11 +260,11 @@
       "code": "payment_failed",
       "kind": "reason",
       "method": "card",
-      "label": "observed-test-mode",
-      "source": "docs/RAZORPAY-TEST-MODE-NOTES.md, the 2026-08-31 walk",
-      "documented_date": "2026-08-31",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/cards/",
+      "documented_date": "2026-09-01",
       "observed_date": "2026-08-31",
-      "note": "The only failure reason Razorpay test mode was observed producing, for all eight documented cards. It is on no documentation page. See _meta.pending_reason."
+      "note": "Documented, and the correction matters. Phase 1 found this as the only reason Razorpay test mode ever returned, for all eight documented cards, and concluded it was undocumented. A first-hand re-read on 2026-09-01 found it on the live-mode card error page: the bank declined the payment without providing a specific reason, suggested action contact the bank or try a different card. It is still in _meta.pending and still classifies as unclassified. See _meta.pending_reason."
     }
   ]
 }

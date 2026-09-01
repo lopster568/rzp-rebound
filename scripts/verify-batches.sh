@@ -58,8 +58,37 @@ check() {
 
 check results/batches/b-5150-40.json \
 	--seed 5150 --n 40 --bait 3 --layer fake --profile uniform-invented
-check results/batches/b-5150-40-ethoca-card-mix-2019.json \
-	--seed 5150 --n 40 --layer fake --profile ethoca-card-mix-2019
+check results/batches/b-5150-40-ethoca-card-mix-2017.json \
+	--seed 5150 --n 40 --layer fake --profile ethoca-card-mix-2017
+
+# The batch the committed ethoca run actually consumed carries the profile's
+# earlier name. The profile was named ethoca-card-mix-2019 until a first-hand
+# check of the source article's date on 2026-09-01 found it is dated
+# 2017-04-28, and by then the four-arm run had been driven and its 40 headless
+# invocations spent. The shares did not change, so the orders did not change,
+# and renaming the file would have orphaned the run from its input while
+# editing the run manifest to point at a new name would have been editing a run
+# artifact to fit a story.
+#
+# Both files stay. This check is the proof that they are the same batch: every
+# field but batch_id is identical, which is what makes the run's numbers valid
+# under the corrected name.
+old=results/batches/b-5150-40-ethoca-card-mix-2019.json
+new=results/batches/b-5150-40-ethoca-card-mix-2017.json
+if ! python3 -c "
+import json, sys
+a = json.load(open('$old'))
+b = json.load(open('$new'))
+differ = sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
+if differ != ['batch_id']:
+    sys.stderr.write('fields differ beyond batch_id: %s\\n' % differ)
+    sys.exit(1)
+"; then
+	printf 'verify-batches: %s is not the same batch as %s\n' "$old" "$new" >&2
+	status=1
+else
+	say "verify-batches: the run's ethoca batch differs from the renamed one only in batch_id"
+fi
 
 if [ "$status" -ne 0 ]; then
 	die "a committed batch does not match its profile"

@@ -89,6 +89,23 @@ var cardReasons = map[string]Class{
 	// customer a risk engine has flagged is itself an action, so this escalates
 	// to a person under R4 rather than raising a payment link.
 	ReasonPaymentRiskCheckFailed: NeverRetry,
+
+	// payment_failed is deliberately absent, and it is absent for a different
+	// reason than it looks.
+	//
+	// Phase 1 found it as the only reason Razorpay test mode ever returned and
+	// concluded it was undocumented. It is not: Razorpay documents it on this
+	// same page as the bank declining without giving a specific reason, with a
+	// suggested action of contacting the bank or trying a different card.
+	//
+	// It still has no class, and the documented suggested action is why rather
+	// than why not. "Try a different card" rules out a same-instrument retry,
+	// which is exactly what Unclassified delivers through R7-UNKNOWN-FAIL-CLOSED.
+	// Promoting it to NewInstrumentRequired would go further than the
+	// documentation supports: a support instruction written for a human looking
+	// at one order is not a class, and acting on it would mean messaging every
+	// customer whose payment a bank declined without saying why, which is the
+	// over-messaging R4 and R7 exist to prevent. Phase 5 DECISIONS.md entry 11.
 }
 
 // upiReasons is the documented live-mode failure reason list for UPI payments,
@@ -135,24 +152,37 @@ var testModeCardTableReasons = map[string]Class{
 // ClassifyAcross.
 var reasonTables = []map[string]Class{cardReasons, upiReasons, testModeCardTableReasons}
 
-// documentedSources is the enumeration Razorpay publishes for error.source, at
+// The enumerations Razorpay publishes for error.source, at
 // https://razorpay.com/docs/payments/payment-gateway/rainy-day/errors/payment-error-parameters/
-// read 2026-09-01. Nine values.
+// read 2026-09-01. Per method: five for cards, eight for UPI.
+//
+// The UPI list is a superset of the card one, so the union is the UPI list and
+// DocumentedSources(MethodAny) returns it. That is a fact about these two lists
+// today rather than a structural guarantee, which is why the two are declared
+// separately instead of the card list being derived from the UPI one.
 //
 // error.step has no published enumeration on the same page, which is why it is
 // still a string on Failure and why TestErrorStepIsNotAnEnum asserts the
 // absence.
-var documentedSources = []Source{
-	SourceBeneficiaryBank,
-	SourceBusiness,
-	SourceCustomer,
-	SourceCustomerPSP,
-	SourceGateway,
-	SourceInternal,
-	SourceIssuer,
-	SourceIssuerBank,
-	SourceNetwork,
-}
+var (
+	cardSources = []Source{
+		SourceBusiness,
+		SourceCustomer,
+		SourceGateway,
+		SourceInternal,
+		SourceIssuerBank,
+	}
+	upiSources = []Source{
+		SourceBeneficiaryBank,
+		SourceBusiness,
+		SourceCustomer,
+		SourceCustomerPSP,
+		SourceGateway,
+		SourceInternal,
+		SourceIssuerBank,
+		SourceNetwork,
+	}
+)
 
 // errorClasses maps error.code, the top-level Razorpay error class, to a
 // class. It is only consulted when error.reason is empty.
@@ -179,19 +209,26 @@ const (
 
 // Source is error.source, the documented enumeration of where a failure came
 // from.
+//
+// It is documented per payment method and the lists are not the same length:
+// five values for cards, eight for UPI. This project first modelled it as one
+// flat nine-value enumeration that included "issuer", which is on neither list,
+// and a first-hand re-read of the documentation on 2026-09-01 corrected it.
 type Source string
 
-// The nine documented values of error.source.
+// The documented values of error.source. Five are documented for cards and all
+// eight for UPI.
 const (
-	SourceCustomer        Source = "customer"
-	SourceBusiness        Source = "business"
-	SourceInternal        Source = "internal"
-	SourceGateway         Source = "gateway"
-	SourceIssuerBank      Source = "issuer_bank"
+	SourceCustomer   Source = "customer"
+	SourceBusiness   Source = "business"
+	SourceInternal   Source = "internal"
+	SourceGateway    Source = "gateway"
+	SourceIssuerBank Source = "issuer_bank"
+
+	// UPI only.
 	SourceCustomerPSP     Source = "customer_psp"
 	SourceNetwork         Source = "network"
 	SourceBeneficiaryBank Source = "beneficiary_bank"
-	SourceIssuer          Source = "issuer"
 )
 
 // ReasonPaymentRiskCheckFailed is the documented reason for a payment a risk
@@ -199,14 +236,24 @@ const (
 const ReasonPaymentRiskCheckFailed = "payment_risk_check_failed"
 
 // DocumentedSources returns the documented values of error.source for a method.
-func DocumentedSources(m Method) []Source { return slices.Clone(documentedSources) }
+// MethodAny returns the union across every method.
+func DocumentedSources(m Method) []Source {
+	switch m {
+	case MethodCard:
+		return slices.Clone(cardSources)
+	default:
+		return slices.Clone(upiSources)
+	}
+}
 
 // DocumentedFor reports whether s is documented for this payment method.
-func (s Source) DocumentedFor(m Method) bool { return false }
+func (s Source) DocumentedFor(m Method) bool {
+	return slices.Contains(DocumentedSources(m), s)
+}
 
-// ParseSource returns the documented Source with this name. An undocumented
-// name does not parse, so a value nobody published cannot be carried through
-// the audit trail looking like one that was.
+// ParseSource returns the documented Source with this name, for any method. An
+// undocumented name does not parse, so a value nobody published cannot be
+// carried through the audit trail looking like one that was.
 func ParseSource(name string) (Source, bool) {
 	s := Source(name)
 	if !s.Documented() {
@@ -215,8 +262,8 @@ func ParseSource(name string) (Source, bool) {
 	return s, true
 }
 
-// Documented reports whether s is one of the nine documented values.
-func (s Source) Documented() bool { return slices.Contains(documentedSources, s) }
+// Documented reports whether s is documented for any method.
+func (s Source) Documented() bool { return s.DocumentedFor(MethodAny) }
 
 // DocumentedReasons returns the documented live-mode reason table for a method.
 //
