@@ -242,3 +242,33 @@ The third. `scripts/verify-batches.sh` rebuilds the correctly named file from
 the profile and then asserts that the old-named file differs from it in nothing
 but `batch_id`. The orders are byte-identical, because the shares never changed
 and only the label did. `HONEST-LIMITATIONS.md` item 30 records it.
+
+## 14. Addendum, 2026-09-01: the showcase is a script, not a phase
+
+`scripts/showcase.sh` and `make showcase` were built after phase 5 closed. They
+open no new phase directory, because nothing about the system changed: the
+showcase drives the commands that already existed and reads the tables that were
+already committed. A phase directory for a presentation layer would be process
+theatre.
+
+Three decisions inside it are worth recording.
+
+**Every number in act 3 is parsed at run time.** The impact table, the three
+takeaways under it, and the compliance line are all computed from
+`results/tables/phase-5-fake-ethoca.csv` when the command runs. Nothing is typed
+into the script. A showcase carrying its own copy of the results would be the
+exact failure `make claims-check` exists to catch, published in the one artifact
+a reviewer is most likely to watch.
+
+**The takeaways are asserted before they are printed.** A sentence like "the
+gated arms took zero false actions" is a claim about the parsed data, so each
+one is a condition on the parsed row and prints a line naming the failed check
+instead when the condition does not hold. Prose that stays true only until the
+next run is prose that will be wrong on camera.
+
+**Act 2 degrades rather than dies.** Without credentials or a reachable gateway
+it names what is missing, prints `make preflight`, describes what the loop would
+have done, and carries on to the remaining acts. It never prints a transcript of
+a run that did not happen. The alternative, a canned transcript for the
+credential-less path, was rejected without much thought: a project whose pitch is
+that its numbers are real does not ship a fake terminal.
