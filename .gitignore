@@ -53,3 +53,5 @@ results/runs/LAST_RUN
 # The phase 3 gate regenerates this pair on every run, same reason as phase 2.
 results/tables/verify-phase-3.csv
 results/tables/verify-phase-3.md
+/rzp
+/rzp-mcp
