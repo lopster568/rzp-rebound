@@ -87,7 +87,7 @@ deliberately not regenerated: rebuilding that path under the new taxonomy would
 overwrite the input to a published table with a different batch of the same
 name.
 
-**A cited mix is somebody else's mix.** The `ethoca-card-mix-2019` profile makes
+**A cited mix is somebody else's mix.** The `ethoca-card-mix-2017` profile makes
 35 percent of the batch orders no arm should act on, because lost, stolen, and
 fraud declines are a third of published card declines. That is a harder batch
 than the invented one, the numbers on it are worse, and the share is the

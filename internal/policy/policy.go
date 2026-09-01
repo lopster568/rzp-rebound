@@ -68,10 +68,12 @@ const (
 	// DefaultMaxAttemptsPerOrder is 3, which is a conservative merchant policy
 	// under the Visa reattempt cap rather than a number derived from one.
 	//
-	// Visa bulletin AI10325 permits 15 reattempts per declined transaction in
-	// 30 rolling days for Categories 2 and 3, and none at all for Category 1.
-	// Three is well inside that, and a merchant is free to be stricter than the
-	// network. What phase 5 changed is that the constant now names the bound it
+	// Visa bulletin AI10325 permits 15 reattempts in 30 days for a Category 2
+	// decline, and none at all for a Category 1 one. Three is well inside that,
+	// and a merchant is free to be stricter than the network. The category was
+	// recorded here as "Categories 2 and 3" until a first-hand read of the
+	// bulletin on 2026-09-01 corrected it, and internal/networkcodes carries the
+	// same correction. What phase 5 changed is that the constant names the bound it
 	// sits under: TestMaxAttemptsSitsUnderTheVisaReattemptCap fails if someone
 	// raises it past 15, which is where the sentence in CitedValues would stop
 	// being true.
@@ -430,9 +432,9 @@ func IsNotifyAction(action string) bool {
 // in neither map or in both, so a tenth rule cannot arrive without someone
 // deciding which of the two things its number is.
 var citedValues = map[string]string{
-	RuleMaxAttempts:       "Visa bulletin AI10325: 15 reattempts per declined transaction per 30 rolling days, Categories 2 and 3. The configured 3 is a conservative merchant policy under that cap, not a value read off it, and the rolling window is not implemented.",
+	RuleMaxAttempts:       "Visa bulletin AI10325: a Category 2 decline may be reattempted up to 15 times in 30 days. The configured 3 is a conservative merchant policy under that cap, not a value read off it, and the rolling window is not implemented.",
 	RuleAmountCeiling:     "RBI e-mandate framework: Rs 15,000 is the threshold above which an additional factor of authentication is required. 1500000 paise.",
-	RuleNeverRetryClass:   "Visa bulletin AI10325 Category 1 and Mastercard merchant advice code 03, both in internal/networkcodes with their sources, plus Razorpay's documented payment_risk_check_failed reason.",
+	RuleNeverRetryClass:   "Visa Category 1 and Mastercard merchant advice code 03, both in internal/networkcodes with their sources, plus Razorpay's documented payment_risk_check_failed reason. The Category 1 code list is a processor reconstruction rather than the bulletin's own: networkcodes.VisaCategory1IsReconstructed.",
 	RuleUnknownFailClosed: "Not an industry value. The rule is the absence of one: a failure no documented vocabulary recognises justifies no action, which is what the Razorpay documented reason lists in internal/classify are the boundary of.",
 }
 

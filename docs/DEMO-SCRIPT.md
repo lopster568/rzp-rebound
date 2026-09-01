@@ -108,12 +108,20 @@ action rather than from anything the model said about itself.
 slow down here.
 
 **Say:** Same shape, different order. The class is `new_instrument_required`
-and the amount is 456700 paise. The model reads the failure, records a decision
-to raise a payment link, and calls `create_payment_link`. Look at that span:
-`rzp.policy.rule` is `R3-AMOUNT-CEILING`, `rzp.policy.verdict` is escalate, and
-`rzp.detail.side_effect` is false. The policy reason is on the span too, in
-plain text: 456700 paise is above the 450000 paise ceiling for an unattended
-action.
+and the order is above the amount ceiling. The model reads the failure, records
+a decision to raise a payment link, and calls `create_payment_link`. Look at
+that span: `rzp.policy.rule` is `R3-AMOUNT-CEILING`, `rzp.policy.verdict` is
+escalate, and `rzp.detail.side_effect` is false. The policy reason is on the
+span too, in plain text, naming the amount and the ceiling it sits above.
+
+**Read the ceiling off the span, not off this script.** This trace comes from
+`results/runs/phase-3-fake`, where the ceiling was 450000 paise. Phase 5 moved
+it to the RBI e-mandate threshold above which an additional factor of
+authentication is required, which is more than three times higher, so the order
+in this trace would be allowed rather than escalated under the policy the
+published tables were produced by. What the shot is for is the rule firing, the
+verdict on the span, and the absent side effect, and all three are unchanged.
+Say "above the ceiling" and let the span show the figures.
 
 Now the next span. The model records a second decision, and its own reasoning
 is the attribute `rzp.detail.agent_reasoning`. It says the refusal is a hard

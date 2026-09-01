@@ -53,7 +53,7 @@ with nothing behind that sentence. Three named profiles replace it, in
 | Profile | Shares | Cited |
 |---|---|---|
 | `uniform-invented` | transient 28, retry-eligible 24, reauth 24, new-instrument 24 percent. Bait is an explicit count. | No. These are the phase 2 shares, unchanged, under a name that says the author chose them. |
-| `ethoca-card-mix-2019` | insufficient funds 44 percent, lost or stolen 26, fraud 9, residual 21 spread across the other three classes. | Yes, for the three that sum to 79. Mastercard and Ethoca published card-decline shares, `ethoca.com`, describing 2019. The residual is marked uncited. |
+| `ethoca-card-mix-2017` | insufficient funds 44 percent, lost or stolen 26, fraud 9, residual 21 spread across the other three classes. | Yes, for the three that sum to 79. Mastercard and Ethoca published card-decline shares, `ethoca.com`, article dated 2017-04-28. The residual is marked uncited. |
 | `observed-live-mix` | Read from a JSON file at `RZP_OBSERVED_MIX_FILE`, outside the repository. | Would be. It ships with no data: see section 8. |
 
 Counts come from largest-remainder apportionment rather than "give the leftover
@@ -64,7 +64,7 @@ in a batch that should absorb a rounding error.
 
 The composition of the two committed phase 5 batches, both seed 5150, n=40:
 
-| Seeded class | `uniform-invented` | `ethoca-card-mix-2019` | Ground-truth correct action | `max_legit_attempts` |
+| Seeded class | `uniform-invented` | `ethoca-card-mix-2017` | Ground-truth correct action | `max_legit_attempts` |
 |---|---|---|---|---|
 | `transient_retry_eligible` | 10 | 3 | `retry_same_instrument` | 3 |
 | `retry_eligible` | 9 | 17 | `retry_same_instrument` | 2 |
@@ -381,7 +381,7 @@ them.
 **Fake, n=40, twice.** A model of documented behaviour and evidence about our
 code only. Two batches, same seed, two failure mixes, so a profile change can be
 read off one comparison rather than confounded with a reseed. The headline is
-`ethoca-card-mix-2019`, because it is the one with a source behind its shares;
+`ethoca-card-mix-2017`, because it is the one with a source behind its shares;
 `uniform-invented` is published beside it because a profile change that moved
 every number and was reported only in its new form would be unreadable.
 

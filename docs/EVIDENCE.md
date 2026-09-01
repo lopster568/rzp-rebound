@@ -150,10 +150,15 @@ the two lists are not the same list.** *Vendor documentation.*
 `testdata/error_codes.json` with a label and a source on every row, and in
 `internal/classify` as two tables.
 
-**`error.source` has a documented enumeration of nine values. `error.step` does
-not.** *Vendor documentation,* the payment error parameters page. The first is
-a type in `internal/classify`; the second stays a string, and there is a test on
-the absence so a later phase does not invent one.
+**`error.source` has a documented enumeration and it is per method. `error.step`
+has none at all.** *Vendor documentation,* the payment error parameters page.
+Five values for cards and eight for UPI, the card list being a subset of the UPI
+one. The first is a type in `internal/classify` with a per-method predicate; the
+second stays a string, and there is a test on the absence so a later phase does
+not invent one.
+
+*Corrected 2026-09-01.* The first draft of this file said nine values in one
+flat list, which is where `issuer` came from. It is on neither list.
 
 **The class each reason maps to is this project's judgment and is cited
 nowhere.** Razorpay publishes the reason strings. It does not publish a mapping
@@ -256,7 +261,7 @@ rate:
    adopted, and until this probe no reason from those lists had ever been seen
    outside the documentation.
 2. The documented `error.source` enumeration does appear in production.
-   `customer` is one of the nine values.
+   `customer` is on both the card list and the UPI one.
 3. The coarse-code-plus-specific-reason structure holds outside test mode. The
    `error_code` is still `BAD_REQUEST_ERROR`, exactly as in test mode, and all
    the signal is in `error_reason`. That is the shape `internal/classify` is

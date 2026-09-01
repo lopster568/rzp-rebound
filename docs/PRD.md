@@ -220,7 +220,7 @@ covers them. Later components name the test that will.
 | FR-CLS-6 | `card_declined` classifies as new instrument required. | `TestClassifierMapsCardDeclinedToNewInstrumentRequired` |
 | FR-CLS-7 | A risk block classifies as never retry, and never retry means no action of any kind rather than no retry. An expired card and a blocked debit instrument are new instrument required, because asking for a different card is allowed there and is not allowed on an order a risk engine flagged. | `TestPaymentRiskCheckFailedIsNeverRetry`, `TestCardExpiredAndBlockedInstrumentAreNewInstrumentRequiredNotNeverRetry` |
 | FR-CLS-8 | The reason tables are per payment method, because Razorpay documents them per method. A caller that does not know the method still gets an answer, and a reason two method tables disagreed about would be unclassified rather than resolved by declaration order. | `TestClassifierMapsEveryDocumentedCardReason`, `TestClassifierMapsEveryDocumentedUPIReason`, `TestNoReasonClassifiesDifferentlyAcrossMethods`, `TestAmbiguousReasonAcrossMethodsIsUnclassified` |
-| FR-CLS-9 | `error.source` is the documented nine-value enumeration and refuses to parse anything else. `error.step` stays a free string, because the same documentation page publishes no enumeration for it. | `TestDocumentedErrorSourcesAreTheNinePublishedValues`, `TestUndocumentedErrorSourceDoesNotParse`, `TestErrorStepIsNotAnEnum` |
+| FR-CLS-9 | `error.source` is the documented enumeration, which is per method: five values for cards and eight for UPI, the card list being a subset of the UPI one. It refuses to parse anything else, including `issuer`, which is on neither list and was in this project's first flat enumeration. `error.step` stays a free string, because the same documentation page publishes no enumeration for it. | `TestDocumentedErrorSourcesArePerMethod`, `TestUndocumentedErrorSourceDoesNotParse`, `TestErrorStepIsNotAnEnum` |
 
 **`internal/batch`**
 
@@ -275,7 +275,7 @@ covers them. Later components name the test that will.
 | ID | Requirement | Covering test |
 |---|---|---|
 | FR-AUD-1 | One append-only machine-readable row per decision: order id, class, proposed action, policy verdict, rule, trace id, timestamp. | Met in phase 1 and given its verdict fields in phase 2. `harness/scorer.py` computes both containment numbers from these rows. |
-| FR-AUD-2 | No credential, card number, or customer contact detail reaches the ledger. | `TestRecorderRedactsCardShapedAndKeyShapedValues`, and the phase 2 ledgers were scanned for key-shaped strings before being committed |
+| FR-AUD-2 | No credential, card number, or customer contact detail reaches the ledger. | `TestRecorderRedactsCardAndKeyFieldsFromLedger`, and the phase 2 ledgers were scanned for key-shaped strings before being committed |
 | FR-AUD-3 | Every row joins to a span by trace id, so a reviewer can go from the table to the trace. | Met in phase 1, `make demo` checks it on every run |
 
 **`internal/telemetry`**
