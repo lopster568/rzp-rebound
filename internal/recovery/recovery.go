@@ -193,8 +193,9 @@ func FailureFrom(p *razorpay.Payment) classify.Failure {
 	return classify.Failure{
 		Code:   p.ErrorCode,
 		Reason: p.ErrorReason,
-		Source: p.ErrorSource,
+		Source: classify.Source(p.ErrorSource),
 		Step:   p.ErrorStep,
+		Method: classify.Method(p.Method),
 	}
 }
 

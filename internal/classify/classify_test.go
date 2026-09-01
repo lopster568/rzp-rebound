@@ -9,7 +9,6 @@ import (
 
 	"github.com/lopster568/rzp-recovery-agent/internal/classify"
 	"github.com/lopster568/rzp-recovery-agent/internal/razorpay"
-	"github.com/lopster568/rzp-recovery-agent/internal/testcards"
 )
 
 // errorCodesPath is testdata/error_codes.json seen from this package
@@ -101,7 +100,7 @@ func TestClassifierMapsCardDeclinedToNewInstrumentRequired(t *testing.T) {
 }
 
 func TestClassifierMapsRiskBlockToNeverRetry(t *testing.T) {
-	got := classify.Classify(classify.Failure{Reason: testcards.PendingRiskBlockCode})
+	got := classify.Classify(classify.Failure{Reason: classify.ReasonPaymentRiskCheckFailed})
 
 	if got != classify.NeverRetry {
 		t.Errorf("risk block classified as %v, want %v", got, classify.NeverRetry)
@@ -172,8 +171,8 @@ func TestClassifierIsTotalOverKnownRazorpayErrorCodes(t *testing.T) {
 	}
 
 	// The risk block is not in the file yet. It still has to classify.
-	if got := classify.Classify(classify.Failure{Reason: testcards.PendingRiskBlockCode}); got == classify.Unclassified {
-		t.Errorf("%s classifies as %v", testcards.PendingRiskBlockCode, got)
+	if got := classify.Classify(classify.Failure{Reason: classify.ReasonPaymentRiskCheckFailed}); got == classify.Unclassified {
+		t.Errorf("%s classifies as %v", classify.ReasonPaymentRiskCheckFailed, got)
 	}
 }
 
@@ -200,7 +199,7 @@ func TestClassifierLeavesTheObservedLiveReasonUnclassified(t *testing.T) {
 	got := classify.Classify(classify.Failure{
 		Code:   razorpay.ErrorClassBadRequest,
 		Reason: razorpay.ReasonPaymentFailed,
-		Source: razorpay.ErrorSourceGateway,
+		Source: classify.Source(razorpay.ErrorSourceGateway),
 		Step:   razorpay.ErrorStepPaymentAuthorization,
 	})
 

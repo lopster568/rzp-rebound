@@ -112,7 +112,7 @@ func TestClassifierHandlesEveryRecordedErrorPayload(t *testing.T) {
 		class := classify.Classify(classify.Failure{
 			Code:   payment.ErrorCode,
 			Reason: payment.ErrorReason,
-			Source: payment.ErrorSource,
+			Source: classify.Source(payment.ErrorSource),
 			Step:   payment.ErrorStep,
 		})
 		if class.String() == "" {

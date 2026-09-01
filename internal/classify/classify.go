@@ -79,6 +79,59 @@ var errorClasses = map[string]Class{
 	"BAD_REQUEST_ERROR": NeverRetry,
 }
 
+// Method is the payment method a failure arrived on. Razorpay documents its
+// live-mode failure reasons per method, and the lists are not the same list.
+type Method string
+
+// The methods this package holds a documented reason table for. MethodAny is
+// the zero value and means the caller does not know, which is the common case:
+// a classifier input built from a payment that carried no method field.
+const (
+	MethodAny  Method = ""
+	MethodCard Method = "card"
+	MethodUPI  Method = "upi"
+)
+
+// Source is error.source, the documented enumeration of where a failure came
+// from.
+type Source string
+
+// The nine documented values of error.source.
+const (
+	SourceCustomer        Source = "customer"
+	SourceBusiness        Source = "business"
+	SourceInternal        Source = "internal"
+	SourceGateway         Source = "gateway"
+	SourceIssuerBank      Source = "issuer_bank"
+	SourceCustomerPSP     Source = "customer_psp"
+	SourceNetwork         Source = "network"
+	SourceBeneficiaryBank Source = "beneficiary_bank"
+	SourceIssuer          Source = "issuer"
+)
+
+// ReasonPaymentRiskCheckFailed is the documented reason for a payment a risk
+// check blocked.
+const ReasonPaymentRiskCheckFailed = "payment_risk_check_failed"
+
+// DocumentedSources returns the nine documented values of error.source.
+func DocumentedSources() []Source { return nil }
+
+// ParseSource returns the documented Source with this name.
+func ParseSource(name string) (Source, bool) { return "", false }
+
+// Documented reports whether s is one of the nine documented values.
+func (s Source) Documented() bool { return false }
+
+// DocumentedReasons returns the documented live-mode reason table for a method.
+func DocumentedReasons(m Method) map[string]Class { return nil }
+
+// ClassifyAcross looks a reason up in several tables and returns the class they
+// agree on, or Unclassified when they do not.
+func ClassifyAcross(tables []map[string]Class, reason string) Class { return Unclassified }
+
+// ClassifyNetworkDeclineCode maps a card-network decline code to a class.
+func ClassifyNetworkDeclineCode(network, code string) Class { return Unclassified }
+
 // Failure is the error a Razorpay payment carries, in the fields the API
 // returns it in.
 type Failure struct {
@@ -87,9 +140,13 @@ type Failure struct {
 	// Reason is error.reason, the specific failure reason.
 	Reason string
 	// Source is error.source, where the failure came from.
-	Source string
-	// Step is error.step, the point in the payment flow it happened at.
+	Source Source
+	// Step is error.step, the point in the payment flow it happened at. It
+	// stays a free string: Razorpay documents an enumeration for error.source
+	// and publishes none for this field.
 	Step string
+	// Method is the payment method, which picks the documented reason table.
+	Method Method
 }
 
 // Classify maps a failure to a class. It is total: anything it does not
