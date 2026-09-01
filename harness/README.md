@@ -104,14 +104,36 @@ the first fake-layer run on 2026-08-31 scored every payment link either arm
 raised as a false action, 12 of them for `a3-rules`, on orders where raising
 one was the correct action.
 
-## The cost model is a model
+## The cost model is a model, with cited inputs
 
-`MODELED_RETRY_FEE_PAISE` is 200 and `MODELED_FORBIDDEN_ACTION_COST_PAISE` is
-5000. Both numbers are invented so FA-1 and FA-2 can be compared on one scale.
-Nothing in this repository has measured a Razorpay retry fee or priced a
-goodwill loss. `COST_MODEL_ASSUMPTIONS` says so in one sentence and every
-markdown table prints that sentence above the numbers. Do not quote
-`modeled_false_action_cost_paise` as a figure Razorpay would recognise.
+Phase 5 rebuilt it. Before that it charged `MODELED_RETRY_FEE_PAISE` of 200 for
+every payment attempt and `MODELED_FORBIDDEN_ACTION_COST_PAISE` of 5000 for
+every forbidden action, both invented, and both wrong rather than merely
+unsourced.
+
+| Constant | Value | Source |
+|---|---|---|
+| `MODELED_FAILED_ATTEMPT_FEE_PAISE` | 0 | India bills successful transactions only |
+| `MODELED_FORBIDDEN_ACTION_COST_PAISE` | 50000 | the Rs 500 chargeback fee floor |
+| `MODELED_NOTIFICATION_COST_PAISE` | 20 | the top of the 15 to 20 paise transactional SMS band |
+| `VISA_EXCESSIVE_REATTEMPT_FEE_PAISE` | 875 | the Visa Reattempt Abuse Framework fee, which applies beyond the 15-in-30 cap and so multiplies by zero under a cap of 3 |
+
+So `modeled_false_action_cost_paise` is `fa1 * 50000` and nothing else: a failed
+retry in India costs the merchant no gateway fee. What an over-attempt actually
+costs is the customer's patience and the issuer's opinion of the merchant,
+neither of which has a published price, so it is not in the model at all.
+
+Notifications get two columns of their own, `notifications_sent` and
+`modeled_notification_cost_paise`, and are deliberately not in the false-action
+total. A payment link on a reauth-required order is the correct action, and
+folding its cost into a column that counts mistakes would charge an arm for
+doing the right thing.
+
+It is still a model: arithmetic on published rates applied to counts this
+project measured, not a figure any processor billed anyone.
+`COST_MODEL_ASSUMPTIONS` names every input, `test_cost_model_assumptions_names_every_input`
+fails if it falls behind the model, and every markdown table prints that
+sentence above the numbers. `docs/EVIDENCE.md` section 4 has each source.
 
 ## Table columns
 
@@ -125,7 +147,8 @@ in the `overall` row only.
 layer, arm, scope, n_orders, n_scorable, n_unscorable,
 ground_truth_recoverable, recovered_orders, recovered_amount_paise,
 recovery_rate, actions_taken, false_action_count, fa1_forbidden,
-fa2_over_attempt, modeled_false_action_cost_paise, escalations,
+fa2_over_attempt, modeled_false_action_cost_paise, notifications_sent,
+modeled_notification_cost_paise, escalations,
 should_escalate, escalation_precision, escalation_recall, escalation_rules,
 classification_accuracy, policy_evaluations, policy_refusals,
 policy_violations_attempted, policy_violations_succeeded, api_calls,
