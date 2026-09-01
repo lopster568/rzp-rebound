@@ -129,3 +129,42 @@ func TestEveryListNamesItsSource(t *testing.T) {
 		}
 	}
 }
+
+// TestMastercardRetryScheduleIsTheSevenStepLadder pins the only scheme-native
+// retry timing anyone publishes.
+//
+// Merchant advice codes 24 through 30 are Mastercard's own resubmission
+// schedule, and its first rung is one hour. That matters here because
+// R2-COOLDOWN is 30 seconds and is declared a configured choice: this ladder is
+// the nearest published thing to it, it is two orders of magnitude away, and
+// carrying it makes the gap visible instead of asserted.
+func TestMastercardRetryScheduleIsTheSevenStepLadder(t *testing.T) {
+	want := []int{1, 24, 48, 96, 144, 192, 240}
+
+	got := networkcodes.MastercardRetryScheduleHours()
+
+	if !slices.Equal(got, want) {
+		t.Errorf("MastercardRetryScheduleHours() = %v, want %v", got, want)
+	}
+	if len(got) == 0 || got[0] != networkcodes.MastercardShortestRetryIntervalHours {
+		t.Errorf("MastercardShortestRetryIntervalHours = %d, and the ladder starts at %v",
+			networkcodes.MastercardShortestRetryIntervalHours, got)
+	}
+	if _, ok := networkcodes.Sources()["mastercard-retry-schedule"]; !ok {
+		t.Error("Sources() has no entry for the retry schedule")
+	}
+}
+
+// TestMerchantAdviceCode03CarriesAResubmissionFee records the one thing that
+// makes MAC 03 more than advice. Mastercard assesses a fee for each
+// authorization request resubmitted after a MAC 03 decline inside 30 days, so
+// ignoring it costs money rather than only breaking a rule.
+func TestMerchantAdviceCode03CarriesAResubmissionFee(t *testing.T) {
+	if !networkcodes.MastercardDoNotTryAgainIsFeeBearing {
+		t.Error("MastercardDoNotTryAgainIsFeeBearing is false, and a resubmission after MAC 03 is charged for")
+	}
+	if networkcodes.MastercardResubmissionFeeWindowDays != 30 {
+		t.Errorf("MastercardResubmissionFeeWindowDays = %d, want 30",
+			networkcodes.MastercardResubmissionFeeWindowDays)
+	}
+}

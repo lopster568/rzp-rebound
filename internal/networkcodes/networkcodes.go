@@ -46,6 +46,21 @@ const (
 // MastercardDoNotTryAgain is merchant advice code 03, "do not try again".
 const MastercardDoNotTryAgain = "03"
 
+// MastercardDoNotTryAgainIsFeeBearing reports that a resubmission after a MAC
+// 03 decline is charged for.
+const MastercardDoNotTryAgainIsFeeBearing = false
+
+// MastercardResubmissionFeeWindowDays is the window that fee applies over.
+const MastercardResubmissionFeeWindowDays = 0
+
+// MastercardShortestRetryIntervalHours is the first rung of the published
+// merchant advice code retry ladder.
+const MastercardShortestRetryIntervalHours = 0
+
+// MastercardRetryScheduleHours returns the published resubmission ladder behind
+// merchant advice codes 24 through 30, in hours.
+func MastercardRetryScheduleHours() []int { return nil }
+
 // The Visa reattempt bound from bulletin AI10325, carried as constants so a
 // policy that describes itself as sitting under the cap can be checked against
 // it rather than asserting it in a comment.
