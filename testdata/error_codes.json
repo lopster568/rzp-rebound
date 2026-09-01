@@ -1,14 +1,22 @@
 {
   "_meta": {
-    "source": "Razorpay error documentation plus the test-card table in testdata/magic_cards.json, read 2026-08-31",
-    "documented_date": "2026-08-31",
+    "source": "Razorpay's live-mode payment error documentation, read 2026-09-01, plus the test-card page read 2026-08-31 and this project's own observations.",
+    "documented_date": "2026-09-01",
+    "labels": {
+      "documented-live": "A string Razorpay publishes as live-mode vocabulary. Cited by the source field on the row.",
+      "documented-test-mode": "A string the Razorpay test-card page carries. It may or may not be live-mode vocabulary, and where it differs from the live spelling the row says so.",
+      "observed-test-mode": "A string this project observed coming back from Razorpay test mode and which appears on no documentation page."
+    },
     "kind_values": {
       "reason": "a payment-failure reason string returned in error.reason for a failed payment",
       "error_class": "a top-level Razorpay error class returned in error.code"
     },
-    "read_by": "TestClassifierIsTotalOverKnownRazorpayErrorCodes asserts the classifier returns a class for every code listed here and never panics.",
-    "gap": "The classify test list includes TestClassifierMapsRiskBlockToNeverRetry, but no risk-block code is in the documented card table and the 2026-08-31 live walk produced none either. The exact Razorpay code string is still unknown.",
-    "live_observation_2026_08_31": "Every one of the eight documented cards, driven through the only mechanism that makes a test-mode payment attempt happen, came back with error.reason payment_failed and error.code BAD_REQUEST_ERROR. Not one documented reason string was produced. The eight reason rows below are exercised by the fake gateway and by nothing live. docs/RAZORPAY-TEST-MODE-NOTES.md has the walk.",
+    "method_values": "card or upi for a reason, empty for an error class. Razorpay documents its failure reasons per method and the two lists are not the same list.",
+    "error_source": "The nine documented values of error.source are in internal/classify as the Source type, sourced from https://razorpay.com/docs/payments/payment-gateway/rainy-day/errors/payment-error-parameters/. error.step has no published enumeration on the same page and stays a free string.",
+    "network_codes": "The Visa Category 1 and Mastercard merchant advice code lists are in internal/networkcodes, not here. They are card-network rules with their own sources, and they are not Razorpay vocabulary.",
+    "read_by": "TestClassifierIsTotalOverKnownRazorpayErrorCodes asserts the classifier returns a class for every code listed here and never panics. TestErrorCodeFileLabelsEveryEntry asserts every row carries a label from _meta.labels and a source, and that a documented-live reason is in the classifier's table for the method it names.",
+    "live_observation_2026_08_31": "Every one of the eight documented test cards, driven through the only mechanism that makes a test-mode payment attempt happen, came back with error.reason payment_failed and error.code BAD_REQUEST_ERROR. Not one documented reason string was produced. docs/RAZORPAY-TEST-MODE-NOTES.md has the walk.",
+    "production_observation_2026_09_01": "A read-only probe of the author's own live Razorpay merchant account, covering 2026-07-15 to 2026-08-31, returned two payments: one captured UPI payment of 69900 paise and one failed UPI payment of 178800 paise carrying error_code BAD_REQUEST_ERROR, error_reason payment_timed_out, error_source customer, and error_step payment_authentication. That single failure confirms three things: a documented live-mode reason string does appear in production, the documented error_source enum does appear in production, and the coarse-code-plus-specific-reason structure holds outside test mode. It is one payment. It is a specimen, not a distribution, and no share, rate, or mix in this repository is derived from it. Aggregate fields only; no payload from that account is published.",
     "pending": [
       "payment_failed"
     ],
@@ -18,59 +26,245 @@
     {
       "code": "payment_timed_out",
       "kind": "reason",
-      "documented_date": "2026-08-31"
-    },
-    {
-      "code": "insufficient_fund",
-      "kind": "reason",
-      "documented_date": "2026-08-31"
-    },
-    {
-      "code": "payment_cancelled",
-      "kind": "reason",
-      "documented_date": "2026-08-31"
-    },
-    {
-      "code": "card_declined",
-      "kind": "reason",
-      "documented_date": "2026-08-31"
-    },
-    {
-      "code": "card_disabled_for_online_payments",
-      "kind": "reason",
-      "documented_date": "2026-08-31"
-    },
-    {
-      "code": "card_number_invalid",
-      "kind": "reason",
-      "documented_date": "2026-08-31"
+      "method": "card",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/cards/",
+      "documented_date": "2026-09-01",
+      "note": "Observed in production. A read-only probe of the author's own live Razorpay merchant account on 2026-09-01 returned one failed UPI payment carrying this reason, with error_code BAD_REQUEST_ERROR, error_source customer, and error_step payment_authentication. Aggregate fields only; no payload from that account is published. n=2 payments in the account, which is a specimen and not a distribution.",
+      "observed_date": "2026-09-01"
     },
     {
       "code": "gateway_technical_error",
       "kind": "reason",
-      "documented_date": "2026-08-31"
+      "method": "card",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/cards/",
+      "documented_date": "2026-09-01",
+      "note": "Also carried on the test-card page, which is why it was in this file before phase 5."
+    },
+    {
+      "code": "bank_technical_error",
+      "kind": "reason",
+      "method": "card",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/cards/",
+      "documented_date": "2026-09-01"
+    },
+    {
+      "code": "payment_cancelled",
+      "kind": "reason",
+      "method": "card",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/cards/",
+      "documented_date": "2026-09-01",
+      "note": "Also carried on the test-card page, which is why it was in this file before phase 5."
     },
     {
       "code": "authentication_failed",
       "kind": "reason",
-      "documented_date": "2026-08-31"
+      "method": "card",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/cards/",
+      "documented_date": "2026-09-01",
+      "note": "Also carried on the test-card page, which is why it was in this file before phase 5."
+    },
+    {
+      "code": "incorrect_cvv",
+      "kind": "reason",
+      "method": "card",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/cards/",
+      "documented_date": "2026-09-01"
+    },
+    {
+      "code": "insufficient_funds",
+      "kind": "reason",
+      "method": "card",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/cards/",
+      "documented_date": "2026-09-01",
+      "note": "The live-mode spelling. The test-card page spells it insufficient_fund, which is the row below and is why the classifier carries both."
+    },
+    {
+      "code": "card_declined",
+      "kind": "reason",
+      "method": "card",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/cards/",
+      "documented_date": "2026-09-01",
+      "note": "Also carried on the test-card page, which is why it was in this file before phase 5."
+    },
+    {
+      "code": "card_not_enrolled",
+      "kind": "reason",
+      "method": "card",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/cards/",
+      "documented_date": "2026-09-01"
+    },
+    {
+      "code": "card_disabled_for_online_payments",
+      "kind": "reason",
+      "method": "card",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/cards/",
+      "documented_date": "2026-09-01",
+      "note": "Also carried on the test-card page, which is why it was in this file before phase 5."
+    },
+    {
+      "code": "card_expired",
+      "kind": "reason",
+      "method": "card",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/cards/",
+      "documented_date": "2026-09-01"
+    },
+    {
+      "code": "debit_instrument_inactive",
+      "kind": "reason",
+      "method": "card",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/cards/",
+      "documented_date": "2026-09-01"
+    },
+    {
+      "code": "debit_instrument_blocked",
+      "kind": "reason",
+      "method": "card",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/cards/",
+      "documented_date": "2026-09-01"
+    },
+    {
+      "code": "transaction_limit_exceeded",
+      "kind": "reason",
+      "method": "card",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/cards/",
+      "documented_date": "2026-09-01"
+    },
+    {
+      "code": "payment_risk_check_failed",
+      "kind": "reason",
+      "method": "card",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/cards/",
+      "documented_date": "2026-09-01",
+      "note": "The reason testcards.PendingRiskBlockCode stood in for until phase 5 read this page. PRD Q2 closed 2026-09-01."
+    },
+    {
+      "code": "bank_technical_error",
+      "kind": "reason",
+      "method": "upi",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/upi/",
+      "documented_date": "2026-09-01",
+      "note": "Documented for cards as well, and both pages classify it the same way, which TestNoReasonClassifiesDifferentlyAcrossMethods checks."
+    },
+    {
+      "code": "credit_failed",
+      "kind": "reason",
+      "method": "upi",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/upi/",
+      "documented_date": "2026-09-01"
+    },
+    {
+      "code": "vpa_resolution_failed",
+      "kind": "reason",
+      "method": "upi",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/upi/",
+      "documented_date": "2026-09-01"
+    },
+    {
+      "code": "payment_timed_out",
+      "kind": "reason",
+      "method": "upi",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/upi/",
+      "documented_date": "2026-09-01",
+      "note": "The production failure on 2026-09-01 was a UPI payment carrying this reason. Documented for cards as well.",
+      "observed_date": "2026-09-01"
+    },
+    {
+      "code": "insufficient_funds",
+      "kind": "reason",
+      "method": "upi",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/upi/",
+      "documented_date": "2026-09-01",
+      "note": "Documented for cards as well, and both pages classify it the same way, which TestNoReasonClassifiesDifferentlyAcrossMethods checks."
+    },
+    {
+      "code": "payment_collect_request_expired",
+      "kind": "reason",
+      "method": "upi",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/upi/",
+      "documented_date": "2026-09-01"
+    },
+    {
+      "code": "payment_declined",
+      "kind": "reason",
+      "method": "upi",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/upi/",
+      "documented_date": "2026-09-01"
+    },
+    {
+      "code": "invalid_vpa",
+      "kind": "reason",
+      "method": "upi",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/errors/payments/upi/",
+      "documented_date": "2026-09-01"
+    },
+    {
+      "code": "insufficient_fund",
+      "kind": "reason",
+      "method": "card",
+      "label": "documented-test-mode",
+      "source": "https://razorpay.com/docs/payments/payments/test-card-details/",
+      "documented_date": "2026-08-31",
+      "note": "The test-card page's singular spelling. The live-mode error page spells it insufficient_funds. Every batch manifest under results/batches/ carries this form, so the classifier keeps it in a table of its own rather than dropping it."
+    },
+    {
+      "code": "card_number_invalid",
+      "kind": "reason",
+      "method": "card",
+      "label": "documented-test-mode",
+      "source": "https://razorpay.com/docs/payments/payments/test-card-details/",
+      "documented_date": "2026-08-31",
+      "note": "On the test-card page and not on the live-mode card error page. Kept for the same reason as insufficient_fund."
     },
     {
       "code": "BAD_REQUEST_ERROR",
       "kind": "error_class",
-      "documented_date": "2026-08-31"
+      "method": "",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/payments/payment-gateway/rainy-day/errors/payment-error-parameters/",
+      "documented_date": "2026-09-01",
+      "observed_date": "2026-09-01",
+      "note": "The coarse class. Observed on the production failure of 2026-09-01 and on every test-mode failure of 2026-08-31, which is the structure holding: the coarse code stays BAD_REQUEST_ERROR and the signal is in error_reason."
     },
     {
       "code": "GATEWAY_ERROR",
       "kind": "error_class",
-      "documented_date": "2026-08-31"
+      "method": "",
+      "label": "documented-live",
+      "source": "https://razorpay.com/docs/payments/payment-gateway/rainy-day/errors/payment-error-parameters/",
+      "documented_date": "2026-09-01"
     },
     {
       "code": "payment_failed",
       "kind": "reason",
+      "method": "card",
+      "label": "observed-test-mode",
+      "source": "docs/RAZORPAY-TEST-MODE-NOTES.md, the 2026-08-31 walk",
       "documented_date": "2026-08-31",
       "observed_date": "2026-08-31",
-      "note": "The only failure reason Razorpay test mode was observed producing. See _meta.pending_reason."
+      "note": "The only failure reason Razorpay test mode was observed producing, for all eight documented cards. It is on no documentation page. See _meta.pending_reason."
     }
   ]
 }

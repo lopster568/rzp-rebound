@@ -6,7 +6,12 @@
     "open_question": "Resolved on 2026-08-31, and not the way it was asked. There is no card that forces a successful authorization. The outcome is chosen at the last step of the checkout sequence through a single form field carrying S or F, and the same card number produced both a captured payment and a failed one. success_cards stays empty because the concept does not apply.",
     "mode": "test mode only. These numbers do nothing on live keys.",
     "live_walk_2026_08_31": "All eight cards were driven through the checkout sequence in docs/RAZORPAY-TEST-MODE-NOTES.md, one order each, with the mock bank told to decline. Every one produced the identical failure: error_reason payment_failed, error_code BAD_REQUEST_ERROR, error_source gateway, error_step payment_authorization. The card number does not reach the mock bank in a form that changes what it returns. This does not establish that the documented codes are wrong, only that the one mechanism that works without a browser does not reproduce them.",
-    "risk_block": "No risk block was produced by any call in the 2026-08-31 run, so PRD Q2 is still open and testcards.PendingRiskBlockCode still stands in for the code."
+    "risk_block": "Resolved on 2026-09-01, and not from a run. The live-mode card error documentation names the reason: payment_risk_check_failed. testcards.PendingRiskBlockCode is gone and internal/classify carries the documented string. No risk block has still ever been produced by a call from this project, so the reason is documented and not observed. PRD Q2 closed.",
+    "labels": {
+      "documented-test-mode": "A card number or VPA the Razorpay test-card page publishes. Cited by the source field on the row. It says nothing about live mode, where these numbers do nothing.",
+      "observed-test-mode": "A value this project observed coming back from Razorpay test mode and which appears on no documentation page."
+    },
+    "live_mode_vocabulary": "The error_code on each row is the string the test-card page carries, which is not always the live-mode string. insufficient_fund below is spelled insufficient_funds in the live-mode card error documentation, and card_number_invalid is not on the live-mode card list at all. testdata/error_codes.json holds both vocabularies with a label on every row, and internal/classify keeps them in separate tables."
   },
   "failure_cards": [
     {
@@ -17,7 +22,9 @@
       "observed_error_reason": "payment_failed",
       "observed_error_code": "BAD_REQUEST_ERROR",
       "observed_date": "2026-08-31",
-      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table."
+      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table.",
+      "label": "documented-test-mode",
+      "source": "https://razorpay.com/docs/payments/payments/test-card-details/"
     },
     {
       "card_number": "4100280000080001",
@@ -27,7 +34,10 @@
       "observed_error_reason": "payment_failed",
       "observed_error_code": "BAD_REQUEST_ERROR",
       "observed_date": "2026-08-31",
-      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table."
+      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table.",
+      "label": "documented-test-mode",
+      "source": "https://razorpay.com/docs/payments/payments/test-card-details/",
+      "live_mode_spelling": "insufficient_funds"
     },
     {
       "card_number": "4100280000070002",
@@ -37,7 +47,9 @@
       "observed_error_reason": "payment_failed",
       "observed_error_code": "BAD_REQUEST_ERROR",
       "observed_date": "2026-08-31",
-      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table."
+      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table.",
+      "label": "documented-test-mode",
+      "source": "https://razorpay.com/docs/payments/payments/test-card-details/"
     },
     {
       "card_number": "4100280000060003",
@@ -47,7 +59,9 @@
       "observed_error_reason": "payment_failed",
       "observed_error_code": "BAD_REQUEST_ERROR",
       "observed_date": "2026-08-31",
-      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table."
+      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table.",
+      "label": "documented-test-mode",
+      "source": "https://razorpay.com/docs/payments/payments/test-card-details/"
     },
     {
       "card_number": "4100280000030006",
@@ -57,7 +71,9 @@
       "observed_error_reason": "payment_failed",
       "observed_error_code": "BAD_REQUEST_ERROR",
       "observed_date": "2026-08-31",
-      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table."
+      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table.",
+      "label": "documented-test-mode",
+      "source": "https://razorpay.com/docs/payments/payments/test-card-details/"
     },
     {
       "card_number": "4100280000010008",
@@ -67,7 +83,10 @@
       "observed_error_reason": "payment_failed",
       "observed_error_code": "BAD_REQUEST_ERROR",
       "observed_date": "2026-08-31",
-      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table."
+      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table.",
+      "label": "documented-test-mode",
+      "source": "https://razorpay.com/docs/payments/payments/test-card-details/",
+      "live_mode_spelling": "not on the documented live-mode card reason list"
     },
     {
       "card_number": "4100280000020007",
@@ -77,7 +96,9 @@
       "observed_error_reason": "payment_failed",
       "observed_error_code": "BAD_REQUEST_ERROR",
       "observed_date": "2026-08-31",
-      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table."
+      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table.",
+      "label": "documented-test-mode",
+      "source": "https://razorpay.com/docs/payments/payments/test-card-details/"
     },
     {
       "card_number": "4100280000000009",
@@ -87,7 +108,9 @@
       "observed_error_reason": "payment_failed",
       "observed_error_code": "BAD_REQUEST_ERROR",
       "observed_date": "2026-08-31",
-      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table."
+      "unverified_reason": "Driven live on 2026-08-31 and the documented reason did not come back. The mock bank gateway returned payment_failed, as it did for every other card in this table.",
+      "label": "documented-test-mode",
+      "source": "https://razorpay.com/docs/payments/payments/test-card-details/"
     }
   ],
   "upi_vpas": [
@@ -97,7 +120,9 @@
       "verified": false,
       "documented_date": "2026-08-31",
       "unverified_reason": "Not drivable. POST /v1/payments/create/upi answered 400 under HTTP Basic auth and 401 with key_id in the body or the query string on 2026-08-31, so no UPI attempt could be made server side.",
-      "observed_date": "2026-08-31"
+      "observed_date": "2026-08-31",
+      "label": "documented-test-mode",
+      "source": "https://razorpay.com/docs/payments/payments/test-card-details/"
     },
     {
       "vpa": "failure@razorpay",
@@ -105,7 +130,9 @@
       "verified": false,
       "documented_date": "2026-08-31",
       "unverified_reason": "Not drivable. POST /v1/payments/create/upi answered 400 under HTTP Basic auth and 401 with key_id in the body or the query string on 2026-08-31, so no UPI attempt could be made server side.",
-      "observed_date": "2026-08-31"
+      "observed_date": "2026-08-31",
+      "label": "documented-test-mode",
+      "source": "https://razorpay.com/docs/payments/payments/test-card-details/"
     }
   ]
 }
