@@ -405,12 +405,17 @@ traced on the phase 3 fake run and is not traced at all on the phase 5 one.
 Every arm of the phase 5 live run is traced, so the tracer is not broken
 outright.
 
-Two facts about the machine that drove the phase 5 runs are recorded because
-they are candidates and not because either was confirmed: the configured
-`OTEL_EXPORTER_OTLP_ENDPOINT` had no scheme and something in the exporter path
-logged one `parse url` failure, and Docker was unreachable from that shell so no
-collector was listening. Neither explains why a span would carry no id, and the
-cause is written down as unexplained rather than guessed at.
+*Corrected 2026-09-01: the cause is isolated, from archived evidence.* The
+harness restates `OTEL_EXPORTER_OTLP_ENDPOINT` by value into each order's MCP
+config at generation time, and the configs each run archived under its own
+`mcp/` directory settle it. The phase 3 fake configs carry the endpoint,
+scheme-less, and that run is fully traced, which exonerates the no-scheme
+candidate outright. The phase 5 fake configs carry an empty `env` block: the
+shell that generated them had no endpoint exported, so the server took the
+no-op tracer branch in `cmd/rzp-mcp`, and a no-op span has no id to give. That
+branch was silent. It now writes one warning line to stderr naming the variable
+and what is lost, and `TestFakeLayerSaysSoWhenItServesWithoutTraceIDs` pins
+it.
 
 Nothing else is affected. The runs completed, the ledgers are complete, and
 every number in the tables stands, because no metric reads a trace id. What is

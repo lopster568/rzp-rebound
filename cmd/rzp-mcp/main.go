@@ -438,7 +438,11 @@ func newTracer(ctx context.Context, rig *runner.GatewayRig, layer string, warn i
 	if err != nil || cfg.OTLPEndpoint == "" {
 		// A config that will not load is not a reason to refuse to serve the
 		// fake layer, which needs no credentials at all. It is a reason to
-		// record no spans.
+		// record no spans, and to say so: every audit row this invocation
+		// writes will carry no trace id.
+		fmt.Fprintf(warn, "rzp-mcp: serving with a no-op tracer: %s is unset, "+
+			"so audit rows from this invocation carry no trace id\n",
+			config.EnvOTLPEndpoint)
 		return noop.NewTracerProvider().Tracer(tracerName), func() {}, nil
 	}
 

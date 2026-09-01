@@ -77,12 +77,16 @@ producing a fresh pair for `docs/DEMO-SCRIPT.md`.
 **What it cost:** the demo script's two trace ids stay from the phase 3 run, and
 that document now says which run they come from.
 
-**The cause was not isolated, and it is written down as unexplained.** Two facts
-about the machine are recorded as candidates rather than as answers: the
-configured `OTEL_EXPORTER_OTLP_ENDPOINT` had no scheme and something in the
-exporter path logged one `parse url` failure, and Docker was unreachable from
-that shell so no collector was listening. Neither explains why a span would
-carry no id at all.
+**The cause was not isolated at phase close, and was isolated the same day from
+archived evidence.** The two candidates recorded here at close were the
+configured endpoint having no scheme, and Docker being unreachable from that
+shell. The archived per-order MCP configs settle it: phase 3's fake configs
+carry `OTEL_EXPORTER_OTLP_ENDPOINT` scheme-less and that run is fully traced,
+so the no-scheme candidate is exonerated; phase 5's fake configs carry an empty
+`env` block, so the endpoint was never exported in the shell that generated
+them, the server took the silent no-op tracer branch, and a no-op span has no
+id to give. The branch now warns on stderr and
+`TestFakeLayerSaysSoWhenItServesWithoutTraceIDs` pins it.
 
 **The finding underneath it is the one worth keeping.** Every gate stayed green.
 `make ci` passes, `make claims-check` passes, every table cell matches its CSV,
