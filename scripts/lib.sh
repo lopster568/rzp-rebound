@@ -10,6 +10,18 @@ die() {
 	exit 1
 }
 
+# heading prints a banner for one section of a long terminal walkthrough, so a
+# viewer watching a recording can see where one act ends and the next begins.
+# It is plain ASCII: a box-drawing character renders as a question mark in a
+# terminal that is not on a UTF-8 locale, and the one place this output is
+# going is somebody else's terminal.
+HEADING_WIDTH=${HEADING_WIDTH:-74}
+heading() {
+	local rule
+	rule=$(printf '%*s' "$HEADING_WIDTH" '' | tr ' ' '=')
+	printf '\n%s\n%s\n%s\n\n' "$rule" "$*" "$rule"
+}
+
 repo_root() {
 	git rev-parse --show-toplevel 2>/dev/null || die "not inside a git repository"
 }

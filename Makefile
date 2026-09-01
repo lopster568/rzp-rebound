@@ -2,7 +2,7 @@
 .PHONY: help hooks preflight test test-go test-race test-python test-integration lint \
 	docs-check claims-check ci verify-phase-0 verify-offline verify-live verify-phase-2 \
 	verify-phase-3 verify-phase-4 jaeger-up jaeger-down seed run-arm run-all report \
-	auth-probe capture demo agent-smoke trace-links
+	auth-probe capture demo showcase agent-smoke trace-links
 
 # Live targets read .env so a run does not depend on the caller having
 # exported the key pair by hand. .env is gitignored and chmod 600, and nothing
@@ -85,6 +85,9 @@ capture: ## Capture real test-mode responses into testdata/recorded/
 
 demo: ## Run the recovery loop end to end against Razorpay test mode
 	@$(RUN_WITH_ENV) go run ./cmd/rzp demo
+
+showcase: ## The guided tour in four acts. NO_PAUSE=1 skips the pauses, for recording.
+	@bash scripts/showcase.sh
 
 verify-phase-0: ## Phase 0 gate: preflight is advisory here, tests and docs are not
 	@bash scripts/preflight.sh || echo "preflight reported problems, continuing (phase 0 needs no docker and no keys)"
