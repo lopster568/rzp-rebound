@@ -47,15 +47,38 @@ DEFAULT_FILES = [
     "ARCHITECTURE.md",
     "HONEST-LIMITATIONS.md",
     "docs/DEMO-SCRIPT.md",
+    # Added in phase 5. It is the document with the most external numbers in
+    # the repository, so it is the one where an unsourced number would do the
+    # most damage, and every industry figure in it has to be entered in
+    # scripts/claims-allow.txt by hand with its source on the line.
+    "docs/EVIDENCE.md",
 ]
 
-# The two runs the published tables come from. A table's `layer` cell picks
-# the CSV. Publishing a table from a different run means changing this map,
-# which is the point: the mapping is a claim about provenance and it is here
-# rather than implied by whichever file was newest.
-PUBLISHED_CSV = {
-    "fake": "results/tables/phase-3-fake.csv",
-    "live": "results/tables/phase-3-live.csv",
+# The runs the published tables come from. Publishing a table from a different
+# run means changing this map, which is the point: the mapping is a claim about
+# provenance and it is here rather than implied by whichever file was newest.
+#
+# Two lookups, because phase 5 published two fake-layer runs from one seed with
+# two failure mixes.
+#
+# PUBLISHED_CSV_BY_RUN is used when a results table carries a `run` column, and
+# the run id picks the CSV exactly. PUBLISHED_CSV_BY_LAYER is the phase 4
+# behaviour, kept so a table with only `layer` still checks: it points at the
+# current headline run for that layer. A table left behind at an older run's
+# numbers therefore fails rather than passing against its own stale CSV, which
+# is a gap phase 4 had and phase 5 closed after a documentation audit found four
+# documents carrying the same table.
+PUBLISHED_CSV_BY_RUN = {
+    "phase-3-fake": "results/tables/phase-3-fake.csv",
+    "phase-3-live": "results/tables/phase-3-live.csv",
+    "phase-5-fake-ethoca": "results/tables/phase-5-fake-ethoca.csv",
+    "phase-5-fake-uniform": "results/tables/phase-5-fake-uniform.csv",
+    "phase-5-live": "results/tables/phase-5-live.csv",
+}
+
+PUBLISHED_CSV_BY_LAYER = {
+    "fake": "results/tables/phase-5-fake-ethoca.csv",
+    "live": "results/tables/phase-5-live.csv",
 }
 
 # Markdown header text to CSV column. A results table header that is not in
@@ -89,7 +112,7 @@ COLUMNS = {
 }
 
 # Header cells that identify a row rather than measure it.
-KEY_COLUMNS = {"layer", "arm", "scope"}
+KEY_COLUMNS = {"run", "layer", "arm", "scope"}
 
 failures = []
 
@@ -336,11 +359,19 @@ def check_tables(path, lines, csv_cache):
             scope = row.get("scope", "overall") or "overall"
             if layer == "live":
                 live_rows += 1
-            csv_path = PUBLISHED_CSV.get(layer)
-            if csv_path is None:
-                fail(row_where, "layer %r has no published run in PUBLISHED_CSV" % layer)
-                row_index += 1
-                continue
+            run = (row.get("run") or "").strip()
+            if run:
+                csv_path = PUBLISHED_CSV_BY_RUN.get(run)
+                if csv_path is None:
+                    fail(row_where, "run %r has no published table in PUBLISHED_CSV_BY_RUN" % run)
+                    row_index += 1
+                    continue
+            else:
+                csv_path = PUBLISHED_CSV_BY_LAYER.get(layer)
+                if csv_path is None:
+                    fail(row_where, "layer %r has no published run in PUBLISHED_CSV_BY_LAYER" % layer)
+                    row_index += 1
+                    continue
             if csv_path not in csv_cache:
                 csv_cache[csv_path] = load_csv_rows(csv_path)
             source = csv_cache[csv_path].get((layer, arm, scope))

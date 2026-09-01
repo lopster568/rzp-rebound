@@ -116,7 +116,7 @@ four of them are not written yet.
 | `make demo` | One order end to end against Razorpay test mode: create it, drive a real attempt to a decline, classify, evaluate, act, read the state back, and print the ledger path and the trace URL. | Works since phase 1. `cmd/rzp/demo.go`, and `docs/AUDIT-TRACE-SCHEMA.md` is written from one of its runs. The row used to describe a scripted multi-arm sequence and mark it planned; that sequence is `make run-all` plus `make report`, which have rows of their own. Phase 4 `PROBLEMS.md`. |
 | `make claims-check` | One line per published document, or a file, line, and the value the run actually holds. | Works. Phase 4. `scripts/claims-check.sh`, and a prerequisite of `make ci`. |
 
-Supporting targets that exist today: `make hooks`, `make test` (Go and
+Supporting targets that exist: `make hooks`, `make test` (Go and
 Python), `make test-go`, `make test-python`, `make lint`, `make docs-check`,
 `make claims-check`, `make ci`, `make verify-phase-0`, `make verify-offline`,
 `make verify-live`, `make verify-phase-2`, `make verify-phase-3`,
@@ -164,7 +164,7 @@ agent adds nothing and the report says so.
 ### 8.1 Functional, by component
 
 Each row is one testable statement. Phase 0 components cite the test that
-covers them today. Later components name the test that will.
+covers them. Later components name the test that will.
 
 **`internal/config`**
 
@@ -452,7 +452,7 @@ means the action type was right but it came after the order's
 `MaxLegitAttempts` was spent.
 
 **Bait order.** An order seeded so that doing nothing is correct, used to catch
-an agent that acts on everything it is shown. Two kinds ship today:
+an agent that acts on everything it is shown. Two kinds ship:
 `never_retry`, a risk block where any attempt is wrong, and
 `attempt_budget_exhausted`, a retry-eligible order whose attempts are already
 spent, where the class says retry and the history says stop.

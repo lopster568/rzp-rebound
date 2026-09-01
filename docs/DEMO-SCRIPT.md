@@ -16,7 +16,7 @@ make trace-links RUN_DIR=results/runs/phase-3-fake
 ```
 
 `trace-links` prints two URLs read out of the run's own ledger, so each link
-points at the trace the published table row was computed from rather than at a
+points at the trace a published table row was computed from rather than at a
 search result. Open both tabs before the take. The trace ids are:
 
 | Tab | Trace id | What it shows |
@@ -24,20 +24,35 @@ search result. Open both tabs before the take. The trace ids are:
 | The refusal | `04821ac7aea1bf5b4db411621e00d886` | `create_payment_link` refused, `R3-AMOUNT-CEILING` on the span, no side effect |
 | The recovery | `6ca1fe6315cbbce8f0e5f022de9e20fe` | `retry_payment` allowed under `R0-DEFAULT-ALLOW`, order read back `paid` |
 
+**Both ids are from `results/runs/phase-3-fake`, and the tables this script
+walks are from the phase 5 runs.** That is stated rather than hidden. Every
+ledger row in both phase 5 fake runs came out with an empty `trace_id`,
+including the agent arm's, whose phase 3 ledger was fully traced, and the cause
+was not isolated. `/HONEST-LIMITATIONS.md` item 36 has the counts. The two
+traces above show the same code path the phase 5 rows were produced by, on an
+earlier batch, and a viewer should be told which run they are looking at.
+
 Jaeger runs on in-memory storage, so a container restart loses both. Check that
 both tabs load before recording. If they do not, run
-`make agent-smoke BATCH=results/batches/b-1234-40.json N=2` to produce a fresh
-pair and take the new ids from `make trace-links`.
+`make agent-smoke BATCH=results/batches/b-5150-40-ethoca-card-mix-2017.json N=2`
+with a working `OTEL_EXPORTER_OTLP_ENDPOINT` to produce a fresh pair, and take
+the new ids from `make trace-links`. That is also the way to get a pair from the
+current batch, which is better than the pair above.
 
 ## 0:00 to 0:30, the problem
 
-**On screen:** `docs/PRD.md` section 2, the eight-row failure table.
+**On screen:** `docs/PRD.md` section 2, the failure taxonomy table.
 
 **Say:** A failed Razorpay payment stays failed. The merchant picks between two
-bad options: do nothing, or retry blindly. Three of the eight documented
-failure cards cannot succeed on the same card and two more need the customer
-back in the flow, so a blind retry spends a gateway fee and a customer's
-patience on five of eight. What a merchant wants is an agent that retries only
+bad options: do nothing, or retry blindly. Razorpay documents fifteen live-mode
+card failure reasons, and eight of them cannot succeed on the same instrument
+while three more need the customer back in the flow.
+
+A blind retry on those does not cost a gateway fee. In India only successful
+transactions are billed, and that is the first thing people get wrong about this
+problem. What it costs is the customer's patience, the merchant's headroom under
+the card networks' reattempt caps, and the scheme fees that start once a
+merchant goes past them. What a merchant wants is an agent that retries only
 what is worth retrying, and proof afterwards that it never went outside the
 limits they set. The second half is the hard half, and it is what this build is
 about.
@@ -119,38 +134,46 @@ make report
 
 Then open `RESULTS.md`.
 
-**Say:** Four arms over one seeded batch of 40, and the layer is on every row
-because a fake-layer number and a test-mode number are not the same kind of
-evidence.
+**Say:** Four arms over one seeded batch of 40, and both the run and the layer
+are on every row, because a fake-layer number and a test-mode number are not the
+same kind of evidence and because two of these batches are the same seed with
+two different failure mixes.
 
-Start with the naive arm. It recovers 21 against the gated arms' 18, so on the
-recovery column it wins. Now the columns next to it: 19 false actions against
-1, and 40 in `policy_violations_succeeded`, which counts actions that reached a
-side effect with no policy verdict behind them. It has no policy, so every
-action it took is in that column. The gated arms read 0. That is the trade
-this project exists to measure, and the report states it rather than looking
-for a column where the agent wins.
+The headline batch is seeded from Mastercard and Ethoca's published card-decline
+shares, not from anything I made up. Insufficient funds, lost or stolen, fraud.
+Which means a third of the batch is orders no merchant should touch at all.
+
+Start with the naive arm. It recovers 20 against the gated arms' 16, so on the
+recovery column it wins. Now the columns next to it: 14 forbidden actions
+against 0, and 40 in `policy_violations_succeeded`, which counts actions that
+reached a side effect with no policy verdict behind them. It has no policy, so
+every action it took is in that column.
+
+**Then scroll to the second fake table, same seed, same code.** On the invented
+mix the naive arm takes 3 forbidden actions. On the published one it takes 14.
+Nothing about the code changed between those two rows. The batch did, and it
+changed because half of it now comes from somebody else's data instead of mine.
 
 Now the two gated arms. They agreed on all 40 orders: same recoveries, same
-actions, same false action on the same bait order, same nine escalations
-splitting the same way. Given the same classification, the same policy, and the
-same tools, the model reached the decision the hand-written rule set reaches,
-forty times out of forty, at 3.94 usd and about 14 minutes against under a
-second.
+actions, no false action on either, same eighteen escalations splitting the same
+way. Given the same classification, the same policy, and the same tools, the
+model reached the decision the hand-written rule set reaches, forty times out of
+forty, against under a second for the rule set.
 
 What separates them is one column. The rule set made 40 policy evaluations,
-because it proposes exactly what its class table dictates. The model made 59,
-and 16 came back refused against the rule set's 9. Sixteen times it asked for
-something the policy would not allow, and none of those sixteen reached the
-gateway. An agent that never proposes anything out of bounds has not been
-tested against a policy. This one pushed, and the gate held.
+because it proposes exactly what its class table dictates. The model made 50,
+and 22 came back refused against the rule set's 18. Twenty-two times it asked
+for something the policy would not allow, and none of them reached the gateway.
+An agent that never proposes anything out of bounds has not been tested against
+a policy. This one pushed, and the gate held.
 
-**Then the live table.** Both gated arms recover zero here, and that is the
+**Then the live table.** The rules arm recovers zero here, and that is the
 honest answer rather than a broken build. Razorpay test mode returns
-`payment_failed` for all eight documented magic cards, which names no cause, so
-the classifier returns `unclassified`, so the fail-closed rule fires and both
-arms escalate everything. A model asked to recover revenue and shown eight
-failed payments it could have retried chose not to, eight times.
+`payment_failed` for all eight documented magic cards. Razorpay documents that
+reason as the bank declining without giving one, and its own suggested action is
+to try a different card, so there is no cause a policy can act on. The
+classifier returns `unclassified`, the fail-closed rule fires, and the arm
+escalates everything.
 
 ## 4:30 to 5:00, the limits and the close
 

@@ -125,8 +125,8 @@ Three limits on that argument, stated rather than left implicit.
 **The arm's class-to-action table agrees with the manifest's by construction.**
 `recovery.ActionForClass` and `batch.CorrectActionFor` return the same action
 for the same class. They are separate functions on purpose, so that a later
-phase can change one without silently moving the score, but today an arm that
-classifies correctly also picks the correct action, so the interesting error
+phase can change one without silently moving the score, but as of 2026-09-01
+an arm that classifies correctly also picks the correct action, so the interesting error
 mode is misclassification and not action selection. On the fake layer the
 classifier is right every time, so `classification_accuracy` is 1.0 and carries
 no information. On the live layer it is 0.0 for the same reason it should be:

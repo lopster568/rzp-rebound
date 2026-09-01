@@ -55,8 +55,9 @@ R3 was 450000 paise, picked after a fake-layer run showed 400000 escalating a
 quarter of the batch. It is now 1500000, the RBI e-mandate additional-factor
 threshold.
 
-R1 was 3 and is still 3. The Visa bulletin caps reattempts at 15 per declined
-transaction in 30 rolling days for Categories 2 and 3, and 3 is inside that. A
+R1 was 3 and is still 3. The Visa bulletin caps Category 2 reattempts at 15 in
+30 days, and 3 is inside that. That sentence said "Categories 2 and 3" until the
+2026-09-01 re-verification pass read the bulletin as a PDF, which is entry 12. A
 merchant is free to be stricter than the network, so the number does not have to
 move for the citation to be honest. What changed is that the constant names the
 bound it sits under, and a test fails if anyone raises it past 15.
@@ -171,3 +172,73 @@ those numbers can live.
 Rejected: leaving EVIDENCE.md ungated on the reasoning that it is prose about
 sources rather than results. Prose about sources is exactly where a wrong number
 survives longest.
+
+## 11. `payment_failed` is documented and still has no class
+
+The 2026-09-01 re-verification pass found that `payment_failed`, the only reason
+Razorpay test mode ever returned, is not an undocumented string. Razorpay
+documents it on the live-mode card error page: the bank declined the payment
+without providing a specific reason, suggested action contact the bank or try a
+different card.
+
+Phase 1 had recorded it as a mystery, and half of this repository's live-layer
+narrative rested on that. So the correction had to be made and the question it
+opens had to be answered: does a documented suggested action make it
+classifiable?
+
+**It stays `unclassified`, and the suggested action is the reason rather than an
+argument against it.** "Try a different card" rules out a same-instrument retry,
+which is exactly what the fail-closed default delivers through
+`R7-UNKNOWN-FAIL-CLOSED`. The classification was already doing what the
+documentation advises.
+
+**It is not promoted to `new_instrument_required`,** which is the tempting move
+because it would let the live layer show a recovery attempt instead of eight
+escalations. Three reasons, in order of weight:
+
+1. A support instruction written for a human looking at one order is not a
+   class. "Contact your bank" is advice to a person who can judge one case;
+   `new_instrument_required` is a rule that fires unattended across a batch.
+2. Acting on it means sending a payment link to every customer whose payment a
+   bank declined without saying why, which on the live layer is every order.
+   That is the over-messaging R4 and R7 exist to prevent.
+3. It would change a published live-layer result from the outside, by
+   reinterpretation rather than by measurement, in the phase whose whole subject
+   is not doing that.
+
+`TestPaymentFailedIsDocumentedAndStillUnclassified` holds both halves, and
+`testdata/error_codes.json` now labels the row `documented-live` while keeping
+it in `_meta.pending`, which is a combination the label test explicitly allows.
+
+## 12. The citation corrections were marked, not quietly applied
+
+A second verification pass on 2026-09-01 read the primary documents first-hand
+and found four claims in the first draft of `docs/EVIDENCE.md` wrong: the Visa
+bulletin was cited for a Category 1 code list it does not contain, the Ethoca
+article was dated two years late, a companion claim about response codes 05 and
+51 was carried that is not in its source, and a merchant survey was described as
+a measurement.
+
+Every one of them is corrected in place with a `Corrected 2026-09-01` line
+saying what it used to say. That is more words than a silent fix and it is the
+right trade: this is the document that exists to stop unsourced numbers, the
+failure mode arrived inside it on its first day, and a reader deciding how much
+to trust the rest of the file needs to know that.
+
+The dropped claim is dropped rather than hedged. A figure that cannot be traced
+to a document does not get a qualifier, it gets deleted.
+
+## 13. The batch file the run consumed keeps its old name
+
+Renaming the profile to `ethoca-card-mix-2017` changed the batch id, and by then
+the four-arm run had been driven at 40 headless invocations against a cap of 45.
+
+Three options. Re-run, which the budget does not allow. Edit the run manifest's
+`batch_id` and `batch_path` to point at the new file, which is editing a run
+artifact to fit a story and is the thing this repository does not do. Or keep
+both files and prove they are the same batch.
+
+The third. `scripts/verify-batches.sh` rebuilds the correctly named file from
+the profile and then asserts that the old-named file differs from it in nothing
+but `batch_id`. The orders are byte-identical, because the shares never changed
+and only the label did. `HONEST-LIMITATIONS.md` item 30 records it.

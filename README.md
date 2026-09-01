@@ -39,39 +39,56 @@ non-zero if any gated arm reached a side effect without a policy verdict.
 
 ## Results
 
-### Fake layer, n=40, synthetic
+### Fake layer, n=40, on a published card-decline mix
 
-| layer | arm | recovered | rate | FA-1 | FA-2 | escalations | refusals | violations succeeded |
-|---|---|---|---|---|---|---|---|---|
-| fake | `a0-control` | 0 | 0.000 | 0 | 0 | 0 | 0 | 0 |
-| fake | `a1-naive` | 21 | 0.568 | 3 | 16 | 0 | 0 | **40** |
-| fake | `a2-agent` | 18 | 0.486 | 1 | 0 | 9 | **16** | **0** |
-| fake | `a3-rules` | 18 | 0.486 | 1 | 0 | 9 | 9 | **0** |
+Batch seeded from Mastercard and Ethoca's published card-decline shares:
+insufficient funds 44 percent, lost or stolen 26 percent, fraud 9 percent. That
+makes 35 percent of the batch orders no merchant should touch, which is the
+source's share and not the author's.
+
+| run | layer | arm | recovered | rate | FA-1 | FA-2 | modelled cost | escalations | refusals | violations succeeded |
+|---|---|---|---|---|---|---|---|---|---|---|
+| phase-5-fake-ethoca | fake | `a0-control` | 0 | 0.000 | 0 | 0 | 0 | 0 | 0 | 0 |
+| phase-5-fake-ethoca | fake | `a1-naive` | 20 | 0.769 | **14** | 6 | **700000** | 0 | 0 | **40** |
+| phase-5-fake-ethoca | fake | `a2-agent` | 16 | 0.615 | 0 | 0 | 0 | 18 | **22** | **0** |
+| phase-5-fake-ethoca | fake | `a3-rules` | 16 | 0.615 | 0 | 0 | 0 | 18 | 18 | **0** |
+
+### Fake layer, n=40, on the invented mix, for comparison
+
+Same seed, same code, same day. The only thing that changed is where the
+failure mix came from.
+
+| run | layer | arm | recovered | rate | FA-1 | FA-2 | modelled cost | escalations | refusals | violations succeeded |
+|---|---|---|---|---|---|---|---|---|---|---|
+| phase-5-fake-uniform | fake | `a0-control` | 0 | 0.000 | 0 | 0 | 0 | 0 | 0 | 0 |
+| phase-5-fake-uniform | fake | `a1-naive` | 19 | 0.514 | 3 | 18 | 150000 | 0 | 0 | **40** |
+| phase-5-fake-uniform | fake | `a3-rules` | 15 | 0.405 | 0 | 0 | 0 | 9 | 9 | **0** |
 
 ### Live layer, n=8, Razorpay test mode
 
-| layer | arm | scorable | unscorable | recovered | rate | FA-1 | FA-2 | escalations | refusals | violations succeeded |
-|---|---|---|---|---|---|---|---|---|---|---|
-| live | `a0-control` | 8 | 0 | 0 | 0.000 | 0 | 0 | 0 | 0 | 0 |
-| live | `a1-naive` | 8 | 0 | 4 | 0.667 | 2 | 2 | 0 | 0 | **8** |
-| live | `a2-agent` | 7 | 1 | 0 | 0.000 | 0 | 0 | 7 | 8 | **0** |
-| live | `a3-rules` | 8 | 0 | 0 | 0.000 | 0 | 0 | 8 | 8 | **0** |
+| run | layer | arm | scorable | unscorable | recovered | rate | FA-1 | FA-2 | escalations | refusals | violations succeeded |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| phase-5-live | live | `a0-control` | 8 | 0 | 0 | 0.000 | 0 | 0 | 0 | 0 | 0 |
+| phase-5-live | live | `a1-naive` | 8 | 0 | 4 | 0.667 | 2 | 2 | 0 | 0 | **8** |
+| phase-5-live | live | `a3-rules` | 8 | 0 | 0 | 0.000 | 0 | 0 | 8 | 8 | **0** |
 
 A test-mode number is not evidence about real customers, and no row here is
 summed or averaged across layers.
 
-Three things to read off those tables. The naive arm recovers more on the fake
-layer and pays 19 false actions against 1 to do it, with no policy verdict
-behind any of its 40 actions. The model arm and the rule engine reached
-identical decisions on all 40 fake-layer orders, and what separated them is
-that the model proposed 16 things the policy refused and none of them reached
-the gateway. And on the live layer both gated arms escalated everything,
-because Razorpay test mode returns `payment_failed` for all eight documented
-magic cards, that reason names no cause, and the fail-closed rule is doing its
-job.
+Four things to read off those tables. The naive arm recovers the most on the
+fake layer and pays 20 false actions to do it, with no policy verdict behind any
+of its 40 actions. Its forbidden actions go from 3 on the invented mix to 14 on
+the published one, because a real card-decline mix is a third lost, stolen, and
+fraud, and blind retry acts on all of it. The model arm and the rule engine
+reached identical decisions on all 40 orders of the headline batch, and what
+separated them is that the model proposed 22 things the policy refused and none
+of them reached the gateway. And on the live layer the rules arm escalated
+everything, because Razorpay test mode returns `payment_failed` for all eight
+documented magic cards and that reason names no cause a policy can act on.
 
 `/RESULTS.md` has the full tables, the per-class breakdown, the cost of the
-model arm, and the reading.
+model arm, and the reading. `docs/EVIDENCE.md` has where every cited number
+came from and what kind of source it has.
 
 ## Where to look
 

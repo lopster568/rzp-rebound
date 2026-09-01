@@ -288,54 +288,75 @@ budget.
 
 Full tables, per-class breakdown, and the reading are in `/RESULTS.md`.
 
-### Fake layer, n=40, synthetic
+### Fake layer, n=40, on a published card-decline mix
 
-| layer | arm | recovered | rate | actions | FA-1 | FA-2 | escalations | evaluations | refusals | violations succeeded |
-|---|---|---|---|---|---|---|---|---|---|---|
-| fake | `a0-control` | 0 | 0.000 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| fake | `a1-naive` | 21 | 0.568 | 40 | 3 | 16 | 0 | 0 | 0 | 40 |
-| fake | `a2-agent` | 18 | 0.486 | 31 | 1 | 0 | 9 | 59 | 16 | 0 |
-| fake | `a3-rules` | 18 | 0.486 | 31 | 1 | 0 | 9 | 40 | 9 | 0 |
+Seeded from Mastercard and Ethoca's published card-decline shares, which make 35
+percent of the batch orders no merchant should touch.
+
+| run | layer | arm | recovered | rate | actions | FA-1 | FA-2 | modelled cost | escalations | evaluations | refusals | violations succeeded |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| phase-5-fake-ethoca | fake | `a0-control` | 0 | 0.000 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| phase-5-fake-ethoca | fake | `a1-naive` | 20 | 0.769 | 40 | 14 | 6 | 700000 | 0 | 0 | 0 | 40 |
+| phase-5-fake-ethoca | fake | `a2-agent` | 16 | 0.615 | 22 | 0 | 0 | 0 | 18 | 50 | 22 | 0 |
+| phase-5-fake-ethoca | fake | `a3-rules` | 16 | 0.615 | 22 | 0 | 0 | 0 | 18 | 40 | 18 | 0 |
 
 A model of documented behaviour. Not evidence about Razorpay.
 
+### Fake layer, n=40, on the invented mix, for comparison
+
+Same seed, same code, same day. Only the failure mix differs.
+
+| run | layer | arm | recovered | rate | actions | FA-1 | FA-2 | modelled cost | escalations | evaluations | refusals | violations succeeded |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| phase-5-fake-uniform | fake | `a0-control` | 0 | 0.000 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| phase-5-fake-uniform | fake | `a1-naive` | 19 | 0.514 | 40 | 3 | 18 | 150000 | 0 | 0 | 0 | 40 |
+| phase-5-fake-uniform | fake | `a3-rules` | 15 | 0.405 | 31 | 0 | 0 | 0 | 9 | 40 | 9 | 0 |
+
 ### Live layer, n=8, Razorpay test mode
 
-| layer | arm | scorable | unscorable | recovered | rate | actions | FA-1 | FA-2 | escalations | evaluations | refusals | violations succeeded |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| live | `a0-control` | 8 | 0 | 0 | 0.000 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| live | `a1-naive` | 8 | 0 | 4 | 0.667 | 8 | 2 | 2 | 0 | 0 | 0 | 8 |
-| live | `a2-agent` | 7 | 1 | 0 | 0.000 | 0 | 0 | 0 | 7 | 8 | 8 | 0 |
-| live | `a3-rules` | 8 | 0 | 0 | 0.000 | 0 | 0 | 0 | 8 | 8 | 8 | 0 |
+| run | layer | arm | scorable | unscorable | recovered | rate | actions | FA-1 | FA-2 | escalations | evaluations | refusals | violations succeeded |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| phase-5-live | live | `a0-control` | 8 | 0 | 0 | 0.000 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| phase-5-live | live | `a1-naive` | 8 | 0 | 4 | 0.667 | 8 | 2 | 2 | 0 | 0 | 0 | 8 |
+| phase-5-live | live | `a3-rules` | 8 | 0 | 0 | 0.000 | 0 | 0 | 0 | 8 | 8 | 8 | 0 |
 
 Razorpay test mode. Not evidence about real customers, and not evidence that a
 recovery decision caused a recovery.
 
-**What the two tables say.** On the fake layer the naive arm recovers more, 21
-against 18, and pays 19 false actions against 1 to do it, and reaches the
-gateway 40 times with no policy verdict behind any of them. The model arm and
-the rule set arm agreed on all 40 orders: same recoveries, same actions, same
-false action on the same bait order, same nine escalations splitting the same
-way. What differed is what they asked for, and that is the column worth
-reading: `a2-agent` made 59 policy evaluations against 40, had 16 proposals
-refused against 9, and none of the 16 reached the gateway.
+**What the three tables say.** On the headline fake batch the naive arm recovers
+the most, 20 against 16, and pays 20 false actions against 0 to do it, and
+reaches the gateway 40 times with no policy verdict behind any of them. Its
+forbidden actions are 14 against 3 on the invented mix, which is the single
+clearest thing phase 5 produced: a real card-decline mix is a third orders that
+must not be touched, and blind retry touches all of them. The model arm and the
+rule set arm agreed on all 40 orders: same recoveries, same actions, no false
+action on either, same eighteen escalations splitting the same way. What
+differed is what they asked for, and that is the column worth reading:
+`a2-agent` made 50 policy evaluations against 40, had 22 proposals refused
+against 18, and none of the 22 reached the gateway.
 
 On the live layer every order classified as `unclassified`, because Razorpay
-test mode returns `payment_failed` for all eight documented magic cards and
-that reason names no cause. `R7-UNKNOWN-FAIL-CLOSED` fired on every one, so
-both gated arms escalated everything and took nothing. The naive arm retried
-all 8 and 4 reached `paid`, and that number is selected rather than earned: a
-test-mode attempt is settled at the last checkout call by one form field, so
-the gateway is standing in for the world.
+test mode returns `payment_failed` for all eight documented magic cards.
+Razorpay documents that reason as the bank declining without giving one, with a
+suggested action of trying a different card, so it names no cause a policy can
+act on. `R7-UNKNOWN-FAIL-CLOSED` fired on every one, so the rules arm escalated
+everything and took nothing. The naive arm retried all 8 and 4 reached `paid`,
+and that number is selected rather than earned: a test-mode attempt is settled
+at the last checkout call by one form field, so the gateway is standing in for
+the world.
 
 ## What this is not evidence of
 
-`/HONEST-LIMITATIONS.md` has every limit the phase documents record. The three
-that bite hardest on the tables above: the fake batch's highest reachable
-recovery rate is 0.568 rather than 1.000, because only the retry-class orders
-can reach `paid` in a run; classification accuracy on the fake layer is 1.000
-for every arm and carries no information, because the fake seeds the reason the
-classifier reads; and the run shape fired three of the nine policy rules, so
-the other six rest on unit tables and a golden matrix rather than on these
-numbers. There is also no spread anywhere: one run per layer, and the model arm
-is the one arm that does not reproduce from a seed.
+`/HONEST-LIMITATIONS.md` has every limit the phase documents record, and
+`docs/EVIDENCE.md` section 8 has what cannot be made real without production
+data. The four that bite hardest on the tables above: the headline batch's
+failure mix is a fraud-prevention vendor's published card-decline shares from
+2017, across a merchant population that is not Indian and not UPI-inclusive,
+which is the best citable mix available and is not this merchant's;
+classification accuracy on the fake layer is 1.000 for every arm and carries no
+information, because the fake seeds the reason the classifier reads; only the
+retry-class orders can reach `paid` in a run, so no arm can reach a recovery
+rate of 1.000 on any of these batches; and the run shape fires three of the nine
+policy rules, so the other six rest on unit tables and a golden matrix rather
+than on these numbers. There is also no spread anywhere: one run per layer, and
+the model arm is the one arm that does not reproduce from a seed.

@@ -4,9 +4,18 @@ Is the problem this repository attacks a real problem, and are the constants it
 runs on real constants? This is the document that answers both, with a source on
 every number and a label on every source.
 
-Written 2026-09-01, at the start of phase 5. It replaces nothing: until this
-file existed, the honest answer to "where did the retry cap come from" was that
-the author picked it.
+Written 2026-09-01, at the start of phase 5, and corrected the same day after a
+second pass read the primary documents first-hand rather than through
+summaries. It replaces nothing: until this file existed, the honest answer to
+"where did the retry cap come from" was that the author picked it.
+
+**Four claims in the first draft of this file were wrong**, and each correction
+is noted where it applies. The first draft cited a Visa bulletin for a code list
+the bulletin does not contain, dated a decline-mix article two years late,
+carried a companion claim about response codes that is not in its source, and
+described a merchant survey as a measurement. That is the failure mode this
+document exists to prevent, arriving inside the document itself, which is why
+the corrections are marked rather than quietly applied.
 
 ## How to read a row
 
@@ -28,18 +37,33 @@ evidence that the claim is true.
 
 ## 1. The problem: failed payments that never come back
 
-**Involuntary churn runs 33 to 38 percent of total subscription churn.**
-*Analyst and vendor-published, Recurly, 2026 research.* Involuntary churn is a
-subscription ending because a payment failed rather than because a customer left.
-It is the category this project is inside: the customer wanted to pay and the
-charge did not go through.
+**Involuntary churn is roughly a third of total subscription churn.**
+*Vendor-published benchmark, Recurly, July 2026 churn benchmark table.*
+Involuntary churn is a subscription ending because a payment failed rather than
+because a customer left. It is the category this project is inside: the customer
+wanted to pay and the charge did not go through.
 
-**False declines cost more than fraud, by roughly six times.**
-*Analyst estimate, Datos Insights, 2024.* Their published estimate puts false
-decline volume at about six times card fraud losses, and the 2024 estimate of
-false-decline value in the United States at 174 billion US dollars. A false
-decline is a legitimate payment the issuer refused. It is the failure mode with
-the largest gap between what the merchant lost and what the merchant can see.
+*Corrected 2026-09-01.* The 33 to 38 percent band is **computed** from Recurly's
+benchmark table rather than stated by Recurly as a headline. Their table gives
+involuntary and total monthly churn per vertical: SaaS 1.06 against 3.22,
+Education 1.69 against 4.99, Digital Media 1.59 against 4.14. Dividing gives the
+band. Their recovery-rate figures are on a separate blog post and are not the
+same source. A number this document derives is labelled derived.
+
+**False declines are estimated to cost merchants several times what fraud
+does.** *Merchant survey, Datos Insights, May 2024.*
+
+*Corrected 2026-09-01.* The first draft of this file called this a measurement
+and gave a 2024 dollar figure. It is a survey: 200 e-commerce merchants in the
+United States and the United Kingdom, interviewed between 2023-07 and 2023-09,
+reported at plus or minus 7 points at 95 percent confidence. The figures that
+survive that check are an average false-decline rate of 1.51 percent of
+e-commerce sales, lost revenue approaching 265 billion US dollars by 2027, and
+net e-commerce fraud losses of 43 billion US dollars by 2027. The "roughly six
+times" comparison is between those two 2027 estimates, not between two measured
+years. A false decline is a legitimate payment the issuer refused, and it is the
+failure mode with the largest gap between what the merchant lost and what the
+merchant can see.
 
 **NPCI publishes decline targets for UPI, which is what a target implies.**
 *Regulator, NPCI circular OC-149.* It sets technical decline targets below 1
@@ -47,20 +71,46 @@ percent and business decline targets below 5 percent for participants. A body
 that has to set a target for a decline rate is a body whose members do not
 automatically meet it.
 
+**There is almost no academic literature on this.** *Searched 2026-09-01.* No
+direct arXiv or ACM paper on card-payment retry optimization was found. The
+nearest artifacts are adjacent arXiv work on causal label recovery in payment
+networks and a United States patent on machine-learned retry identification.
+This is industrial practice with a thin academic literature behind it, which is
+worth knowing before treating any vendor's published uplift as a settled
+result.
+
 ## 2. The rules the retry policy sits under
 
-**Visa Category 1 declines may never be reattempted. Categories 2 and 3 may be
-reattempted at most 15 times per declined transaction in 30 rolling days.**
-*Network rule, Visa bulletin AI10325, "Updates to Rules for Declined Transaction
-Resubmission and Use of Authorization Response Codes".* The Category 1 list is
-in `internal/networkcodes` with the bulletin URL in the file header.
+**Visa Category 1 declines may never be reattempted. Category 2 declines may be
+reattempted at most 15 times in 30 days.** *Network rule, Visa bulletin AI10325,
+"Updates to Rules for Declined Transaction Resubmission and Use of Authorization
+Response Codes", dated 2020-09-03, effective 2021-04-17.* Read as a PDF on
+2026-09-01.
 
-Two things about that list are worth stating because they are commonly got
-wrong. Response codes `03`, `62`, `78`, and `93` were moved out of Category 1 by
-the 2020 update, and payments blog posts written before it still name all four
-as never-retry codes. `internal/networkcodes` carries them under
-`WasVisaCategory1Before2020` so a reader arriving with one of those posts finds
-the correction rather than an unexplained gap.
+*Corrected 2026-09-01, twice over.* The first draft of this file said the cap
+covers Categories 2 and 3, which came from a summary. And it cited the bulletin
+for the Category 1 code list, which the bulletin does not contain.
+
+What the bulletin does establish, first-hand: the four-category system;
+Category 1 as a decline the issuer will never approve and which a merchant is
+not permitted to reattempt; the Category 2 cap of 15 in 30 days; the move of
+response codes `03`, `62`, `78`, and `93` out of Category 1 into Category 2
+effective 2021-04-17; and that code `14` sits in both Category 1 and Category 3
+and must never be reattempted with the same account number.
+
+**The specific Category 1 code list is a reconstruction.** The twelve codes in
+`internal/networkcodes` come from processor reconstructions of Visa's
+member-gated table, of the kind Qualpay and other PSPs publish.
+`VisaCategory1IsReconstructed` is a constant set to true, a test holds it, and
+the source string in that package says the same thing. A reconstructed list is
+usable and it is not primary, and the difference has to be visible in the code
+rather than only here.
+
+The four moved codes are worth stating separately because they are commonly got
+wrong: payments blog posts written before 2021-04-17 still name all four as
+never-retry codes. `internal/networkcodes` carries them under
+`WasVisaCategory1BeforeApril2021` so a reader arriving with one of those posts
+finds the correction rather than an unexplained gap.
 
 **Mastercard merchant advice code `03` means do not try again.** *Network rule.*
 Mastercard also publishes an automated-clearing retry schedule, whose shortest
@@ -74,9 +124,17 @@ dispute, MAC `03` and the one hour floor on the published schedule, and takes
 its reattempt cap from the Visa bulletin, which is unambiguous.
 
 **Rs 15,000 is the RBI e-mandate threshold above which an additional factor of
-authentication is required.** *Regulator, RBI E-mandate Framework.* It is
+authentication is required.** *Regulator, RBI circular on processing of
+e-mandates for recurring transactions, dated 2022-06-16, which raised the limit
+from Rs 5,000 to Rs 15,000 with immediate effect.* It is
 `policy.DefaultAmountCeilingPaise`, at 1500000 paise, and it is the line
 `R3-AMOUNT-CEILING` was approximating with an invented number until 2026-09-01.
+
+Two circulars are commonly confused here and only one is the right citation. The
+2020-12-04 circular is the older Rs 5,000 limit and is not what this constant
+comes from. The Rs 1 lakh limit introduced in 2023-12 applies only to specified
+categories, being mutual funds, insurance premiums, and credit-card bill
+payments, and does not apply to a general merchant charge.
 
 **The RBI e-mandate 24 hour pre-debit notice is a notice floor and not a retry
 rate.** *Regulator.* It is in this document because it is the closest thing to a
@@ -127,11 +185,17 @@ customer's patience, and the issuer's opinion of the merchant.
 ## 5. The batch mix
 
 **Card declines: insufficient funds 44 percent, lost or stolen 26 percent, fraud
-9 percent, with response codes `05` and `51` together about 80 percent of all
-declines.** *Vendor-published research, Mastercard and Ethoca, `ethoca.com`,
-figures describing 2019.* This is the `ethoca-card-mix-2019` profile in
-`internal/batch`, and the vintage is in the profile name because a 2019 decline
-mix is a 2019 decline mix.
+9 percent.** *Vendor-published research, Mastercard and Ethoca, `ethoca.com`,
+article dated 2017-04-28.* This is the `ethoca-card-mix-2017` profile in
+`internal/batch`, and the vintage is in the profile name because a 2017 decline
+mix is a 2017 decline mix.
+
+*Corrected 2026-09-01, twice.* The article is dated 2017-04-28 and the first
+draft of this file said 2019, so the profile was renamed. And a widely repeated
+companion claim, that response codes `05` and `51` together are about 80 percent
+of all declines, is **not in that article** and could not be verified in any
+primary source. It is dropped rather than softened. A figure that cannot be
+traced to a document does not get a hedge, it gets deleted.
 
 Two honest notes on it. The three cited categories sum to 79 percent and the
 source does not break out the remaining 21, which the profile carries as a
@@ -144,21 +208,28 @@ every number in the table.
 
 ## 6. What vendors claim, labelled as vendor claims
 
-**Razorpay Optimizer press material claims merchants lose up to 30 percent of
-revenue to failed payments.** *Vendor claim.* It is carried here because it is
-the number the Indian market quotes. It is also stated inconsistently across
-Razorpay's own posts, which is worth knowing before anyone builds a business
-case on it: the same figure appears attached to different denominators in
-different pieces of their material. Nobody outside the vendor has audited any
-version of it.
+**Razorpay Optimizer press material, 2023-10-10.** *Vendor claim.* Verified
+verbatim on 2026-09-01: "Indian businesses lose around 30% revenue due to failed
+transactions", "Nearly 33% of failed transactions are never re-attempted", and a
+figure of "over 7,000 Cr". These are carried because they are the numbers the
+Indian market quotes. Nobody outside the vendor has audited any of them, the 30
+percent figure is stated against different denominators in different pieces of
+their own material, and none of them is used as an input to anything here.
 
-**Stripe and Adyen both publish recovery uplift from machine-learned retry
-timing.** *Vendor claim.* Both companies publish results from their own
-production systems on their own traffic, with no methodology, no baseline
-definition, and no independent replication. They are evidence that large
-processors think the problem is worth solving with a model. They are not a
-number this project can compare itself against, and section 7 says why nothing
-in this repository tries.
+The second one is the interesting one for this project, if it is true: a third
+of failed transactions never re-attempted is the gap a recovery agent fills.
+
+**Stripe publishes recovery results from its own retry model.** *Vendor claim,
+Stripe blog, 2024-01-23.* Verified quotes: the model uses "more than 500
+attributes", Deliveroo "recovered more than L100 million" in one year, and the
+best retries land "days into the future", with the window covering the
+customer's next payment period. Adyen publishes comparable material.
+
+Both are results from a vendor's own production system on its own traffic, with
+no methodology, no baseline definition, and no independent replication. They are
+evidence that large processors think the problem is worth solving with a model.
+They are not a number this project can compare itself against, and section 8
+says why nothing in this repository tries.
 
 ## 7. The production specimen
 
@@ -219,8 +290,8 @@ account holding two payments", which is a real change and is not a distribution.
 Nobody can say from this repository how often a merchant sees
 `insufficient_funds` rather than something that names no cause.
 
-**2. Whose failure mix this is.** The `ethoca-card-mix-2019` profile is card
-declines, published by a fraud-prevention vendor, describing 2019, across
+**2. Whose failure mix this is.** The `ethoca-card-mix-2017` profile is card
+declines, published by a fraud-prevention vendor, describing 2017, across
 whatever merchant population their data covers. It is not Indian, it is not
 UPI-inclusive, it is not this decade, and it is not any particular merchant's.
 It is the best citable mix available and it is somebody else's.
@@ -234,7 +305,8 @@ based on the decision.
 
 **4. Retry-timing uplift, which is excluded on purpose.** Every published figure
 for "retrying at hour N recovers X percent more" is vendor marketing with no
-methodology behind it. This project implements no timing strategy, publishes no
+methodology behind it, and section 1 records that there is no academic
+literature to fall back on either. This project implements no timing strategy, publishes no
 timing result, and does not cite anyone else's. The `R2-COOLDOWN` interval is a
 configured choice and says so.
 
@@ -254,18 +326,19 @@ project has observed carries a raw network response code, so
 
 | Source | Kind | Read |
 |---|---|---|
-| Visa bulletin AI10325, `usa.visa.com` | network rule | 2026-09-01 |
+| Visa bulletin AI10325, `usa.visa.com`, dated 2020-09-03 | network rule, read as a PDF | 2026-09-01 |
+| Processor reconstructions of Visa's Category 1 table | reconstruction, not primary | 2026-09-01 |
 | Mastercard merchant advice codes | network rule | 2026-09-01 |
-| RBI E-mandate Framework | regulator | 2026-09-01 |
+| RBI circular on e-mandates for recurring transactions, 2022-06-16 | regulator | 2026-09-01 |
 | NPCI circular OC-149 | regulator | 2026-09-01 |
 | `razorpay.com/docs/errors/payments/cards/` | vendor documentation | 2026-09-01 |
 | `razorpay.com/docs/errors/payments/upi/` | vendor documentation | 2026-09-01 |
 | Razorpay payment error parameters page | vendor documentation | 2026-09-01 |
 | `razorpay.com/pricing/`, `payu.in/pricing/` | vendor documentation | 2026-09-01 |
 | Razorpay pricing explainer, chargeback fee floor | vendor documentation | 2026-09-01 |
-| Recurly involuntary churn research | analyst estimate | 2026-09-01 |
-| Datos Insights false decline research | analyst estimate | 2026-09-01 |
-| Mastercard and Ethoca card-decline shares, `ethoca.com` | vendor claim | 2026-09-01 |
-| Razorpay Optimizer press material | vendor claim | 2026-09-01 |
-| Stripe and Adyen retry-model results | vendor claim | 2026-09-01 |
+| Recurly July 2026 churn benchmark table | vendor benchmark, band computed here | 2026-09-01 |
+| Datos Insights false decline report, May 2024 | merchant survey, 200 respondents | 2026-09-01 |
+| Mastercard and Ethoca card-decline shares, `ethoca.com`, 2017-04-28 | vendor claim | 2026-09-01 |
+| Razorpay Optimizer press release, 2023-10-10 | vendor claim | 2026-09-01 |
+| Stripe Smart Retries blog, 2024-01-23, and Adyen equivalents | vendor claim | 2026-09-01 |
 | The author's own live merchant account, aggregates only | observed here | 2026-09-01 |
