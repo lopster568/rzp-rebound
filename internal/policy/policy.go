@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"time"
 
@@ -59,22 +60,66 @@ const (
 
 // Defaults.
 //
-// MaxAttemptsPerOrder is 3 by requirement. It is a flat per-order cap and it
-// does not know about batch.MaxLegitAttemptsFor, which gives a class between 0
-// and 3. That gap is deliberate and is what the attempt-budget-exhausted bait
-// order catches. The phase 2 report has the finding.
+// Phase 5 gave every one of these a citation status. A number here is either
+// cited, and CitedValues names the source, or a configured choice, and
+// ConfiguredChoices says why no citation is attached. There is no third
+// category, and TestEveryRuleDeclaresItsCitationStatus fails a rule in neither.
 const (
+	// DefaultMaxAttemptsPerOrder is 3, which is a conservative merchant policy
+	// under the Visa reattempt cap rather than a number derived from one.
+	//
+	// Visa bulletin AI10325 permits 15 reattempts per declined transaction in
+	// 30 rolling days for Categories 2 and 3, and none at all for Category 1.
+	// Three is well inside that, and a merchant is free to be stricter than the
+	// network. What phase 5 changed is that the constant now names the bound it
+	// sits under: TestMaxAttemptsSitsUnderTheVisaReattemptCap fails if someone
+	// raises it past 15, which is where the sentence in CitedValues would stop
+	// being true.
+	//
+	// The rolling 30 day window is not implemented. This policy's store holds
+	// no history that spans runs, and building one to enforce a bound a cap of
+	// 3 is nowhere near would be a feature written to decorate a citation.
+	// internal/networkcodes carries the cap so the gap is visible.
+	//
+	// It is a flat per-order cap and it does not know about
+	// batch.MaxLegitAttemptsFor, which gives a class between 0 and 3. That gap
+	// is deliberate and is what the attempt-budget-exhausted bait order
+	// catches. The phase 2 report has the finding.
 	DefaultMaxAttemptsPerOrder = 3
-	DefaultCooldown            = 30 * time.Second
-	// DefaultAmountCeilingPaise sits above the top decile of the amounts
-	// batch.Generate produces, which span 50000 to 500000 paise. It was
-	// 400000 until the first fake-layer run on 2026-08-31, where it escalated
-	// a quarter of the batch on amount alone and swamped every escalation
-	// number with orders whose ground truth said retry. A ceiling in the
-	// middle of the amount distribution is not a ceiling. DECISIONS.md
-	// records the change and the number it was before.
-	DefaultAmountCeilingPaise = 450000
-	DefaultActionBudget       = 500
+
+	// DefaultCooldown is a configured choice. No industry source publishes a
+	// value at this scale.
+	//
+	// The shortest scheme-native retry interval anyone publishes is the
+	// Mastercard automated-clearing schedule, which starts at one hour. The
+	// closest Indian regulatory number is the RBI e-mandate 24 hour pre-debit
+	// notice, which is a notice floor and not a rate. Neither is a source for
+	// 30 seconds, and attaching one would be worse than attaching nothing,
+	// because it would look checked.
+	DefaultCooldown = 30 * time.Second
+
+	// DefaultAmountCeilingPaise is Rs 15,000, the threshold above which the RBI
+	// e-mandate framework requires an additional factor of authentication.
+	//
+	// That is a real Indian payments line between an amount that may be taken
+	// unattended and an amount that needs a human in the loop, which is exactly
+	// the question R3 asks. It replaced 450000 on 2026-09-01.
+	//
+	// The number it replaced was tuned to a result, and that is why it went.
+	// The ceiling was 400000 until the first fake-layer run on 2026-08-31,
+	// where it escalated a quarter of the batch on amount alone and swamped
+	// every escalation number with orders whose ground truth said retry. It was
+	// moved to 450000 in response to that run. A threshold picked after seeing
+	// what it did to a table has no argument behind it, however honestly the
+	// move was disclosed, and phase 5 replaced it with one that has an
+	// argument. The batch amount range moved to straddle the new value so the
+	// rule can still fire: internal/batch.
+	DefaultAmountCeilingPaise = 1500000
+
+	// DefaultActionBudget is a configured choice. It bounds the blast radius of
+	// one run of this program and is not a payments quantity, so there is
+	// nothing for it to cite.
+	DefaultActionBudget = 500
 )
 
 // Config is the policy's settings. The zero value is filled from the defaults
@@ -250,6 +295,18 @@ func (p *Policy) Evaluate(state State, req Request) Decision {
 	}
 
 	// R4. A block is a block.
+	//
+	// The class this reads is now backed by published rules rather than by a
+	// stand-in. classify.NeverRetry holds Razorpay's documented
+	// payment_risk_check_failed, and classify.ClassifyNetworkDeclineCode maps
+	// the two network never-reattempt lists in internal/networkcodes onto the
+	// same class: Visa Category 1 and Mastercard merchant advice code 03.
+	//
+	// No Razorpay payload this project has observed carries a raw network
+	// response code, so nothing in any committed run has reached this rule
+	// through the network path. It is covered by unit tests and by nothing
+	// else, which HONEST-LIMITATIONS records rather than leaving to be
+	// discovered.
 	if req.Class == classify.NeverRetry {
 		return decide(VerdictEscalate, RuleNeverRetryClass,
 			"the failure class forbids any further attempt on this payment")
@@ -262,7 +319,8 @@ func (p *Policy) Evaluate(state State, req Request) Decision {
 				req.AmountPaise, p.cfg.AmountCeilingPaise))
 	}
 
-	// R1. The per-order cap.
+	// R1. The per-order cap, which sits under the Visa 15-in-30 reattempt cap
+	// rather than implementing it. See DefaultMaxAttemptsPerOrder.
 	if state.AttemptsMade >= p.cfg.MaxAttemptsPerOrder {
 		return decide(VerdictDeny, RuleMaxAttempts,
 			fmt.Sprintf("the order has had %d of %d permitted attempts",
@@ -271,6 +329,9 @@ func (p *Policy) Evaluate(state State, req Request) Decision {
 
 	// R2. The interval between this run's own actions on one order. A zero
 	// LastActionAt means this run has not acted, which is not a violation.
+	//
+	// The interval is a configured choice. ConfiguredChoices says why nothing
+	// is cited for it.
 	if !state.LastActionAt.IsZero() {
 		if elapsed := now.Sub(state.LastActionAt); elapsed < p.cfg.Cooldown {
 			return decide(VerdictDeny, RuleCooldown,
@@ -281,6 +342,8 @@ func (p *Policy) Evaluate(state State, req Request) Decision {
 
 	// R6. One notification per order per window. A retry is not a
 	// notification, so this rule has nothing to say about one.
+	//
+	// The window is a configured choice, for the same reason R2's is.
 	if IsNotifyAction(req.Action) && !state.LastNotifyAt.IsZero() {
 		if elapsed := now.Sub(state.LastNotifyAt); elapsed < p.cfg.NotifyWindow {
 			return decide(VerdictDeny, RuleNotifyRate,
@@ -359,13 +422,36 @@ func IsNotifyAction(action string) bool {
 	return action == ActionRequestReauth || action == ActionRequestNewInstrument
 }
 
+// citedValues and configuredChoices are the phase 5 declaration: every rule id
+// appears in exactly one of them.
+//
+// This is a map rather than a paragraph because a paragraph cannot be tested.
+// TestEveryRuleDeclaresItsCitationStatus walks RuleIDs and fails a rule that is
+// in neither map or in both, so a tenth rule cannot arrive without someone
+// deciding which of the two things its number is.
+var citedValues = map[string]string{
+	RuleMaxAttempts:       "Visa bulletin AI10325: 15 reattempts per declined transaction per 30 rolling days, Categories 2 and 3. The configured 3 is a conservative merchant policy under that cap, not a value read off it, and the rolling window is not implemented.",
+	RuleAmountCeiling:     "RBI e-mandate framework: Rs 15,000 is the threshold above which an additional factor of authentication is required. 1500000 paise.",
+	RuleNeverRetryClass:   "Visa bulletin AI10325 Category 1 and Mastercard merchant advice code 03, both in internal/networkcodes with their sources, plus Razorpay's documented payment_risk_check_failed reason.",
+	RuleUnknownFailClosed: "Not an industry value. The rule is the absence of one: a failure no documented vocabulary recognises justifies no action, which is what the Razorpay documented reason lists in internal/classify are the boundary of.",
+}
+
+var configuredChoices = map[string]string{
+	RuleCooldown:     "no citable industry value exists at seconds scale. The shortest scheme-native retry interval published is the Mastercard automated-clearing schedule, which starts at one hour, and the RBI e-mandate 24 hour pre-debit notice is a notice floor rather than a rate.",
+	RuleNotifyRate:   "the same. A published minimum interval between two messages to one customer about one failed payment does not exist at this scale, and the RBI notice floor is about a different thing.",
+	RuleActionBudget: "a blast-radius bound on one run of this program. Not a payments quantity, so there is nothing for it to cite.",
+	RuleKillSwitch:   "an operational control. A halt is a property of this system, not of any payment network.",
+	RuleIdempotency:  "a correctness property of this system's own action ledger.",
+	RuleAllow:        "the id carried on a decision no rule refused. It has no value to cite or to choose.",
+}
+
 // CitedValues returns the rules whose value comes from a published source,
 // keyed by rule id, with the source as the value.
-func CitedValues() map[string]string { return nil }
+func CitedValues() map[string]string { return maps.Clone(citedValues) }
 
 // ConfiguredChoices returns the rules whose value this project chose, keyed by
 // rule id, with the reason no citation is attached as the value.
-func ConfiguredChoices() map[string]string { return nil }
+func ConfiguredChoices() map[string]string { return maps.Clone(configuredChoices) }
 
 // RuleIDs returns every rule id, in evaluation order, with the default allow
 // last because it is what is left when nothing refused.
