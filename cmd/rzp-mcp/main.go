@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -188,7 +189,7 @@ func run(ctx context.Context, args []string) (runErr error) {
 	}
 	order := materialised[0]
 
-	tracer, shutdown, err := newTracer(ctx, rig, opts.layer)
+	tracer, shutdown, err := newTracer(ctx, rig, opts.layer, os.Stderr)
 	if err != nil {
 		return err
 	}
@@ -423,7 +424,12 @@ func requireExporterForLive(layer string) error {
 // only when an OTLP endpoint is configured, because internal/telemetry falls
 // back to the stdout exporter and stdout is the MCP transport: a span printed
 // there is a protocol error, not a trace.
-func newTracer(ctx context.Context, rig *runner.GatewayRig, layer string) (trace.Tracer, func(), error) {
+//
+// The no-op branch says so on warn. The phase 5 fake run served 404 audit rows
+// with no trace id because the harness shell had no endpoint exported at
+// config-generation time, and nothing anywhere said a flagship property had
+// been dropped. Serving without spans is allowed; doing it silently is not.
+func newTracer(ctx context.Context, rig *runner.GatewayRig, layer string, warn io.Writer) (trace.Tracer, func(), error) {
 	if layer == runner.LayerLive {
 		return rig.Tracer, func() {}, nil
 	}

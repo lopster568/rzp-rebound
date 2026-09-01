@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -474,5 +475,33 @@ func TestOutcomeContextSurvivesTheSessionsCancellation(t *testing.T) {
 	}
 	if remaining := time.Until(deadline); remaining > OutcomeReadBackTimeout {
 		t.Errorf("the read-back deadline is %s away, want at most %s", remaining, OutcomeReadBackTimeout)
+	}
+}
+
+// TestFakeLayerSaysSoWhenItServesWithoutTraceIDs pins the loudness of the
+// no-op branch. The phase 5 fake run served 404 audit rows with no trace id
+// because the shell that generated the mcp configs had no OTLP endpoint
+// exported, and nothing anywhere said a flagship property had been dropped:
+// the archived config env block for that run is empty while the phase 3 one
+// carries the endpoint. Serving the fake layer without spans is allowed.
+// Doing it silently is not.
+func TestFakeLayerSaysSoWhenItServesWithoutTraceIDs(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+
+	var warn bytes.Buffer
+	tracer, shutdown, err := newTracer(t.Context(), nil, runner.LayerFake, &warn)
+	if err != nil {
+		t.Fatalf("the fake layer must serve without an endpoint: %v", err)
+	}
+	defer shutdown()
+	if tracer == nil {
+		t.Fatal("no tracer came back from the no-op branch")
+	}
+	out := warn.String()
+	if !strings.Contains(out, "OTEL_EXPORTER_OTLP_ENDPOINT") {
+		t.Errorf("the warning does not name the variable to set: %q", out)
+	}
+	if !strings.Contains(out, "trace id") {
+		t.Errorf("the warning does not say what is being lost: %q", out)
 	}
 }
