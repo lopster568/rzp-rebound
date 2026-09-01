@@ -89,8 +89,8 @@ money. `mcp.observe_outcome` at the end reads `rzp.detail.final_order_status`
 `paid` and `rzp.recovered` true, and that came from a `FetchOrder` after the
 action rather than from anything the model said about itself.
 
-**Then switch to the refusal tab.** This is the shot the whole build exists
-for. Spend the time here.
+**Then switch to the refusal tab.** This is the longest block in the video, so
+slow down here.
 
 **Say:** Same shape, different order. The class is `new_instrument_required`
 and the amount is 456700 paise. The model reads the failure, records a decision

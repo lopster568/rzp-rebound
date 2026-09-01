@@ -45,9 +45,8 @@ flowchart TB
   MAN -.->|"answer key, scoring side only"| SCORE
 ```
 
-The dotted line from the manifest to the scorer is the one that matters. The
-manifest holds the answer for every order, and it reaches the scorer and never
-an arm.
+The manifest holds the answer for every order, and the dotted line is the only
+path out of it: it reaches the scorer and never an arm.
 `TestManifestGroundTruthNeverLeaksIntoAgentVisibleFields` walks the projection
 an arm is handed, and `TestArmsCannotReachTheGatewaysGroundTruth` walks the
 action surface and both `Attempter` adapters by reflection. The gateway is
@@ -223,7 +222,7 @@ contract rather than an implementation detail.
 a rule id including an allow, so no audit row has to be read as "no rule fired,
 presumably that was fine".
 
-**Unbypassable is proven, not asserted.**
+**A test walks every action handler on every run.**
 `TestEveryActionToolConsultsPolicyBeforeSideEffect` lists the tools through the
 server's own registry over a live session, so the set it walks is exactly the
 set the model sees, and calls every one of them against spy adapters that fail
@@ -331,5 +330,12 @@ the gateway is standing in for the world.
 
 ## What this is not evidence of
 
-`/HONEST-LIMITATIONS.md` has every limit the phase documents record, including
-the ones that make a number on these tables smaller than it looks.
+`/HONEST-LIMITATIONS.md` has every limit the phase documents record. The three
+that bite hardest on the tables above: the fake batch's highest reachable
+recovery rate is 0.568 rather than 1.000, because only the retry-class orders
+can reach `paid` in a run; classification accuracy on the fake layer is 1.000
+for every arm and carries no information, because the fake seeds the reason the
+classifier reads; and the run shape fired three of the nine policy rules, so
+the other six rest on unit tables and a golden matrix rather than on these
+numbers. There is also no spread anywhere: one run per layer, and the model arm
+is the one arm that does not reproduce from a seed.
