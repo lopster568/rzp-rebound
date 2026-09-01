@@ -15,6 +15,20 @@ Built for the Razorpay Buildathon, Track 3, against Razorpay test mode.
 ## Quickstart
 
 ```
+make showcase
+```
+
+The guided tour, in four acts: the problem this exists for, the recovery loop
+running live against Razorpay test mode, the impact table parsed out of the
+committed CSV at run time, and the two Jaeger trace links. It waits for Enter
+between acts, and `NO_PAUSE=1 make showcase` runs it straight through. The live
+act needs credentials; without them it says exactly what is missing, prints the
+command that fixes it, and carries on rather than printing output that did not
+happen.
+
+The two commands it is built on:
+
+```
 make preflight && make demo
 ```
 

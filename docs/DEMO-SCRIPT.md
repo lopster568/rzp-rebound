@@ -1,7 +1,16 @@
 # Demo script
 
 A five minute pitch video, as a shot list. Each block gives the narration beat,
-what is on screen, and the exact command to run. Written 2026-09-01.
+what is on screen, and the exact command to run. Written 2026-09-01, rewritten
+around `make showcase` the same day.
+
+The spine of the video is one command. `make showcase` prints the problem, runs
+the live recovery loop, prints the impact table it parses out of the committed
+CSV, and prints the proof, stopping for Enter between each act. Those stops are
+the narration beats, and the two cutaways below happen while it is stopped.
+`NO_PAUSE=1 make showcase` runs the same thing straight through in about a
+minute, which is the rehearsal take and the fallback if a pause is awkward to
+cut around.
 
 Two things to do before the first take are at the bottom, and the recording
 checklist is not optional: this repository is public and one frame of the wrong
@@ -39,9 +48,19 @@ with a working `OTEL_EXPORTER_OTLP_ENDPOINT` to produce a fresh pair, and take
 the new ids from `make trace-links`. That is also the way to get a pair from the
 current batch, which is better than the pair above.
 
-## 0:00 to 0:30, the problem
+## 0:00 to 0:45, the problem, act 1
 
-**On screen:** `docs/PRD.md` section 2, the failure taxonomy table.
+**On screen:** a clean terminal.
+
+```
+make showcase
+```
+
+Act 1 prints and stops at the first pause. What is on screen is one real failed
+payment out of the author's own live merchant account, a UPI payment that timed
+out at authentication on 2026-07-15 and that nothing ever re-attempted, and then
+three published figures each carrying the kind of source it has. Let the screen
+carry the citations and do not read the labels out loud.
 
 **Say:** A failed Razorpay payment stays failed. The merchant picks between two
 bad options: do nothing, or retry blindly. Razorpay documents fifteen live-mode
@@ -57,10 +76,10 @@ what is worth retrying, and proof afterwards that it never went outside the
 limits they set. The second half is the hard half, and it is what this build is
 about.
 
-## 0:30 to 1:30, the architecture
+## 0:45 to 1:30, the architecture
 
 **On screen:** `ARCHITECTURE.md` on GitHub, scrolled to the rendered mermaid
-diagram.
+diagram. The showcase stays paused in the terminal behind it.
 
 **Say:** A seeder writes a batch of failed orders and a ground-truth manifest
 the arms never see. Orders are materialised in a gateway behind one port, which
@@ -79,13 +98,10 @@ holds tool names. The server process holds the keys.
 Everything both arms do lands in two sinks at once, a span and an append-only
 JSONL row joined by trace id, and the scoring harness reads the file.
 
-## 1:30 to 3:00, the live demo
+## 1:30 to 2:45, the live demo, act 2
 
-**On screen:** a clean terminal.
-
-```
-make demo
-```
+**On screen:** back to the terminal. Press Enter and act 2 runs the same loop
+`make demo` runs, against Razorpay test mode. It takes about forty seconds.
 
 **Say while it runs:** This is against Razorpay test mode with real test-mode
 credentials. It creates an order, drives a real payment attempt to a decline
@@ -93,7 +109,13 @@ through the checkout sequence, classifies the failure, asks the policy,
 retries, reads the order state back out of the gateway, and prints the ledger
 path and the trace URL. Every one of those steps is a span.
 
-**Then switch to the Jaeger tab holding the recovery trace.**
+## 2:45 to 3:30, the two Jaeger tabs
+
+**On screen:** the two preloaded Jaeger tabs. Leave the showcase paused at the
+end of act 2, which has just printed the trace URL for the run that is still on
+screen behind them.
+
+**Switch to the tab holding the recovery trace.**
 
 **Say:** Seven spans, one invocation, one trace. `mcp.classify` reads
 `transient_retry_eligible` off the gateway's error fields. Three tool calls,
@@ -132,15 +154,20 @@ compliance reviewer opening this one link sees the failure, the class, the
 proposed action, the rule that refused it, the model's stated reason, and the
 fact that nothing reached the gateway.
 
-## 3:00 to 4:30, the results
+## 3:30 to 4:30, the measurement, act 3
 
-**On screen:** the terminal.
+**On screen:** back to the terminal. Press Enter and act 3 prints the comparison
+of the naive arm against the two gated arms: recovered orders, recovered value
+in rupees, false actions, and actions that reached a side effect with no policy
+verdict behind them.
 
-```
-make report
-```
+**Say first:** Every number on this screen was parsed out of
+`results/tables/phase-5-fake-ethoca.csv` when the command ran. None of it is
+written into the script that printed it, and the three sentences under the table
+are checked against the parsed data before they are printed.
 
-Then open `RESULTS.md`.
+Then open `RESULTS.md` for the two tables act 3 does not print, the invented mix
+and the live layer.
 
 **Say:** Four arms over one seeded batch of 40, and both the run and the layer
 are on every row, because a fake-layer number and a test-mode number are not the
@@ -183,9 +210,14 @@ to try a different card, so there is no cause a policy can act on. The
 classifier returns `unclassified`, the fail-closed rule fires, and the arm
 escalates everything.
 
-## 4:30 to 5:00, the limits and the close
+## 4:30 to 5:00, the limits and the close, act 4
 
-**On screen:** `HONEST-LIMITATIONS.md`.
+**On screen:** back to the terminal. Press Enter and act 4 prints the two curated
+trace links read out of a run's own ledger, the line about `make claims-check`
+reading every published cell back against the run behind it, and the scope line
+saying every figure is fake layer or test mode. Its last line is the one this
+whole video is arguing: most agents demo actions, this one proves them. Then cut
+to `HONEST-LIMITATIONS.md`.
 
 **Say:** Three things this does not claim. The live recovery numbers are
 outcomes this project selected, because a test-mode payment settles on one form
