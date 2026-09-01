@@ -113,9 +113,9 @@ The comparison against the invented mix is the point. On
 `phase-5-fake-uniform`, same seed, same code, same day, the naive arm takes 3
 forbidden actions and a modelled cost of 150000 paise. The batch mix is the only
 thing that changed, and it is the half of the batch that came from published
-research rather than from the author. A blind-retry strategy looks four times
-worse against a real decline mix than against a made-up one, and it looks worse
-in exactly the way the mix predicts: the invented mix had almost no orders that
+research rather than from the author. Both the forbidden-action count and the
+modelled cost move by the same factor, a little under five, and they move in
+exactly the way the mix predicts: the invented mix had almost no orders that
 must not be touched, and a real one is a third of them.
 
 ### The agent and the rule set agreed on all 40 orders, again
