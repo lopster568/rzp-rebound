@@ -37,19 +37,59 @@ phase 2 run: see section 8.
 ## 2. The batch
 
 `rzp seed` writes a manifest under `results/batches/<batch_id>.json` from a
-seed. The same seed and size produce a byte-identical file, and the file
-carries no timestamp so two runs can be diffed directly.
+seed and a named profile. The same seed, size, and profile produce a
+byte-identical file, and the file carries no timestamp so two runs can be
+diffed directly. `make verify-phase-5` rebuilds every committed manifest and
+diffs it, because a profile whose shares are cited is a claim about what is in a
+batch and the only way to check that claim is to build it again.
 
-The composition for a 40-order fake-layer batch, from `cmd/rzp/seed.go`:
+### The profiles
 
-| Seeded class | Count | Ground-truth correct action | `max_legit_attempts` |
-|---|---|---|---|
-| `transient_retry_eligible` | 13 | `retry_same_instrument` | 3 |
-| `retry_eligible` | 8 | `retry_same_instrument` | 2 |
-| `reauth_required` | 8 | `request_reauth` | 1 |
-| `new_instrument_required` | 8 | `request_new_instrument` | 1 |
-| bait, `never_retry` | 2 | `do_nothing` | 0 |
-| bait, `attempt_budget_exhausted` | 1 | `do_nothing` | 0 |
+A profile is a named failure mix. Before phase 5 there was one, hard coded in
+`cmd/rzp/seed.go`, whose own comment called it "the shape of a real failure mix"
+with nothing behind that sentence. Three named profiles replace it, in
+`internal/batch/profiles.go`, and each carries its source.
+
+| Profile | Shares | Cited |
+|---|---|---|
+| `uniform-invented` | transient 28, retry-eligible 24, reauth 24, new-instrument 24 percent. Bait is an explicit count. | No. These are the phase 2 shares, unchanged, under a name that says the author chose them. |
+| `ethoca-card-mix-2019` | insufficient funds 44 percent, lost or stolen 26, fraud 9, residual 21 spread across the other three classes. | Yes, for the three that sum to 79. Mastercard and Ethoca published card-decline shares, `ethoca.com`, describing 2019. The residual is marked uncited. |
+| `observed-live-mix` | Read from a JSON file at `RZP_OBSERVED_MIX_FILE`, outside the repository. | Would be. It ships with no data: see section 8. |
+
+Counts come from largest-remainder apportionment rather than "give the leftover
+to the first class". The old rule is fine when every share is the author's own.
+It is wrong the moment one is cited, because the leftover lands on the first
+share and moves it, and a figure read off published research is the last number
+in a batch that should absorb a rounding error.
+
+The composition of the two committed phase 5 batches, both seed 5150, n=40:
+
+| Seeded class | `uniform-invented` | `ethoca-card-mix-2019` | Ground-truth correct action | `max_legit_attempts` |
+|---|---|---|---|---|
+| `transient_retry_eligible` | 10 | 3 | `retry_same_instrument` | 3 |
+| `retry_eligible` | 9 | 17 | `retry_same_instrument` | 2 |
+| `reauth_required` | 9 | 3 | `request_reauth` | 1 |
+| `new_instrument_required` | 9 | 3 | `request_new_instrument` | 1 |
+| bait, `never_retry` | 2 | 14 | `do_nothing` | 0 |
+| bait, `attempt_budget_exhausted` | 1 | 0 | `do_nothing` | 0 |
+
+The ethoca column is the finding. Lost, stolen, and fraud declines are orders no
+merchant should reattempt and no merchant should message the cardholder about,
+which is exactly what a bait order is here, and the source puts them at 35
+percent of card declines. So a citable card-decline mix makes over a third of
+the batch unactionable, and that share is the source's rather than the author's.
+
+The phase 3 batch, `b-1234-40`, stays in the tree unchanged as the input to the
+phase 3 tables. It is not regenerated: phase 5 moved the reason vocabulary, the
+amount range, and the apportionment, so rebuilding that path would overwrite a
+published table's input with a different batch of the same name.
+
+Amounts span 50000 to 1700000 paise, Rs 500 to Rs 17,000. The range is a
+configured choice and the reason for its shape is not: it has to straddle
+`policy.DefaultAmountCeilingPaise`, which is the RBI e-mandate threshold of Rs
+15,000, or R3 could never fire. The upper bound puts the ceiling in roughly the
+top eighth of the distribution rather than the middle, which is the phase 2
+finding about a ceiling that escalated a quarter of the batch on amount alone.
 
 `never_retry` never appears as a non-bait class. `batch.MaxLegitAttemptsFor`
 gives it zero attempts and `batch.CorrectActionFor` gives it `do_nothing`,
@@ -212,16 +252,37 @@ none of that budget. Before the restriction, the first fake-layer run scored
 every payment link either arm raised as a false action, twelve of them for
 `a3-rules`, on orders where raising one was the correct action.
 
-### The cost model, which is a model
+### The cost model, which is a model with cited inputs
 
-`modeled_false_action_cost_paise` = `fa2 * 200 + fa1 * 5000`.
+`modeled_false_action_cost_paise` = `fa1 * 50000 + fa2 * 0`.
+`modeled_notification_cost_paise` = `notifications_sent * 20`.
 
-Both numbers are invented, so that FA-1 and FA-2 can be compared on one scale.
-Nothing in this repository has measured a Razorpay retry fee or priced a
-goodwill loss, and PRD 9.2 requires a money figure that Razorpay did not return
-to be labelled a model and printed next to its assumption. Every markdown table
-prints the assumption sentence above the numbers. The figure is not one
-Razorpay would recognise.
+Phase 5 rebuilt this. Every input now names a published source, and two of them
+changed value because the invented figures were wrong rather than merely
+unsourced.
+
+| Input | Value | Source |
+|---|---|---|
+| Gateway fee on a failed attempt | 0 paise | `razorpay.com/pricing/` and `payu.in/pricing/`: in India, successful transactions only are billed |
+| Cost of a forbidden action | 50000 paise | The Rs 500 chargeback fee floor |
+| Cost of one notification | 20 paise | Indian transactional SMS runs 15 to 20 paise a message; the model takes the top of the band |
+| Visa excessive-reattempt fee | 875 paise, applied 0 times | About 10 US cents under the Visa Reattempt Abuse Framework, beyond the 15-in-30 cap that a policy capped at 3 never reaches |
+
+Three things follow. FA-2 now contributes nothing to the modelled cost, because
+a failed retry in India costs the merchant no gateway fee and the old model was
+charging 200 paise for something free; what an over-attempt costs is the
+customer's patience and the issuer's opinion, neither of which this project can
+price. FA-1 carries the whole cost at ten times the invented figure it replaces.
+And notifications have a cost column at all for the first time, kept separate
+from the false-action columns on purpose: a payment link on a reauth-required
+order is the correct move, and folding its cost into a column that counts
+mistakes would charge an arm for doing the right thing.
+
+It is still a model. It is arithmetic on published rates applied to counts this
+project measured, not a figure Razorpay billed anyone, and PRD 9.2 requires a
+money figure that Razorpay did not return to be labelled a model and printed
+next to its assumption. Every markdown table prints the assumption sentence
+above the numbers. `docs/EVIDENCE.md` section 4 has every source.
 
 ### Escalation
 
@@ -317,12 +378,18 @@ comparable unit the CLI reports.
 Per ADR-0004, every row names its layer and no table sums or averages across
 them.
 
-**Fake, n=40.** A model of documented behaviour and evidence about our code
-only. The fake seeds the eight documented failure reasons, so all six classes
-are present and the class-differentiated story lives here.
+**Fake, n=40, twice.** A model of documented behaviour and evidence about our
+code only. Two batches, same seed, two failure mixes, so a profile change can be
+read off one comparison rather than confounded with a reseed. The headline is
+`ethoca-card-mix-2019`, because it is the one with a source behind its shares;
+`uniform-invented` is published beside it because a profile change that moved
+every number and was reported only in its new form would be unreadable.
 
 **Live, n=8, Razorpay test mode.** Evidence about the API, in test mode,
-labelled as test mode.
+labelled as test mode. `a2-agent` does not run on this layer from phase 5: test
+mode returns one reason for every card, so there is no classification signal for
+a model to differ from a rule set on, and the budget buys more on the fake layer
+where the two arms can be told apart.
 
 The live layer is expected to produce a result that looks like a failure and is
 not one, and it is not to be tuned away.
@@ -394,3 +461,20 @@ neither of these two programs. ADR-0007 has the reasoning.
 - Any spread for `a2-agent`. One invocation per order and one run per layer, so
   a nondeterministic arm is reported from a single sample. That is the phase 3
   limitation the PRD risk table names, and repeats are the honest fix.
+- The UPI half of the failure taxonomy. The fake gateway stamps every payment it
+  seeds with method `card`, so `batch.Generate` draws its reasons from the
+  documented card table and no run has ever driven a UPI reason through the
+  classifier. The eight UPI mappings are covered by unit tests and by nothing
+  else.
+- The card-network decline code lists. No Razorpay payload this project has
+  observed carries a raw network response code, so
+  `classify.ClassifyNetworkDeclineCode` and `internal/networkcodes` are reached
+  by their unit tests and by no run. `R4-NEVER-RETRY-CLASS` fires in runs
+  through the Razorpay reason, never through the network path.
+- Any real merchant's failure mix. The `observed-live-mix` profile is a loader
+  with nothing behind it. A read-only probe of the author's live Razorpay
+  account on 2026-09-01 returned two payments over six weeks. Two payments are a
+  specimen and not a distribution, and seeding a mix from them would be the
+  invention phase 5 exists to remove. `docs/EVIDENCE.md` section 7 has what that
+  one failed payment does establish, which is structural rather than
+  distributional.

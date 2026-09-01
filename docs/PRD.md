@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | v1.3. Updated at the end of phase 4. |
+| Status | v1.4. Updated at the end of phase 5. |
 | Date | 2026-09-01 |
 | Owner | Roshan Singh |
 
@@ -39,24 +39,29 @@ So a merchant holding a failed payment picks between two bad options. Do
 nothing, and the order stays unpaid. Retry blindly, and most of the retries are
 spent on failures that could never have succeeded.
 
-The eight documented failure cards in `testdata/magic_cards.json`, mapped
-through `internal/classify`:
+Razorpay documents 15 live-mode failure reasons for cards and 8 for UPI, and
+the two lists are not the same list. `internal/classify` holds both, sourced
+from `razorpay.com/docs/errors/payments/`, and `testdata/error_codes.json`
+carries every string with a label saying whether it is live-mode documentation
+or a test-card page spelling. Grouped by what another attempt on the same
+instrument would do:
 
-| Documented reason | Class | Another attempt on the same card |
-|---|---|---|
-| `payment_timed_out` | transient retry eligible | can work |
-| `gateway_technical_error` | transient retry eligible | can work |
-| `insufficient_fund` | retry eligible | can work once the balance moves |
-| `authentication_failed` | reauth required | needs the customer back |
-| `payment_cancelled` | reauth required | needs the customer back |
-| `card_declined` | new instrument required | repeats the failure |
-| `card_disabled_for_online_payments` | new instrument required | repeats the failure |
-| `card_number_invalid` | new instrument required | repeats the failure |
+| Class | Card reasons | UPI reasons | Another attempt on the same instrument |
+|---|---|---|---|
+| transient retry eligible | `payment_timed_out`, `gateway_technical_error`, `bank_technical_error` | `bank_technical_error`, `credit_failed`, `vpa_resolution_failed`, `payment_timed_out` | can work |
+| retry eligible | `insufficient_funds` | `insufficient_funds` | can work once the balance moves |
+| reauth required | `authentication_failed`, `payment_cancelled`, `incorrect_cvv` | `payment_collect_request_expired`, `payment_declined` | needs the customer back |
+| new instrument required | `card_declined`, `card_not_enrolled`, `card_disabled_for_online_payments`, `card_expired`, `debit_instrument_inactive`, `debit_instrument_blocked`, `transaction_limit_exceeded` | `invalid_vpa` | repeats the failure |
+| never retry | `payment_risk_check_failed` | | forbidden, and so is asking the customer |
 
-Three of eight cannot succeed on the same card. Two more need the customer in
-the flow, so an unattended retry is a wasted call and a second message to
-someone who already walked away. Blind retry pays a gateway fee and spends
-customer goodwill on all five.
+Eight of the fifteen card reasons cannot succeed on the same instrument. Three
+more need the customer in the flow, so an unattended retry is a wasted call and
+a second message to someone who already walked away.
+
+The reason strings are Razorpay's and are cited. The class each one maps to is
+this project's judgment and is cited nowhere. `docs/EVIDENCE.md` says so in as
+many words, because adopting a documented vocabulary does not make the mapping
+documented.
 
 ## 3. Users and jobs
 
@@ -115,7 +120,8 @@ Supporting targets that exist today: `make hooks`, `make test` (Go and
 Python), `make test-go`, `make test-python`, `make lint`, `make docs-check`,
 `make claims-check`, `make ci`, `make verify-phase-0`, `make verify-offline`,
 `make verify-live`, `make verify-phase-2`, `make verify-phase-3`,
-`make verify-phase-4`, `make agent-smoke`, and `make trace-links`.
+`make verify-phase-4`, `make verify-phase-5`, `make agent-smoke`, and
+`make trace-links`.
 
 ## 7. Success metrics
 
@@ -184,7 +190,8 @@ covers them today. Later components name the test that will.
 |---|---|---|
 | FR-CARDS-1 | One card table in the tree. The fake gateway and the batch seeder read the same `testdata/magic_cards.json` through this package. | No direct test. Covered through both callers, per `docs/phases/phase-0-foundations/REPORT.md`. |
 | FR-CARDS-2 | A card stays `"verified": false` until a live test-mode run observes its documented code. | Met. The 2026-08-31 live walk observed none of the eight documented codes, so all eight are still `false` and each row records what came back instead. `docs/RAZORPAY-TEST-MODE-NOTES.md` has the walk. |
-| FR-CARDS-3 | Undocumented facts are exported as pending constants shaped so they cannot pass for Razorpay values (`PendingSuccessCard`, `PendingRiskBlockCode`). | `TestClassifierMapsRiskBlockToNeverRetry`, `TestFakeSuccessCardOnSecondAttemptMarksOrderPaid` |
+| FR-CARDS-3 | Undocumented facts are exported as pending constants shaped so they cannot pass for Razorpay values. One remains, `PendingSuccessCard`. `PendingRiskBlockCode` was retired in phase 5: the live-mode card error documentation names the reason it stood in for, `payment_risk_check_failed`, and a documented live-mode string belongs in `internal/classify` with the rest of that vocabulary rather than in the test-card package. | `TestPaymentRiskCheckFailedIsNeverRetry`, `TestFakeSuccessCardOnSecondAttemptMarksOrderPaid` |
+| FR-CARDS-4 | Every row in both testdata tables carries a label from a closed set, a source, and a date, so nothing on disk leaves a reader guessing which vocabulary a string belongs to. | `TestCardTableEntriesCarryALabelAndASource`, `TestErrorCodeFileLabelsEveryEntry` |
 
 **`internal/razorpay`**
 
@@ -208,10 +215,12 @@ covers them today. Later components name the test that will.
 | FR-CLS-1 | `Classify` is total. Anything unrecognised returns `Unclassified`, which is not retry eligible. | `TestClassifierUnknownErrorCodeIsUnclassifiedAndNotRetryEligible`, `TestClassifierIsTotalOverKnownRazorpayErrorCodes` |
 | FR-CLS-2 | `error.reason` decides the class when set. An unknown reason does not fall back to `error.code`. | `TestClassifierUnknownErrorCodeIsUnclassifiedAndNotRetryEligible` |
 | FR-CLS-3 | A gateway-side or timeout failure classifies as transient and retry eligible. | `TestClassifierMapsGatewayTechnicalErrorToTransientRetryEligible`, `TestClassifierMapsPaymentTimedOutToTransientRetryEligible` |
-| FR-CLS-4 | `insufficient_fund` classifies as retry eligible, because a balance changes. | `TestClassifierMapsInsufficientFundToRetryEligible` |
+| FR-CLS-4 | `insufficient_funds` classifies as retry eligible, because a balance changes. The live-mode spelling is plural; this repository spelled it singular from phase 0 to phase 5, and the test-card page's singular form is kept in its own table because every committed batch carries it. | `TestInsufficientFundsIsSpelledTheWayTheLiveDocsSpellIt`, `TestTestModeCardTableSpellingsStillClassify` |
 | FR-CLS-5 | `authentication_failed` classifies as reauth required, not as a plain retry. | `TestClassifierMapsAuthenticationFailedToReauthRequired` |
 | FR-CLS-6 | `card_declined` classifies as new instrument required. | `TestClassifierMapsCardDeclinedToNewInstrumentRequired` |
-| FR-CLS-7 | A risk block classifies as never retry. | `TestClassifierMapsRiskBlockToNeverRetry` |
+| FR-CLS-7 | A risk block classifies as never retry, and never retry means no action of any kind rather than no retry. An expired card and a blocked debit instrument are new instrument required, because asking for a different card is allowed there and is not allowed on an order a risk engine flagged. | `TestPaymentRiskCheckFailedIsNeverRetry`, `TestCardExpiredAndBlockedInstrumentAreNewInstrumentRequiredNotNeverRetry` |
+| FR-CLS-8 | The reason tables are per payment method, because Razorpay documents them per method. A caller that does not know the method still gets an answer, and a reason two method tables disagreed about would be unclassified rather than resolved by declaration order. | `TestClassifierMapsEveryDocumentedCardReason`, `TestClassifierMapsEveryDocumentedUPIReason`, `TestNoReasonClassifiesDifferentlyAcrossMethods`, `TestAmbiguousReasonAcrossMethodsIsUnclassified` |
+| FR-CLS-9 | `error.source` is the documented nine-value enumeration and refuses to parse anything else. `error.step` stays a free string, because the same documentation page publishes no enumeration for it. | `TestDocumentedErrorSourcesAreTheNinePublishedValues`, `TestUndocumentedErrorSourceDoesNotParse`, `TestErrorStepIsNotAnEnum` |
 
 **`internal/batch`**
 
@@ -316,9 +325,10 @@ and `docs/RAZORPAY-TEST-MODE-NOTES.md` is the full table with its own dates.
 |---|---|---|
 | 8 failure card numbers and their error codes | `testdata/magic_cards.json` | Documented, and all eight **contradicted** by observation. Driven live on 2026-08-31, every one produced `payment_failed` rather than its documented reason, so all eight still carry `"verified": false` with the observed value recorded next to them. |
 | 2 UPI VPAs, `success@razorpay` and `failure@razorpay` | `magic_cards.json`, `upi_vpas` | Documented, unverified, and not drivable. The UPI creation endpoint could not be reached server side on 2026-08-31. |
-| 11 Razorpay error codes and classes | `testdata/error_codes.json` | Ten documented, one observed. The classifier is total over all of them (`TestClassifierIsTotalOverKnownRazorpayErrorCodes`). The observed one, `payment_failed`, is listed under `_meta.pending`: it names no cause, so it classifies as unclassified on purpose. |
+| 28 Razorpay error codes and classes | `testdata/error_codes.json` | Twenty-five documented live-mode, two documented test-mode, one observed. Phase 5 replaced the eight-string test-card list with Razorpay's documented live-mode vocabulary: 15 card reasons, 8 UPI reasons, and the two coarse error classes, each row labelled and sourced. The classifier is total over all of them (`TestClassifierIsTotalOverKnownRazorpayErrorCodes`). The observed one, `payment_failed`, is listed under `_meta.pending`: it names no cause, so it classifies as unclassified on purpose. |
 | The card that forces a successful authorization | `magic_cards.json`, `_meta.open_question` | **There is no such card.** The outcome of a test-mode attempt is chosen at the last step of the checkout sequence, and the same card produced both a capture and a failure. `testcards.PendingSuccessCard` stays because `Table.SuccessCard` has to return something. |
-| The risk-block error code | `error_codes.json`, `_meta.gap` | Not documented and not observed. Nothing in the 2026-08-31 run produced a risk block. `testcards.PendingRiskBlockCode` stands in, and it is deliberately not shaped like a Razorpay code. |
+| The risk-block error code | `error_codes.json`, and `internal/classify` | **Documented, and still not observed.** `payment_risk_check_failed`, on Razorpay's live-mode card error page, read 2026-09-01. `testcards.PendingRiskBlockCode` is retired. Nothing this project has run has ever produced a risk block, so the reason is documented and not observed, and the row says which. Q2 closed. |
+| The documented live-mode reason vocabulary appearing in production | `error_codes.json`, `_meta.production_observation_2026_09_01` | **Observed once.** A read-only probe of the author's own live merchant account on 2026-09-01 returned two payments over six weeks, one of which had failed with `error_reason` `payment_timed_out`, `error_source` `customer`, and `error_code` `BAD_REQUEST_ERROR`. That is one documented reason, one documented source value, and the coarse-code-plus-specific-reason structure, all confirmed outside test mode. It is a specimen and not a distribution: no share or rate anywhere here comes from that account. `docs/EVIDENCE.md` section 7. |
 | `error.source` and `error.step` per failure | `internal/razorpay/port.go` | **Observed.** `gateway` and `payment_authorization`, on every failed payment in the 2026-08-31 walk. The two pending constants are gone, replaced by `ErrorSourceGateway` and `ErrorStepPaymentAuthorization`. |
 | Whether the reason string arrives in `error.code`, `error.reason`, or both | `testdata/recorded/fetch_failed_payment.json` | **Observed: both, with different content.** `error.code` carries the coarse class (`BAD_REQUEST_ERROR`) and `error.reason` carries the specific reason. The fake now splits them the same way. |
 | `PaymentLink` fields and the `CreatePaymentLinkRequest` body | `testdata/recorded/create_payment_link.json` | **Observed.** The response fields were all correct. The request body was not: the notification flags are a nested `notify` object, and the flat fields were rejected with a 400. |
@@ -330,6 +340,14 @@ and `docs/RAZORPAY-TEST-MODE-NOTES.md` is the full table with its own dates.
 
 These are standing repository rules and apply to every document, span, and
 report this project produces.
+
+- Every constant is cited, with a source, or declared a configured choice, with
+  a reason. There is no third category, and "it seemed about right" is the
+  second one. `docs/EVIDENCE.md` holds every external source with a label
+  saying what kind of source it is, and ADR-0008 has the rule. A published
+  external number goes through `scripts/claims-allow.txt` with its source in
+  the reason field and never enters the fact set, because a cited industry
+  figure is not a run artifact.
 
 - Label test mode. Every number produced against Razorpay test mode says so.
   A test-mode recovery rate is not evidence about real customers.
@@ -400,6 +418,7 @@ Detail lives in `docs/phases/README.md` and in each phase directory.
 | 2 policy and eval | 2026-09-02 | Retry policy plus a batch harness that scores decisions against the ground-truth manifest. | Done 2026-08-31. 9 rules, 3 arms, 53 tests, and a three-arm table on two layers. `docs/phases/phase-2-policy-and-eval/REPORT.md`. |
 | 3 agent arm | 2026-09-03 | An agent drives the loop over MCP and is scored on the same batches. | Done 2026-09-01. Seven tools, two gate layers, 44 tests, and a four-arm table on two layers. The agent matched the rules arm on all 40 fake-layer orders. `docs/phases/phase-3-agent-arm/REPORT.md`. |
 | 4 submission | 2026-09-04 | Demo, writeup, and the numbers that back them. | Repository done 2026-09-01. `ARCHITECTURE.md`, `README.md`, `HONEST-LIMITATIONS.md`, `docs/DEMO-SCRIPT.md`, and a claims gate that checks every published number against the run behind it. The pitch video and the submission form are Roshan's and are not done. `docs/phases/phase-4-submission/REPORT.md`. |
+| 5 realism | 2026-09-01 | Replace every invented piece of content with the real, citable industry equivalent, and relabel honestly what cannot be cited. | Done 2026-09-01. The documented live-mode taxonomy, `internal/networkcodes`, a citation status on every policy rule, a cost model on published rates, three named batch profiles one of which is somebody else's numbers, `docs/EVIDENCE.md`, and ADR-0008. `docs/phases/phase-5-realism/REPORT.md`. |
 
 ## 13. Open questions
 
@@ -408,7 +427,7 @@ Each one has a trigger that closes it. All opened 2026-08-31.
 | # | Question | Decision trigger | Outcome |
 |---|---|---|---|
 | Q1 | How is a second payment attempt made on a failed order against the live API, given that a real attempt happens in checkout? | Phase 1 spike: one test-mode order driven from `created` to `paid`, with the call sequence written into `docs/phases/phase-1-live-loop/DECISIONS.md`. | **Closed 2026-08-31.** Four checkout calls, server side, no browser. `razorpay.Attempter`, and `docs/RAZORPAY-TEST-MODE-NOTES.md` has the sequence. |
-| Q2 | What is the real Razorpay risk-block error code? | Phase 1 fixture capture. Until then `testcards.PendingRiskBlockCode` holds the slot and the fail-closed default covers an unrecognised block. | **Open.** Nothing in the 2026-08-31 run produced a risk block. |
+| Q2 | What is the real Razorpay risk-block error code? | Phase 1 fixture capture. Until then `testcards.PendingRiskBlockCode` holds the slot and the fail-closed default covers an unrecognised block. | **Closed 2026-09-01, by reading rather than by running.** `payment_risk_check_failed`, on Razorpay's live-mode card error documentation. The trigger was wrong: it looked for the answer in a fixture capture, and the answer was on a documentation page nobody had read, which is the finding phase 5 generalises. The stand-in constant is retired. Nothing this project has run has still ever produced a risk block. |
 | Q3 | Which test card forces a successful authorization? | Phase 1 card-table run. `testcards.PendingSuccessCard` holds the slot, and the fake treats whatever `SuccessCard()` returns as the card that authorizes, so replacing the constant changes nothing else. | **Closed 2026-08-31, and there is no such card.** The outcome is chosen at the last checkout call by one form field. The constant stays as a value that cannot pass for a card number. |
 | Q4 | Does Razorpay put the reason string in `error.code`, `error.reason`, or both? | Phase 1 fixture capture of one failed payment. The fake fills both until then. | **Closed 2026-08-31.** Both, with different content: the coarse class in `error.code` and the specific reason in `error.reason`. The fake now splits them the same way. |
 | Q5 | What rate limit does test mode enforce? | Phase 1 measures it: the first 429 under backoff, recorded with the request rate that produced it. | **Open.** No 429 at 1.4 requests per second over 40 sequential calls on 2026-08-31. The probe is `TestLiveRateLimitObservation`, behind `RZP_RATE_LIMIT_PROBE`. A real ramp is phase 2. |
@@ -455,6 +474,7 @@ reported, never dropped from a denominator.
 
 | Date | Version | Change |
 |---|---|---|
+| 2026-09-01 | v1.4 | End of phase 5. Section 2 replaces the eight-string test-card list with Razorpay's documented live-mode vocabulary, 15 card reasons and 8 UPI, and says that the class each maps to is ours and not cited. Section 8 gains FR-CARDS-4 and FR-CLS-8 and FR-CLS-9, and corrects FR-CLS-4's spelling and FR-CLS-7's meaning. Section 9.1 updates the error-code count from 11 to 28, closes the risk-block row, and adds the 2026-09-01 production observation. Section 9.2 gains the constants rule and points at `docs/EVIDENCE.md` and ADR-0008. Q2 closes, by reading rather than by running, which is the finding phase 5 generalises. Section 12 adds phase 5. |
 | 2026-09-01 | v1.3 | End of phase 4. Section 1's headline result is filled in from the phase 3 runs. Section 6 corrects the `make demo` row, which had said planned since phase 0 while the target had existed since phase 1, and adds `make claims-check`. Section 8.2 marks NFR-5 not measured rather than leaving it as a phase 4 target the phase deliberately did not meet. Section 10 points at `/HONEST-LIMITATIONS.md`. Section 12 marks the phase 4 repository work done and the video and the form not done. |
 | 2026-08-31 | v1.0 draft | First version, written at the end of phase 0. |
 | 2026-09-01 | v1.2 | End of phase 3. Section 6 marks `run-all` and `report` as covering four arms. Section 8 marks FR-MCP-1, FR-MCP-2, FR-MCP-3, FR-POL-4, and FR-POL-7 met with their covering tests, and FR-BATCH-6 still not built. Section 11 gains the raced-rule risk, which the containment metric cannot see. Section 12 marks phase 3 done. Q8 stays open on purpose and Q9 is opened and closed. |

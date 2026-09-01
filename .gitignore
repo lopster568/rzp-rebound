@@ -20,13 +20,20 @@ __pycache__/
 results/runs/*
 !results/runs/sample-phase-2-fake/
 !results/runs/phase-3-fake/
+!results/runs/phase-5-fake-ethoca/
+!results/runs/phase-5-fake-uniform/
 # The generated mcp configs carry an absolute binary path and this machine's
 # collector address. They are inputs the harness rewrites on every run, not
 # evidence, and they would go stale in the tree the moment anyone moved the
 # checkout.
 results/runs/phase-3-fake/a2-agent/mcp/
+results/runs/phase-5-fake-ethoca/a2-agent/mcp/
 results/batches/*
 !results/batches/b-1234-40.json
+# The two phase 5 batches. Same seed, two failure mixes, so the profile change
+# can be read off one comparison rather than confounded with a reseed.
+!results/batches/b-5150-40.json
+!results/batches/b-5150-40-ethoca-card-mix-2019.json
 
 # make verify-phase-2 regenerates this pair on every run from the same seeded
 # batch as the committed sample, so tracking it would put two identical tables

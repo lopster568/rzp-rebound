@@ -103,7 +103,13 @@ verify-live: ## Phase 1 live gate: preflight hard, offline suite, then the live 
 # with it: a report that printed policy_violations_succeeded and carried on
 # would publish a broken claim inside a green build, so scripts/report.sh
 # exits non-zero when that number is not 0 for a3-rules.
-VERIFY2_SEED ?= 1234
+# The seed moved from 1234 to 5150 in phase 5. Seed 1234 produces
+# results/batches/b-1234-40.json, which is the batch the phase 3 tables were
+# computed on and which is committed as their input. Phase 5 changed the reason
+# vocabulary, the amount range, and the apportionment, so regenerating that path
+# would overwrite the input to a published table with a different batch of the
+# same name. The phase 3 batch stays on disk as the record of the phase 3 run.
+VERIFY2_SEED ?= 5150
 VERIFY2_BATCH = results/batches/b-$(VERIFY2_SEED)-40.json
 VERIFY2_RUN = results/runs/verify-phase-2
 
@@ -124,7 +130,7 @@ verify-phase-2: ## Phase 2 gate: suite, seed 40, all three arms, report, contain
 # forty headless invocations to learn that would spend a subscription on a
 # build step. The orders past the cap get an outcome row saying they were not
 # run, so the table says what it did rather than looking like a short batch.
-VERIFY3_SEED ?= 1234
+VERIFY3_SEED ?= 5150
 VERIFY3_INVOCATIONS ?= 2
 VERIFY3_BATCH = results/batches/b-$(VERIFY3_SEED)-40.json
 VERIFY3_RUN = results/runs/verify-phase-3
@@ -146,3 +152,15 @@ verify-phase-3: ## Phase 3 gate: suite, seed 40, four arms with a2 capped, repor
 verify-phase-4: ## Phase 4 gate: the suite, then every published number against its run
 	@env -u RAZORPAY_KEY_ID -u RAZORPAY_KEY_SECRET $(MAKE) --no-print-directory lint test docs-check
 	@bash scripts/claims-check.sh
+
+# The phase 5 gate. Everything phase 4 gates, plus the one thing phase 5 adds
+# that a unit test cannot reach: that both committed batch manifests regenerate
+# byte for byte from their seed and their profile.
+#
+# A profile whose shares are cited is a claim about what is in a batch, and the
+# only way to check that claim is to build the batch again and diff it. It
+# drives no arm and spends no invocation, for the same reason verify-phase-4
+# does not.
+verify-phase-5: ## Phase 5 gate: the phase 4 gate, plus both committed batches rebuilt from their profiles
+	@$(MAKE) --no-print-directory verify-phase-4
+	@bash scripts/verify-batches.sh

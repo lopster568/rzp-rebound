@@ -82,6 +82,7 @@ model arm, and the reading.
 | [`HONEST-LIMITATIONS.md`](HONEST-LIMITATIONS.md) | Every limit the build found, collected |
 | [`docs/PRD.md`](docs/PRD.md) | Scope, requirements with their covering tests, open questions |
 | [`docs/EVAL-DESIGN.md`](docs/EVAL-DESIGN.md) | How a run is measured and why each metric exists |
+| [`docs/EVIDENCE.md`](docs/EVIDENCE.md) | Where every constant came from, what kind of source it has, and what still cannot be made real without production data |
 | [`docs/RAZORPAY-TEST-MODE-NOTES.md`](docs/RAZORPAY-TEST-MODE-NOTES.md) | What test mode actually returns, observed rather than read |
 | [`docs/AUDIT-TRACE-SCHEMA.md`](docs/AUDIT-TRACE-SCHEMA.md) | Span names, attributes, and ledger fields, written from a run |
 | [`docs/phases/`](docs/phases/) | The process trail: plan, test list, problems, decisions, and report per phase |
