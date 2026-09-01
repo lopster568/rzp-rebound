@@ -141,6 +141,30 @@ test mode, retry-timing uplift which is excluded because every published figure
 for it is marketing with no methodology, and the two code paths covered by unit
 tests and by no run.
 
+## Two things re-verified rather than assumed
+
+**The buildathon deadline is still third-party-claimed.** Razorpay's own
+buildathon page states no deadline, checked by grepping the raw HTML on
+2026-09-01. The only date on it is an internship start month. The phase 4 plan
+says "a claimed buildathon deadline of 2026-09-05" and that wording was already
+right; this is the re-verification behind it.
+
+**NPCI's per-member decline statistics page could not be fetched.**
+`npci.org.in/statistics/bd-td-and-uptime` returns 403 to every non-browser
+request. `docs/EVIDENCE.md` cites it as published by NPCI with figures via
+secondary coverage, and no figure from it is used anywhere in this repository.
+
+## What is roadmap and not this phase
+
+The NPCI UPI response code vocabulary. The specification labels every code a
+technical decline or a business decline and `docs/EVIDENCE.md` section 3 uses
+that taxonomy as support for the classifier's shape, with eight rows verified
+first-hand. Adopting the U-codes themselves into `internal/networkcodes`
+alongside the Visa and Mastercard lists is the obvious next step and it is not
+taken here: nothing in any run reads a UPI response code, so the package would
+gain a third list exercised by unit tests and by nothing else, which is already
+limitation 33 for the two it has.
+
 ## Budget
 
 42 headless invocations of a cap of 45: 2 on a smoke test and 40 on the
