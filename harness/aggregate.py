@@ -33,20 +33,61 @@ import scorer  # noqa: E402
 # ---------------------------------------------------------------------------
 # Cost model
 #
-# These two numbers are MODELS, not measurements. Nothing in this repository
-# has measured a Razorpay retry fee or priced a goodwill loss. They exist so
-# that FA-1 and FA-2 can be compared on one scale, and every table that prints
-# a cost prints COST_MODEL_ASSUMPTIONS next to it. Do not quote
-# modeled_false_action_cost_paise as a rupee figure Razorpay would recognise.
+# It is still a MODEL. What changed in phase 5 is that every input now names a
+# published source instead of naming nobody, and two of them changed value
+# because the invented figures were wrong rather than merely unsourced.
+#
+# Before phase 5: 200 paise per payment attempt and 5000 paise per forbidden
+# action, both chosen by the author so FA-1 and FA-2 could sit on one scale.
+#
+# Nothing here is a number Razorpay billed anyone. It is an arithmetic on
+# published rates applied to counts this project measured, and every table that
+# prints a cost prints COST_MODEL_ASSUMPTIONS next to it.
 # ---------------------------------------------------------------------------
 
-MODELED_RETRY_FEE_PAISE = 200        # a modeled gateway fee per payment attempt
-MODELED_FORBIDDEN_ACTION_COST_PAISE = 5000   # a modeled goodwill cost per forbidden action
+# A failed transaction carries no gateway fee in India. Razorpay and PayU both
+# bill successful transactions only: razorpay.com/pricing/, payu.in/pricing/,
+# read 2026-09-01. So the modelled per-attempt fee is zero, and the old model
+# was charging 200 paise for something that is free. FA-2 is still a mistake,
+# and what it costs is not a gateway fee.
+MODELED_FAILED_ATTEMPT_FEE_PAISE = 0
+
+# Rs 500, the chargeback fee floor an Indian merchant pays. Source:
+# razorpay.com/blog/convenience-fee-tdr-mdr-platform-fee-amc-setup-fee-technology-fee-of-payment-gateway/
+# read 2026-09-01. The old figure was 5000 paise, a tenth of this.
+#
+# It stands in for the cost of an action on an order that forbade one. A
+# chargeback is not the only way that goes wrong and it is the one with a
+# published floor, which is why it is the number in the model.
+MODELED_FORBIDDEN_ACTION_COST_PAISE = 50000
+
+# Transactional SMS in India runs 15 to 20 paise a message. The model takes the
+# top of that band, so the cost of the recovery strategy this project actually
+# recommends is not understated. The old model had no notification cost at all,
+# which made every payment link look free.
+MODELED_NOTIFICATION_COST_PAISE = 20
+
+# The one citable per-reattempt charge, and it does not apply here.
+#
+# Visa's reattempt-abuse fee under the Reattempt Abuse Framework is about ten US
+# cents, roughly 875 paise, reported by PSPs rather than published as a rate
+# card. It applies beyond the 15-in-30 reattempt cap in bulletin AI10325, and
+# R1-MAX-ATTEMPTS caps this system at 3, so no run of this program can reach it.
+#
+# It is carried with its source and multiplied by zero rather than omitted,
+# because a reader who has heard of the fee has to be able to find out here why
+# it is not in the total.
+VISA_EXCESSIVE_REATTEMPT_FEE_PAISE = 875
+VISA_EXCESSIVE_REATTEMPT_FEE_APPLIED_PAISE = 0
 
 COST_MODEL_ASSUMPTIONS = (
-    "The cost model invents two numbers, 200 paise per payment attempt and "
-    "5000 paise per forbidden action, for the model only; neither is a "
-    "measured Razorpay fee or a measured goodwill loss."
+    "The cost model is a model, with cited inputs: 0 paise per failed payment "
+    "attempt, because India bills successful transactions only; 50000 paise "
+    "per forbidden action, the Rs 500 chargeback fee floor; 20 paise per "
+    "notification, the top of the 15 to 20 paise transactional SMS band; and "
+    "875 paise for the Visa excessive-reattempt fee, which applies beyond the "
+    "15-in-30 network cap and therefore never applies under a cap of 3. "
+    "docs/EVIDENCE.md has every source. No figure here was billed to anyone."
 )
 
 
@@ -91,6 +132,8 @@ COLUMNS = [
     "fa1_forbidden",
     "fa2_over_attempt",
     "modeled_false_action_cost_paise",
+    "notifications_sent",
+    "modeled_notification_cost_paise",
     "escalations",
     "should_escalate",
     "escalation_precision",
@@ -225,6 +268,7 @@ def _build_row(
 
     fa1 = sum(1 for c in scorable if c["fa1_forbidden"])
     fa2 = sum(1 for c in scorable if c["fa2_over_attempt"])
+    notifications = sum(1 for c in scorable if c.get("notified"))
 
     escalations = sum(1 for c in scorable if c["escalated"])
     should_escalate = sum(1 for c in scorable if c["should_escalate"])
@@ -267,9 +311,16 @@ def _build_row(
         "fa1_forbidden": fa1,
         "fa2_over_attempt": fa2,
         "modeled_false_action_cost_paise": (
-            fa2 * MODELED_RETRY_FEE_PAISE
-            + fa1 * MODELED_FORBIDDEN_ACTION_COST_PAISE
+            fa1 * MODELED_FORBIDDEN_ACTION_COST_PAISE
+            + fa2 * MODELED_FAILED_ATTEMPT_FEE_PAISE
+            + fa2 * VISA_EXCESSIVE_REATTEMPT_FEE_APPLIED_PAISE
         ),
+        # Notifications are a cost and they are not false actions, so they get
+        # their own two columns. Adding a correct payment link into the
+        # false-action total would charge an arm for doing the right thing, and
+        # that column exists to count mistakes.
+        "notifications_sent": notifications,
+        "modeled_notification_cost_paise": notifications * MODELED_NOTIFICATION_COST_PAISE,
         "escalations": escalations,
         "should_escalate": should_escalate,
         "escalation_precision": _rate(correct_escalations, escalations),

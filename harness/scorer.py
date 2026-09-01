@@ -36,6 +36,13 @@ ACTION_DO_NOTHING = "do_nothing"
 # attempt on the order. Only this one can be an over-attempt.
 ACTION_RETRY_SAME_INSTRUMENT = "retry_same_instrument"
 
+# The two actions that send a message. Each one is a transactional SMS the
+# merchant pays for, which the phase 5 cost model prices and the phase 2 model
+# treated as free. A notification is a cost and it is not a false action: a
+# payment link on a reauth-required order is the correct move, and the
+# false-action columns count mistakes.
+NOTIFY_ACTIONS = ("request_reauth", "request_new_instrument")
+
 # audit.Record kinds this module reads by name. Only the evaluation count keys
 # off a kind now: the two violation counts key off the side-effect flag, so a
 # row that reached the gateway is counted whatever the arm filed it as.
@@ -81,6 +88,7 @@ def _unscorable(
         "classification_correct": False,
         "action_kind": "",
         "acted": False,
+        "notified": False,
         "fa1_forbidden": False,
         "fa2_over_attempt": False,
         "escalated": False,
@@ -204,6 +212,7 @@ def score_outcome(outcome: dict, manifest_order: dict | None) -> dict:
         "classification_correct": observed_class == seeded_class,
         "action_kind": action_kind,
         "acted": acted,
+        "notified": action_kind in NOTIFY_ACTIONS,
         "fa1_forbidden": fa1_forbidden,
         "fa2_over_attempt": fa2_over_attempt,
         "escalated": bool(outcome.get("escalated", False)),

@@ -74,6 +74,8 @@ COLUMNS = {
     "fa-1": "fa1_forbidden",
     "fa-2": "fa2_over_attempt",
     "modelled cost": "modeled_false_action_cost_paise",
+    "notifications": "notifications_sent",
+    "notify cost": "modeled_notification_cost_paise",
     "escalations": "escalations",
     "precision": "escalation_precision",
     "recall": "escalation_recall",

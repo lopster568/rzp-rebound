@@ -321,23 +321,27 @@ class TestAggregate(unittest.TestCase):
         self.assertEqual(1, overall["fa1_forbidden"])
         self.assertEqual(1, overall["fa2_over_attempt"])
         self.assertEqual(2, overall["false_action_count"])
+        # Phase 5: a failed attempt carries no gateway fee in India, so FA-2
+        # contributes nothing to the modelled cost and FA-1 carries all of it.
         self.assertEqual(
-            aggregate.MODELED_RETRY_FEE_PAISE
-            + aggregate.MODELED_FORBIDDEN_ACTION_COST_PAISE,
+            aggregate.MODELED_FORBIDDEN_ACTION_COST_PAISE
+            + aggregate.MODELED_FAILED_ATTEMPT_FEE_PAISE,
             overall["modeled_false_action_cost_paise"],
         )
-        self.assertEqual(5200, overall["modeled_false_action_cost_paise"])
+        self.assertEqual(50000, overall["modeled_false_action_cost_paise"])
 
-        # The cost number never travels without the sentence saying it is
-        # invented, and the sentence names both constants.
+        # The cost number never travels without the sentence saying it is a
+        # model, and the sentence names every constant in it.
         md = aggregate.render_markdown(rows, RUN_MANIFEST, b)
         self.assertIn(aggregate.COST_MODEL_ASSUMPTIONS, md)
-        self.assertIn(str(aggregate.MODELED_RETRY_FEE_PAISE), aggregate.COST_MODEL_ASSUMPTIONS)
-        self.assertIn(
-            str(aggregate.MODELED_FORBIDDEN_ACTION_COST_PAISE),
-            aggregate.COST_MODEL_ASSUMPTIONS,
-        )
-        for phrase in ("invents", "for the model only", "neither is a measured"):
+        for constant in (
+            aggregate.MODELED_FAILED_ATTEMPT_FEE_PAISE,
+            aggregate.MODELED_FORBIDDEN_ACTION_COST_PAISE,
+            aggregate.MODELED_NOTIFICATION_COST_PAISE,
+            aggregate.VISA_EXCESSIVE_REATTEMPT_FEE_PAISE,
+        ):
+            self.assertIn(str(constant), aggregate.COST_MODEL_ASSUMPTIONS)
+        for phrase in ("is a model", "cited inputs", "billed to anyone"):
             self.assertIn(phrase, aggregate.COST_MODEL_ASSUMPTIONS)
         # ADR-0004 and the test-mode caveat ride along with the table.
         self.assertIn("ADR-0004", md)
