@@ -92,12 +92,17 @@ const (
 	// DefaultCooldown is a configured choice. No industry source publishes a
 	// value at this scale.
 	//
-	// The shortest scheme-native retry interval anyone publishes is the
-	// Mastercard automated-clearing schedule, which starts at one hour. The
-	// closest Indian regulatory number is the RBI e-mandate 24 hour pre-debit
-	// notice, which is a notice floor and not a rate. Neither is a source for
-	// 30 seconds, and attaching one would be worse than attaching nothing,
-	// because it would look checked.
+	// The nearest published thing is Mastercard's own resubmission ladder behind
+	// merchant advice codes 24 through 30, carried in
+	// networkcodes.MastercardRetryScheduleHours, whose first rung is one hour.
+	// The closest Indian regulatory number is the RBI e-mandate 24 hour
+	// pre-debit notice, which is a notice floor and not a rate. Neither is a
+	// source for 30 seconds: this constant is two orders of magnitude below the
+	// shortest interval any scheme publishes, and attaching either citation to
+	// it would be worse than attaching nothing, because it would look checked.
+	//
+	// The ladder is carried anyway, so the size of that gap is a number a reader
+	// can see rather than a claim in a comment.
 	DefaultCooldown = 30 * time.Second
 
 	// DefaultAmountCeilingPaise is Rs 15,000, the threshold above which the RBI
@@ -439,8 +444,8 @@ var citedValues = map[string]string{
 }
 
 var configuredChoices = map[string]string{
-	RuleCooldown:     "no citable industry value exists at seconds scale. The shortest scheme-native retry interval published is the Mastercard automated-clearing schedule, which starts at one hour, and the RBI e-mandate 24 hour pre-debit notice is a notice floor rather than a rate.",
-	RuleNotifyRate:   "the same. A published minimum interval between two messages to one customer about one failed payment does not exist at this scale, and the RBI notice floor is about a different thing.",
+	RuleCooldown:     "no citable industry value exists at seconds scale. The nearest published schedule is Mastercard merchant advice codes 24 through 30, whose first rung is one hour, in networkcodes.MastercardRetryScheduleHours; the RBI e-mandate 24 hour pre-debit notice is a notice floor rather than a rate. This interval is two orders of magnitude below either.",
+	RuleNotifyRate:   "the same, and thinner. No scheme or regulator publishes a minimum interval between two messages to one customer about one failed payment at all, at any scale. The Mastercard ladder is about reattempting an authorization, not about contacting anyone, and the RBI notice floor is about a different thing again.",
 	RuleActionBudget: "a blast-radius bound on one run of this program. Not a payments quantity, so there is nothing for it to cite.",
 	RuleKillSwitch:   "an operational control. A halt is a property of this system, not of any payment network.",
 	RuleIdempotency:  "a correctness property of this system's own action ledger.",

@@ -48,18 +48,40 @@ const MastercardDoNotTryAgain = "03"
 
 // MastercardDoNotTryAgainIsFeeBearing reports that a resubmission after a MAC
 // 03 decline is charged for.
-const MastercardDoNotTryAgainIsFeeBearing = false
+//
+// This is what makes MAC 03 more than advice. Mastercard assesses a fee for
+// each authorization request resubmitted following a MAC 03 decline inside the
+// window below, so ignoring the code costs money rather than only breaking a
+// rule. It is the mirror image of the Visa side: Visa caps how many times you
+// may reattempt, Mastercard charges you for reattempting what it told you not
+// to.
+const MastercardDoNotTryAgainIsFeeBearing = true
 
 // MastercardResubmissionFeeWindowDays is the window that fee applies over.
-const MastercardResubmissionFeeWindowDays = 0
+const MastercardResubmissionFeeWindowDays = 30
 
-// MastercardShortestRetryIntervalHours is the first rung of the published
-// merchant advice code retry ladder.
-const MastercardShortestRetryIntervalHours = 0
+// mastercardRetryScheduleHours is the resubmission ladder behind merchant
+// advice codes 24 through 30, in hours.
+//
+//	24  1 hour     28  6 days
+//	25  24 hours   29  8 days
+//	26  2 days     30  10 days
+//	27  4 days
+//
+// These are Mastercard-use-only codes, so a merchant does not choose one. The
+// ladder is here because it is the only scheme-native retry timing anybody
+// publishes, and this project needs something real to measure a configured
+// interval against. R2-COOLDOWN is 30 seconds; the shortest rung here is one
+// hour. policy.ConfiguredChoices says the interval is ours and this is the
+// number that shows how far from any published one it sits.
+var mastercardRetryScheduleHours = []int{1, 24, 48, 96, 144, 192, 240}
+
+// MastercardShortestRetryIntervalHours is the first rung of that ladder.
+const MastercardShortestRetryIntervalHours = 1
 
 // MastercardRetryScheduleHours returns the published resubmission ladder behind
 // merchant advice codes 24 through 30, in hours.
-func MastercardRetryScheduleHours() []int { return nil }
+func MastercardRetryScheduleHours() []int { return slices.Clone(mastercardRetryScheduleHours) }
 
 // The Visa reattempt bound from bulletin AI10325, carried as constants so a
 // policy that describes itself as sitting under the cap can be checked against
@@ -135,7 +157,8 @@ var sources = map[string]string{
 	"visa-category-1":            "RECONSTRUCTED, not primary. AI10325 defines Category 1 and does not enumerate it. The twelve codes are a processor reconstruction of Visa's member-gated table, of the kind Qualpay and other PSPs publish. Read 2026-09-01.",
 	"visa-category-1-moved-out":  "AI10325 itself, which moves 03, 62, 78, and 93 from Category 1 to Category 2 effective 2021-04-17. Primary. Read 2026-09-01.",
 	"visa-never-same-account":    "AI10325 itself: code 14 is in Category 1 and Category 3 and must never be reattempted with the same account number. Primary. Read 2026-09-01.",
-	"mastercard-merchant-advice": "Mastercard merchant advice codes, MAC 03 do not try again. Read 2026-09-01.",
+	"mastercard-merchant-advice": "Mastercard merchant advice codes, MAC 03 do not try again, and a fee assessed for each authorization request resubmitted following a MAC 03 decline within 30 days. Verified through TabaPay's PSP documentation at developers.tabapay.com/docs/merchant-advice-code-mac, read 2026-09-01. A PSP restating a scheme rule, not the scheme's own publication.",
+	"mastercard-retry-schedule":  "Merchant advice codes 24 through 30, Mastercard's own resubmission ladder: 1 hour, 24 hours, 2 days, 4 days, 6 days, 8 days, 10 days. Mastercard use only. Same TabaPay source, read 2026-09-01. It is the only scheme-native retry timing anyone publishes and it is what R2-COOLDOWN is measured against rather than derived from.",
 	"visa-reattempt-cap":         "AI10325: Category 2 declines may be reattempted up to 15 times in 30 days. Primary. Read 2026-09-01. This project first recorded it as Categories 2 and 3, from a summary rather than the document.",
 }
 

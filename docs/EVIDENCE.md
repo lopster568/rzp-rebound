@@ -166,6 +166,19 @@ from a reason to "retry this" or "ask for a different card", and adopting a
 documented vocabulary does not make the mapping documented. Every class in
 `internal/classify` is an argument in a comment, not a citation.
 
+**The shape of that judgment has scheme precedent: NPCI classifies every UPI
+response code as a technical decline or a business decline.** *Scheme
+specification,* NPCI "UPI Error and Response Codes" version 2.9, a public PDF,
+text extracted and read 2026-09-01. Verified rows from the spec: insufficient
+funds (`Z9`) and invalid MPIN (`ZM`) are business declines; debit timeout
+(`U67`), credit timeout (`U68`), a mismatch in payment details (`B6`), and a
+bank HSM being down (`HS`) are technical declines; a risk-score decline (code
+`59`) is a business decline. Splitting failures into infrastructure problems
+worth retrying and business outcomes that must not be blindly retried is the
+taxonomy the scheme operator itself maintains. What stays this project's
+judgment is which Razorpay reason lands in which class, not the idea that such
+a split exists.
+
 ## 4. What a mistake costs
 
 The cost model in `harness/aggregate.py` is a model. What changed in phase 5 is
@@ -281,6 +294,12 @@ than a modelled one. The author's own live account lost a 178800 paise UPI
 payment to an authentication timeout, and nothing ever re-attempted it or asked
 the customer to try again. That is the exact failure class the payment-link
 nudge in this system targets.
+
+NPCI's own specification agrees on what that failure needs. An expired collect
+request (`U69`) is classified there as a business decline: the customer did not
+act, so the infrastructure has nothing to retry. The response a business
+decline calls for is re-engaging the customer, which is the one action this
+system takes for that class.
 
 ## 8. What cannot be made real without production data
 
