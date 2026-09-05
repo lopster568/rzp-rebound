@@ -79,6 +79,26 @@ Open a browser with exactly two tabs: one of the invoice short URLs the seeder
 printed, and a second one you will use in beat five. Nothing else. The recording
 checklist has why.
 
+Three facts about the hosted checkout page itself, verified live on the
+2026-09-05 headless-Chromium run that drove it end to end, and worth knowing
+before the first take because none of them is on the invoice or the card:
+
+- **The contact step rejects `9876543210`.** It is not a valid number for this
+  flow. Enter the manifest's own `customer_contact` value instead; the step
+  validates it and auto-advances.
+- **An RBI save-card interstitial blocks the flow.** After the card form and
+  Continue, a "Maybe later" / "Yes, secure my card" screen appears and has to be
+  dismissed before checkout continues. Click **Maybe later**.
+- **The bank step is a popup, not inline.** A window titled with `mocksharp`
+  opens, carrying a green **Success** button and a red **Failure** button and no
+  OTP field. Allow popups for the recording browser before you start, or the
+  window never opens and the take stalls on a blocked-popup icon nobody
+  narrates.
+
+The observed sequence end to end: Proceed to Pay, the contact step, the card
+form, Continue, the save-card interstitial, a "Sending OTP" panel, then the
+popup demo bank page with the Success or Failure choice.
+
 ## 0:00 to 0:40, the finding, not the feature
 
 **On screen:** a clean terminal, and then `docs/INDIA-CONSTRAINTS-AUDIT.md` on
@@ -136,15 +156,20 @@ real one. You will see the label in a moment.
 the browser tab holding one of the invoice short URLs.
 
 **Say:** Two of the three detectors have data because the seeder created it. The
-third does not, and this is the one place a human is load bearing.
+third does not, because failing a payment needs a browser, not an API call.
 
-Test-mode checkout is browser only. The undocumented headless path this
+Test-mode checkout requires a browser. The undocumented raw-HTTP path this
 repository drove payments through until 2026-08-31 returns `403` now, cause
 unresolved, and I deliberately did not probe it further rather than work around
-a block. So the seeder prints a to-do list instead of pretending.
+a block. So the seeder prints a to-do list instead of pretending. A human does
+this step on camera because it is the demo, not because it cannot be automated:
+a headless-Chromium run drove the same hosted checkout end to end on
+2026-09-05, and the outcome is chosen on Razorpay's demo bank page by clicking
+Success or Failure, not by the card number.
 
-**Pay the link with one of the printed failure cards and let the bank step
-decline.** Show the decline card on screen.
+**Pay the link with one of the printed failure cards: contact step, card form,
+Continue, dismiss the save-card interstitial with Maybe later, then choose
+Failure on the demo bank popup.** Show the decline card on screen.
 
 **Say:** That failure is now in the account's payment history, and the
 failed-payment detector reads it on the next sweep. Nothing wrote it there
@@ -324,7 +349,9 @@ is simply: wherever the run directory exists, pass `--run`.
 the poller writes to Razorpay.
 
 **Switch to the browser, open one of the invoice short URLs the seeder printed,
-and pay it.** Card `4100 2800 0000 1007`, any future expiry, any CVV.
+and pay it.** Card `4100 2800 0000 1007`, any future expiry, any CVV. Contact
+step, card form, Continue, dismiss the save-card interstitial with Maybe later,
+then choose Success on the demo bank popup.
 
 This script commits to an invoice short URL rather than to a run-minted payment
 link, and the reason is that the invoice is in both snapshots by construction:
@@ -386,7 +413,8 @@ old build found, and none of the old ones were softened when the system changed
 underneath them. The aging is simulated and labelled in three places. Any paid
 transition is one payment by the person running the demo. A notification is an
 API acceptance and never a delivery. A dispute is a manifest flag. Failed
-payments need a human to exist. The idempotency guard bounds one run and not a
+payments still need a browser, not an API call. The idempotency guard bounds
+one run and not a
 campaign. The model arm cannot trip the dispute rule at all, and that is written
 in the code that fails to fill the field. The test-first ritual was not
 followed for the pivot packages, which is flagged rather than backfilled. And the
@@ -416,6 +444,11 @@ Run through this before the first take and again before the final one.
   other tabs, no bookmarks bar carrying anything, no autofill dropdown appearing
   over the card form. Check the card form once before recording, so the browser
   has already offered and been refused whatever it wants to offer.
+- **Allow popups for the recording browser.** The bank step opens as a
+  `mocksharp`-titled popup with the Success and Failure buttons on it. A blocked
+  popup stalls the take on an icon nobody narrates. Enter the manifest's own
+  `customer_contact` value at the contact step, not `9876543210`, and click
+  Maybe later on the save-card interstitial before the "Sending OTP" panel.
 - **Seed the book before recording, not on camera.** The seeder paces its calls
   and waits out an invoice burst quota, so a full book is one command that takes
   one and a half to three minutes, the browser decline in beat two takes longer
