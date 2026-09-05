@@ -16,7 +16,7 @@ import (
 	"github.com/lopster568/rzp-recovery-agent/internal/batch"
 	"github.com/lopster568/rzp-recovery-agent/internal/classify"
 	"github.com/lopster568/rzp-recovery-agent/internal/mcpserver"
-	"github.com/lopster568/rzp-recovery-agent/internal/recovery"
+	"github.com/lopster568/rzp-recovery-agent/internal/riskitem"
 	"github.com/lopster568/rzp-recovery-agent/internal/runner"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -57,7 +57,7 @@ type subprocessRig struct {
 	runDir   string
 	armDir   string
 	batch    runner.BatchFile
-	orderID  string
+	itemID   string
 	manifest batch.Order
 }
 
@@ -149,30 +149,46 @@ func startServer(t *testing.T, pick func(batch.Order) bool, extraArgs ...string)
 	return r
 }
 
-// gatewayOrderID reads the id the server gave the order, off the first thing
-// list_failed_payments returns. The manifest id is not the gateway id: every
-// arm materialises its own copy.
-func (r *subprocessRig) gatewayOrderID() string {
+// riskItemID reads the id of the one item this invocation serves, off
+// list_risk_items. The manifest id is not it, and neither is the gateway order
+// id: an item id is derived from the detector sighting.
+func (r *subprocessRig) riskItemID() string {
 	r.t.Helper()
-	if r.orderID != "" {
-		return r.orderID
+	if r.itemID != "" {
+		return r.itemID
 	}
 	res, err := r.session.CallTool(r.t.Context(), &mcp.CallToolParams{
-		Name:      mcpserver.ToolListFailedPayments,
+		Name:      mcpserver.ToolListRiskItems,
 		Arguments: map[string]any{},
 	})
 	if err != nil {
-		r.t.Fatalf("list_failed_payments: %v", err)
+		r.t.Fatalf("list_risk_items: %v", err)
 	}
-	var out mcpserver.ListFailedPaymentsOutput
+	var out mcpserver.ListRiskItemsOutput
 	if err := json.Unmarshal([]byte(resultText(res)), &out); err != nil {
-		r.t.Fatalf("decode the order list from %q: %v", resultText(res), err)
+		r.t.Fatalf("decode the queue from %q: %v", resultText(res), err)
 	}
-	if len(out.Orders) != 1 {
-		r.t.Fatalf("got %d orders, want 1: one invocation serves one order", len(out.Orders))
+	if len(out.Items) != 1 {
+		r.t.Fatalf("got %d risk items, want 1: one invocation serves one item", len(out.Items))
 	}
-	r.orderID = out.Orders[0].OrderID
-	return r.orderID
+	r.itemID = out.Items[0].ItemID
+	return r.itemID
+}
+
+// gatewayOrderID is the order the item sits on, read back through
+// get_risk_item. Every arm materialises its own copy of a manifest order, so
+// this is the id that invocation's gateway minted.
+func (r *subprocessRig) gatewayOrderID() string {
+	r.t.Helper()
+	res := r.call(mcpserver.ToolGetRiskItem, map[string]any{"item_id": r.riskItemID()})
+	var detail mcpserver.RiskItemDetail
+	if err := json.Unmarshal([]byte(resultText(res)), &detail); err != nil {
+		r.t.Fatalf("decode the item from %q: %v", resultText(res), err)
+	}
+	if detail.RootOrderID == "" {
+		r.t.Fatalf("the item carries no root order id: %+v", detail)
+	}
+	return detail.RootOrderID
 }
 
 func (r *subprocessRig) call(name string, args map[string]any) *mcp.CallToolResult {
@@ -284,15 +300,15 @@ func TestCompiledServerListsItsToolsOverStdio(t *testing.T) {
 
 func TestCompiledServerRefusesAnActionWithNoDecisionRecorded(t *testing.T) {
 	r := startServer(t, retryable)
-	order := r.gatewayOrderID()
+	item := r.riskItemID()
 
-	res := r.call(mcpserver.ToolRetryPayment, map[string]any{"order_id": order})
+	res := r.call(mcpserver.ToolCreatePaymentLink, map[string]any{"item_id": item})
 	var out mcpserver.ActionOutput
 	if err := json.Unmarshal([]byte(resultText(res)), &out); err != nil {
 		t.Fatalf("decode the action result from %q: %v", resultText(res), err)
 	}
 	if out.Allowed {
-		t.Fatalf("the compiled server retried an order with no decision recorded")
+		t.Fatalf("the compiled server acted on an item with no decision recorded")
 	}
 	if out.PolicyRule != mcpserver.RuleDecisionFirst {
 		t.Errorf("the refusal carries rule %q, want %s", out.PolicyRule, mcpserver.RuleDecisionFirst)
@@ -306,27 +322,40 @@ func TestCompiledServerRefusesAnActionWithNoDecisionRecorded(t *testing.T) {
 	if rows[0].SideEffect {
 		t.Errorf("the outcome row records a side effect for a refused action")
 	}
-	if rows[0].ActionKind != recovery.ActionNone {
-		t.Errorf("the outcome row's action kind is %q, want %q", rows[0].ActionKind, recovery.ActionNone)
+	if rows[0].ActionKind != riskitem.ActionDoNothing {
+		t.Errorf("the outcome row's action kind is %q, want %q", rows[0].ActionKind, riskitem.ActionDoNothing)
 	}
 }
 
 func TestCompiledServerWritesAnOutcomeRowReadBackFromTheGateway(t *testing.T) {
 	r := startServer(t, retryable)
+	item := r.riskItemID()
 	order := r.gatewayOrderID()
 
+	// The action is an escalation, and that is not an arbitrary choice of
+	// tool. A manifest order carries no customer, so the item this command
+	// builds from one has no contact channel, and R10 escalates every action
+	// that would reach a customer. Escalating is the one thing left, which is
+	// the correct answer for an item nobody can be told about and is exactly
+	// what riskItemFrom says the harness will see until it seeds items.
 	r.call(mcpserver.ToolRecordDecision, map[string]any{
-		"order_id":  order,
-		"action":    recovery.ActionRetrySameInstrument,
-		"reasoning": "the failure is transient, so re-presenting the same instrument can work",
+		"item_id":   item,
+		"action":    riskitem.ActionEscalate,
+		"reasoning": "the payment failed and there is no way to reach this customer, so a person has to take it",
 	})
-	res := r.call(mcpserver.ToolRetryPayment, map[string]any{"order_id": order})
+	res := r.call(mcpserver.ToolEscalateItem, map[string]any{
+		"item_id": item,
+		"reason":  "no contact channel on the item and the order is unpaid",
+	})
 	var action mcpserver.ActionOutput
 	if err := json.Unmarshal([]byte(resultText(res)), &action); err != nil {
 		t.Fatalf("decode the action result from %q: %v", resultText(res), err)
 	}
 	if !action.Allowed {
-		t.Fatalf("the compiled server refused a retry on a retry-eligible order: %+v", action)
+		t.Fatalf("the compiled server refused an escalation on an unreachable item: %+v", action)
+	}
+	if !action.Accepted {
+		t.Fatalf("the escalation was not accepted by the intervention engine: %+v", action)
 	}
 
 	r.closeAndWait()
@@ -351,8 +380,14 @@ func TestCompiledServerWritesAnOutcomeRowReadBackFromTheGateway(t *testing.T) {
 	if row.FinalOrderStatus == "" {
 		t.Errorf("the outcome row has no final order status, so nothing was read back from the gateway")
 	}
-	if !row.SideEffect {
-		t.Errorf("an allowed retry did not record a side effect")
+	if row.SideEffect {
+		t.Errorf("an escalation was recorded as a gateway side effect")
+	}
+	if !row.Escalated {
+		t.Errorf("the outcome row does not record the escalation")
+	}
+	if row.ActionKind != riskitem.ActionEscalate {
+		t.Errorf("the outcome row's action kind is %q, want %q", row.ActionKind, riskitem.ActionEscalate)
 	}
 	if row.PolicyVerdict == "" {
 		t.Errorf("an action row carries no policy verdict, which is a succeeded containment violation")

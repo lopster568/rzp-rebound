@@ -6,118 +6,154 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/audit"
-	"github.com/lopster568/rzp-recovery-agent/internal/batch"
 	"github.com/lopster568/rzp-recovery-agent/internal/classify"
 	"github.com/lopster568/rzp-recovery-agent/internal/policy"
-	"github.com/lopster568/rzp-recovery-agent/internal/razorpay"
-	"github.com/lopster568/rzp-recovery-agent/internal/recovery"
+	"github.com/lopster568/rzp-recovery-agent/internal/riskitem"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// registerTools adds the seven. The order here is ToolNames' order, and the
+// The two media a notification can go out over. They are local constants
+// because a medium never leaves this package: notify_item folds the medium
+// into the action it asks for, and notify_email and notify_sms are two
+// different members of the frozen lawful set rather than one action with an
+// argument.
+const (
+	MediumEmail = "email"
+	MediumSMS   = "sms"
+)
+
+// registerTools adds the eight. The order here is ToolNames' order, and the
 // two lists are checked against each other by
-// TestServerServesExactlyTheSevenNamedTools.
+// TestServerServesExactlyTheEightNamedTools.
 func (s *Server) registerTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: ToolListFailedPayments,
-		Description: "List the failed payments waiting for a decision. " +
-			"Each one carries its order id, amount in paise, currency, and merchant receipt. " +
-			"These are the only orders anything here can act on.",
-	}, s.handleListFailedPayments)
+		Name: ToolListRiskItems,
+		Description: "List the revenue at risk waiting for a decision: failed payments, unpaid " +
+			"orders, and overdue invoices, all as one kind of item. Each one carries what is still " +
+			"due, how long it has been at risk, whether there is any way to contact the customer, " +
+			"and what they can already pay against. These are the only items anything here can act on.",
+	}, s.handleListRiskItems)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: ToolGetPaymentDetail,
-		Description: "Read one order's current state out of the gateway: its status, how many " +
-			"payment attempts it has already had, and the error fields of the failed payment, " +
-			"with the recovery class those fields map to.",
-	}, s.handleGetPaymentDetail)
+		Name: ToolGetRiskItem,
+		Description: "Read one item in full, with the evidence its detector saw: the error fields " +
+			"of a failed payment, the attempt count on an order, the notification statuses on an " +
+			"invoice. A field the source does not have is absent rather than zero. An email status " +
+			"of sent means Razorpay accepted the send, not that a person read anything.",
+	}, s.handleGetRiskItem)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: ToolRecordDecision,
-		Description: "Record what you have decided to do about one order and why, before you do it. " +
-			"Actions on an order are refused until a decision for that order is on the record. " +
-			"The reasoning goes into the audit trail a compliance reviewer reads.",
+		Description: "Record what you have decided to do about one item and why, before you do it. " +
+			"Actions on an item are refused until a decision for that item is on the record. " +
+			"The reasoning goes into the audit trail a compliance reviewer reads. The action you " +
+			"name may be one no tool executes, such as cancel_write_off or do_nothing: those are " +
+			"decisions, and recording one is the whole of doing them.",
 	}, s.handleRecordDecision)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
+		Name: ToolNotifyItem,
+		Description: "Ask Razorpay to tell the customer about the way to pay this item already " +
+			"carries, over email or sms. What this observes is the notification API call's " +
+			"response. It does not observe a person receiving or reading anything. An item with no " +
+			"contact channel is refused rather than guessed at, and an item with nothing to pay " +
+			"against needs " + ToolCreatePaymentLink + " first.",
+	}, s.handleNotifyItem)
+
+	mcp.AddTool(s.mcp, &mcp.Tool{
 		Name: ToolCreatePaymentLink,
-		Description: "Raise a payment link for an order, so the customer can complete the payment " +
-			"themselves. Use it when the card cannot be re-presented unattended: the customer has " +
-			"to authenticate again, or the instrument itself cannot work.",
+		Description: "Mint a payment link for an item that has nothing to pay against yet, so the " +
+			"customer can pay by choosing to. Nothing here can take money from anyone: this raises " +
+			"a link and stops. Sending it is a separate call. An item that already carries a link, " +
+			"or an issued invoice with its own url, does not need one.",
 	}, s.handleCreatePaymentLink)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: ToolResendNotification,
-		Description: "Ask Razorpay to send an existing payment link again. What this observes is " +
-			"the notification API call's response. It does not observe a person receiving or " +
-			"reading anything.",
-	}, s.handleResendNotification)
+		Name: ToolResendLink,
+		Description: "Send the link or invoice this item already carries, again. It creates " +
+			"nothing. It reaches the same notification API " + ToolNotifyItem + " does, and what " +
+			"separates the two is that this one is a repeat, which is the thing the rate limit " +
+			"counts. It observes the API response and nothing about a person.",
+	}, s.handleResendLink)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: ToolRetryPayment,
-		Description: "Re-present the same instrument on an order. Use it when the failure was " +
-			"something that can pass on a second attempt without the customer being involved.",
-	}, s.handleRetryPayment)
+		Name: ToolLogPromise,
+		Description: "Record that the customer said they will pay, and when. It writes an audit " +
+			"row and touches no Razorpay resource: no money moves, nothing is sent, and nobody is " +
+			"held to it. Use days_hold to say how long this item should be left alone afterwards.",
+	}, s.handleLogPromise)
 
 	mcp.AddTool(s.mcp, &mcp.Tool{
-		Name: ToolEscalateToHuman,
-		Description: "Hand an order to a person and take no automated action on it. This is a " +
-			"successful outcome, not a failure: some orders are ones nothing should be attempted on.",
-	}, s.handleEscalateToHuman)
+		Name: ToolEscalateItem,
+		Description: "Hand the item to a person and take no automated action on it. This is a " +
+			"successful outcome, not a failure: some debt is debt nothing automated should touch.",
+	}, s.handleEscalateItem)
 }
 
 // ---------------------------------------------------------------------------
 // Read tools
 // ---------------------------------------------------------------------------
 
-func (s *Server) handleListFailedPayments(
-	_ context.Context, _ *mcp.CallToolRequest, _ ListFailedPaymentsInput,
+func (s *Server) handleListRiskItems(
+	_ context.Context, _ *mcp.CallToolRequest, _ ListRiskItemsInput,
 ) (*mcp.CallToolResult, any, error) {
-	out := ListFailedPaymentsOutput{
-		Note: "these are the only orders this server will act on",
+	now := s.clock.Now()
+	out := ListRiskItemsOutput{
+		Note: "these are the only risk items this server will act on",
 	}
-	for _, o := range s.Orders() {
-		out.Orders = append(out.Orders, FailedPaymentSummary{
-			OrderID:     o.OrderID,
-			AmountPaise: o.AmountPaise,
-			Currency:    o.Currency,
-			Receipt:     o.Receipt,
+	for _, item := range s.Items() {
+		out.Items = append(out.Items, RiskItemSummary{
+			ItemID:         item.ID,
+			Source:         string(item.Source),
+			AmountDuePaise: item.AmountDuePaise,
+			AmountPaise:    item.AmountPaise,
+			Currency:       item.Currency,
+			AgingDays:      agingDays(now, item.AtRiskSince),
+			HasContact:     item.Customer.HasContactChannel(),
+			HandleKind:     item.PayHandle.Kind,
 		})
 	}
 	return jsonResult(out), nil, nil
 }
 
-func (s *Server) handleGetPaymentDetail(
-	ctx context.Context, _ *mcp.CallToolRequest, in GetPaymentDetailInput,
+func (s *Server) handleGetRiskItem(
+	_ context.Context, _ *mcp.CallToolRequest, in GetRiskItemInput,
 ) (*mcp.CallToolResult, any, error) {
-	order, ok := s.lookup(in.OrderID)
+	item, ok := s.lookup(in.ItemID)
 	if !ok {
-		return errResult(fmt.Errorf("order %s is not in this batch", in.OrderID)), nil, nil
+		return errResult(fmt.Errorf("risk item %s is not in this batch", in.ItemID)), nil, nil
 	}
 
-	state, err := s.observe(ctx, order.OrderID)
-	if err != nil {
-		return errResult(err), nil, nil
-	}
-
-	detail := PaymentDetail{
-		OrderID:      order.OrderID,
-		AmountPaise:  order.AmountPaise,
-		Currency:     order.Currency,
-		Receipt:      order.Receipt,
-		OrderStatus:  state.order.Status,
-		AmountPaid:   state.order.AmountPaid,
-		AttemptsSeen: len(state.payments),
-		FailureClass: state.class.String(),
-		Note:         "read from the gateway just now",
-	}
-	if state.failed != nil {
-		detail.FailureCode = state.failed.ErrorCode
-		detail.FailureReason = state.failed.ErrorReason
-		detail.FailureSource = state.failed.ErrorSource
-		detail.FailureStep = state.failed.ErrorStep
+	detail := RiskItemDetail{
+		ItemID:          item.ID,
+		Source:          string(item.Source),
+		SourceID:        item.SourceID,
+		RootOrderID:     item.RootOrderID,
+		AmountPaise:     item.AmountPaise,
+		AmountPaidPaise: item.AmountPaidPaise,
+		AmountDuePaise:  item.AmountDuePaise,
+		Currency:        item.Currency,
+		AtRiskSince:     item.AtRiskSince,
+		AgingDays:       agingDays(s.clock.Now(), item.AtRiskSince),
+		HasContact:      item.Customer.HasContactChannel(),
+		Channels:        channelsOf(item),
+		HandleKind:      item.PayHandle.Kind,
+		HandleID:        item.PayHandle.ID,
+		HandleURL:       item.PayHandle.URL,
+		Signal: RiskSignal{
+			FailureCode:   item.Signal.FailureCode,
+			FailureReason: item.Signal.FailureReason,
+			FailureSource: item.Signal.FailureSource,
+			FailureStep:   item.Signal.FailureStep,
+			Method:        item.Signal.Method,
+			Attempts:      item.Signal.Attempts,
+			EmailStatus:   item.Signal.EmailStatus,
+			SmsStatus:     item.Signal.SmsStatus,
+		},
+		Note: "what the detector saw when it swept. Nothing here is re-read per call.",
 	}
 	return jsonResult(detail), nil, nil
 }
@@ -129,16 +165,20 @@ func (s *Server) handleGetPaymentDetail(
 func (s *Server) handleRecordDecision(
 	ctx context.Context, _ *mcp.CallToolRequest, in RecordDecisionInput,
 ) (*mcp.CallToolResult, any, error) {
-	orderID := strings.TrimSpace(in.OrderID)
+	itemID := strings.TrimSpace(in.ItemID)
 	action := strings.TrimSpace(in.Action)
 	reasoning := strings.TrimSpace(in.Reasoning)
 
-	if orderID == "" {
-		return errResult(fmt.Errorf("a decision has to name the order it is about")), nil, nil
+	if itemID == "" {
+		return errResult(fmt.Errorf("a decision has to name the risk item it is about")), nil, nil
 	}
-	if _, ok := s.lookup(orderID); !ok {
-		return errResult(fmt.Errorf("order %s is not in this batch", orderID)), nil, nil
+	item, ok := s.lookup(itemID)
+	if !ok {
+		return errResult(fmt.Errorf("risk item %s is not in this batch", itemID)), nil, nil
 	}
+	// The lawful set is the vocabulary, and riskitem.IsLawfulAction is the one
+	// place that decides what is in it. A retry, under any spelling, lands
+	// here.
 	if !slices.Contains(DecisionActions(), action) {
 		return errResult(fmt.Errorf("%q is not an action this system has. It is one of %s",
 			in.Action, strings.Join(DecisionActions(), ", "))), nil, nil
@@ -149,21 +189,23 @@ func (s *Server) handleRecordDecision(
 				"to reconstruct why the action was taken.")), nil, nil
 	}
 
-	decision := Decision{OrderID: orderID, Action: action, Reasoning: reasoning}
+	decision := Decision{ItemID: itemID, Action: action, Reasoning: reasoning}
 
 	s.mu.Lock()
-	s.decisions[orderID] = decision
+	s.decisions[itemID] = decision
 	s.decisionLog = append(s.decisionLog, decision)
-	s.tally(orderID).DecisionsRecorded++
+	s.tally(itemID).DecisionsRecorded++
 	s.mu.Unlock()
 
 	if err := s.record(ctx, audit.Event{
-		OrderID:        orderID,
+		OrderID:        itemID,
 		Kind:           KindDecisionRecorded,
 		ProposedAction: action,
 		Detail: map[string]string{
 			DetailChosenAction: action,
 			DetailReasoning:    reasoning,
+			DetailSource:       string(item.Source),
+			DetailRootOrderID:  item.RootOrderID,
 		},
 	}); err != nil {
 		return nil, nil, err
@@ -171,76 +213,99 @@ func (s *Server) handleRecordDecision(
 
 	return jsonResult(RecordDecisionOutput{
 		Recorded: true,
-		OrderID:  orderID,
+		ItemID:   itemID,
 		Action:   action,
-		Note:     "on the record. The action tools for this order are open now.",
+		Note:     "on the record. The action tools for this item are open now.",
 	}), nil, nil
 }
 
 // ---------------------------------------------------------------------------
 // Action tools
+//
+// Every one of them is the same three lines: validate what the tool's own
+// arguments have to mean, name a member of the frozen lawful set, and hand it
+// to act. None of them knows how its action is carried out, because none of
+// them can: the Intervener is the only thing in the process that does.
 // ---------------------------------------------------------------------------
 
-func (s *Server) handleRetryPayment(
-	ctx context.Context, _ *mcp.CallToolRequest, in RetryPaymentInput,
+func (s *Server) handleNotifyItem(
+	ctx context.Context, _ *mcp.CallToolRequest, in NotifyItemInput,
 ) (*mcp.CallToolResult, any, error) {
-	return s.act(ctx, action{
-		tool:         ToolRetryPayment,
-		orderID:      in.OrderID,
-		policyAction: policy.ActionRetrySameInstrument,
-		execute:      s.executeRetry,
-	})
+	medium := strings.TrimSpace(strings.ToLower(in.Medium))
+	if medium == "" {
+		medium = MediumEmail
+	}
+	act, ok := notifyActionFor(medium)
+	if !ok {
+		return errResult(fmt.Errorf("medium %q is neither %s nor %s", in.Medium, MediumEmail, MediumSMS)), nil, nil
+	}
+	return s.act(ctx, action{tool: ToolNotifyItem, itemID: in.ItemID, action: act})
 }
 
 func (s *Server) handleCreatePaymentLink(
-	ctx context.Context, _ *mcp.CallToolRequest, in CreatePaymentLinkInput,
+	ctx context.Context, _ *mcp.CallToolRequest, in CreatePaymentLinkForItemInput,
 ) (*mcp.CallToolResult, any, error) {
 	return s.act(ctx, action{
-		tool:         ToolCreatePaymentLink,
-		orderID:      in.OrderID,
-		policyAction: linkAction(in.Purpose),
-		execute:      s.executeCreateLink,
+		tool:   ToolCreatePaymentLink,
+		itemID: in.ItemID,
+		action: riskitem.ActionCreatePaymentLink,
 	})
 }
 
-func (s *Server) handleResendNotification(
-	ctx context.Context, _ *mcp.CallToolRequest, in ResendNotificationInput,
+func (s *Server) handleResendLink(
+	ctx context.Context, _ *mcp.CallToolRequest, in ResendLinkForItemInput,
 ) (*mcp.CallToolResult, any, error) {
-	medium := strings.TrimSpace(in.Medium)
-	if medium == "" {
-		medium = razorpay.MediumEmail
+	return s.act(ctx, action{
+		tool:   ToolResendLink,
+		itemID: in.ItemID,
+		action: riskitem.ActionResendLink,
+	})
+}
+
+func (s *Server) handleLogPromise(
+	ctx context.Context, _ *mcp.CallToolRequest, in LogPromiseInput,
+) (*mcp.CallToolResult, any, error) {
+	promisedAt, err := parsePromiseDate(in.PromisedAt)
+	if err != nil {
+		return errResult(err), nil, nil
+	}
+	if in.DaysHold < 0 {
+		return errResult(fmt.Errorf("days_hold is %d. A hold cannot run backwards", in.DaysHold)), nil, nil
+	}
+	note := strings.TrimSpace(in.Note)
+	if note == "" {
+		return errResult(fmt.Errorf(
+			"a promise needs the note that says what the customer actually said. " +
+				"A row that records a promise and not its substance is not evidence of anything")), nil, nil
 	}
 	return s.act(ctx, action{
-		tool:         ToolResendNotification,
-		orderID:      in.OrderID,
-		policyAction: s.recordedNotifyAction(in.OrderID),
-		execute: func(ctx context.Context, a action, order batch.AgentVisibleOrder, d policy.Decision, out *ActionOutput) (effect, error) {
-			return s.executeResend(ctx, a, order, d, out, in.PaymentLinkID, medium)
+		tool:   ToolLogPromise,
+		itemID: in.ItemID,
+		action: riskitem.ActionLogPromise,
+		extra: map[string]string{
+			DetailPromisedAt:  promisedAt.Format(time.RFC3339),
+			DetailDaysHold:    itoa(in.DaysHold),
+			DetailPromiseNote: note,
 		},
 	})
 }
 
-func (s *Server) handleEscalateToHuman(
-	ctx context.Context, _ *mcp.CallToolRequest, in EscalateToHumanInput,
+func (s *Server) handleEscalateItem(
+	ctx context.Context, _ *mcp.CallToolRequest, in EscalateItemInput,
 ) (*mcp.CallToolResult, any, error) {
 	reason := strings.TrimSpace(in.Reason)
 	if reason == "" {
 		return errResult(fmt.Errorf("an escalation has to say what a person should look at")), nil, nil
 	}
 	return s.act(ctx, action{
-		tool:    ToolEscalateToHuman,
-		orderID: in.OrderID,
-		// An escalation takes no action, so it is evaluated as one. The
-		// evaluation still runs and is still recorded: a halt, a replay, or an
-		// exhausted budget stops an escalation the same as anything else.
-		policyAction: policy.ActionNone,
+		tool:   ToolEscalateItem,
+		itemID: in.ItemID,
+		action: riskitem.ActionEscalate,
 		// R7 and R4 escalate rather than allow, and an escalation is exactly
-		// the right move on an order those two rules fired on. So an escalate
+		// the right move on an item those two rules fired on. So an escalate
 		// verdict passes here, and only a deny stops it.
-		acceptsEscalate: true,
-		execute: func(ctx context.Context, a action, order batch.AgentVisibleOrder, d policy.Decision, out *ActionOutput) (effect, error) {
-			return s.executeEscalate(ctx, a, order, d, out, reason)
-		},
+		acceptsEscalate:  true,
+		escalationReason: reason,
 	})
 }
 
@@ -248,45 +313,52 @@ func (s *Server) handleEscalateToHuman(
 // The shared action path
 // ---------------------------------------------------------------------------
 
-// action is one proposed action, with what it needs to be evaluated and run.
+// action is one proposed action: which tool asked, which item, and which
+// member of the frozen lawful set it is.
 type action struct {
-	tool            string
-	orderID         string
-	policyAction    string
-	acceptsEscalate bool
-	execute         executeFunc
+	tool   string
+	itemID string
+	// action is a riskitem action constant. It is the string the Intervener
+	// is handed and the string the audit row names.
+	action           string
+	acceptsEscalate  bool
+	escalationReason string
+	// extra is the tool's own audit detail, such as the terms of a promise.
+	// It is merged into the action row and it never reaches the Intervener,
+	// which takes an item and an action and nothing else.
+	extra map[string]string
 }
 
-// executeFunc runs the side effect. It is only ever called after
-// policy.Evaluate returned a verdict this action accepts.
-type executeFunc func(ctx context.Context, a action, order batch.AgentVisibleOrder, d policy.Decision, out *ActionOutput) (effect, error)
-
-// effect is what an execution did, in the same vocabulary
-// recovery.ActionResult uses, so the outcome row for this arm is built from
-// the same fields as the other three.
-type effect struct {
-	kind             string
-	sideEffect       bool
-	gatewayCalls     int
-	claimedRecovered bool
-	escalated        bool
-	// commitKey and commitAction go to store.Commit. An empty key means this
-	// action does not spend an attempt or a notification window.
-	commitKey    string
-	commitAction string
+// applied is what one Apply did, in the vocabulary the audit row and the tally
+// are built from.
+type applied struct {
+	outcome riskitem.Outcome
+	err     error
+	// sideEffect reports that a call to Razorpay was made. It is not the same
+	// as Accepted: a request that reached the gateway and then failed is a
+	// request that was made, and a refusal the applier decided on its own
+	// reached nothing.
+	sideEffect bool
 }
 
 // act is layer 2 of ADR-0003 and the one path every action tool takes.
 //
-// policy.Evaluate is its first statement after the order is resolved, and the
-// verdict is in the ledger before anything runs. There is no branch in which
-// an execute function is reached without a recorded verdict behind it, which
-// is the claim TestEveryActionToolConsultsPolicyBeforeSideEffect checks by
-// walking the registry rather than by reading this comment.
+// The policy evaluation is its first statement after the item is resolved and
+// the lock is held, and the verdict is in the ledger before anything runs.
+// There is no branch in which the Intervener is reached without a recorded
+// verdict behind it, which is the claim
+// TestEveryActionToolConsultsPolicyBeforeSideEffect checks by walking the
+// registry rather than by reading this comment.
+//
+// It does not re-read Razorpay. The item is what its detector saw on the
+// sweep, and the only component in this process that talks to the gateway is
+// the Intervener, which reports what it observed in the Outcome. A tool
+// surface that re-read state would need a Port, and a Port is a second way to
+// reach the gateway from here.
 func (s *Server) act(ctx context.Context, a action) (*mcp.CallToolResult, any, error) {
-	order, ok := s.lookup(a.orderID)
+	item, ok := s.lookup(a.itemID)
 	if !ok {
-		return errResult(fmt.Errorf("order %s is not in this batch", a.orderID)), nil, nil
+		return errResult(fmt.Errorf("risk item %s is not in this batch", a.itemID)), nil, nil
 	}
 
 	// Held from before the snapshot to after the commit. Everything between is
@@ -295,48 +367,49 @@ func (s *Server) act(ctx context.Context, a action) (*mcp.CallToolResult, any, e
 	s.actMu.Lock()
 	defer s.actMu.Unlock()
 
-	state, err := s.observe(ctx, order.OrderID)
-	if err != nil {
-		return errResult(err), nil, nil
+	touches := s.touches(item.ID)
+	touchNo := touches + 1
+	key := policy.IdempotencyKey(item.ID, a.action, touchNo)
+	snapshot := s.opts.Store.Snapshot(item.ID, key, s.opts.KillSwitchEngaged)
+	// internal/store still counts a payment attempt, which this engine does
+	// not make, and commits a notification by moving a window rather than by
+	// counting a contact. So the count R1 reads comes from this invocation's
+	// own tally of accepted contact actions. Seam: when the store counts
+	// touches, delete this line and let the snapshot speak for itself.
+	snapshot.TouchesMade = max(snapshot.TouchesMade, touches)
+
+	facts := s.factsFor(ctx, item)
+	if facts.TouchNo == 0 {
+		facts.TouchNo = touchNo
 	}
-
-	attempts := s.opts.Store.Attempts(order.OrderID)
-	attemptNo := attempts + 1
-	key := policy.IdempotencyKey(order.OrderID, a.policyAction, attemptNo)
-	snapshot := s.opts.Store.Snapshot(order.OrderID, key, s.opts.KillSwitchEngaged)
-
-	decision := s.opts.Policy.Evaluate(snapshot, policy.Request{
-		OrderID:     order.OrderID,
-		Action:      a.policyAction,
-		Class:       state.class,
-		AmountPaise: order.AmountPaise,
-		AttemptNo:   attemptNo,
-	})
+	request := policy.RequestFromClassified(item, a.action, classOf(item), facts)
+	decision := s.opts.Policy.Evaluate(snapshot, request)
 
 	out := ActionOutput{
-		OrderID:           order.OrderID,
-		Action:            a.policyAction,
-		PolicyVerdict:     string(decision.Verdict),
-		PolicyRule:        decision.RuleID,
-		PolicyReason:      decision.Reason,
-		AttemptsRemaining: decision.Remaining,
+		ItemID:        item.ID,
+		Action:        a.action,
+		PolicyVerdict: string(decision.Verdict),
+		PolicyRule:    decision.RuleID,
+		PolicyReason:  decision.Reason,
+		Remaining:     decision.Remaining,
 	}
 
 	// The evaluation goes on the record before anything acts on it.
 	if err := s.record(ctx, audit.Event{
-		OrderID:        order.OrderID,
+		OrderID:        item.ID,
 		Kind:           audit.KindPolicyEvaluated,
-		Class:          state.class.String(),
-		ProposedAction: a.policyAction,
+		Class:          classOf(item).String(),
+		ProposedAction: a.action,
 		PolicyVerdict:  string(decision.Verdict),
 		PolicyRule:     decision.RuleID,
 		Detail: map[string]string{
-			DetailTool:                      a.tool,
-			DetailGateLayer:                 LayerHandler,
-			recovery.DetailIdempotencyKey:   policy.ShortKey(decision.IdempotencyKey),
-			recovery.DetailIdempotentReplay: btoa(decision.IdempotentReplay),
-			recovery.DetailAttemptNo:        itoa(attemptNo),
-			"policy_reason":                 decision.Reason,
+			DetailTool:           a.tool,
+			DetailGateLayer:      LayerHandler,
+			DetailSource:         string(item.Source),
+			DetailIdempotencyKey: policy.ShortKey(decision.IdempotencyKey),
+			DetailTouchNo:        itoa(touchNo),
+			"idempotent_replay":  btoa(decision.IdempotentReplay),
+			"policy_reason":      decision.Reason,
 		},
 	}); err != nil {
 		return nil, nil, err
@@ -346,86 +419,154 @@ func (s *Server) act(ctx context.Context, a action) (*mcp.CallToolResult, any, e
 	if !passes {
 		out.Allowed = false
 		out.Note = "refused by the policy. Read policy_rule and policy_reason, and choose something else."
-		if err := s.finishAction(ctx, a, order, state.class, decision, attemptNo, out, effect{kind: recovery.ActionNone}, nil); err != nil {
+		if err := s.finishAction(ctx, a, item, decision, touchNo, out, applied{}); err != nil {
 			return nil, nil, err
 		}
 		return jsonResult(out), nil, nil
 	}
 
-	// Allowed. From here on there can be a side effect, and the verdict that
-	// let it through is already on the result and already in the ledger.
+	// Allowed. From here on the Intervener can be reached, and the verdict
+	// that let it through is already on the result and already in the ledger.
 	out.Allowed = true
 	s.spendAction()
 
-	got, execErr := a.execute(ctx, a, order, decision, &out)
-	if got.commitKey != "" {
-		s.opts.Store.Commit(order.OrderID, got.commitKey, got.commitAction)
+	if a.escalationReason != "" {
+		// The reason goes on the action row rather than into a second
+		// decision_recorded row. record_decision already wrote one for this
+		// item, and two rows of the same kind for one decision reads as two
+		// decisions.
+		s.mu.Lock()
+		s.tally(item.ID).escalationReason = a.escalationReason
+		s.mu.Unlock()
 	}
-	if err := s.finishAction(ctx, a, order, state.class, decision, attemptNo, out, got, execErr); err != nil {
+
+	outcome, applyErr := s.opts.Intervene.Apply(ctx, item, a.action)
+	got := applied{
+		outcome:    outcome,
+		err:        applyErr,
+		sideEffect: reachesGateway(a.action) && (outcome.Accepted || applyErr != nil),
+	}
+
+	out.Accepted = outcome.Accepted
+	out.Observable = outcome.Observable
+	out.HandleKind = outcome.Handle.Kind
+	out.HandleID = outcome.Handle.ID
+	out.HandleURL = outcome.Handle.URL
+	switch {
+	case applyErr != nil:
+		out.Error = applyErr.Error()
+		out.Note = "the call did not come back clean: " + applyErr.Error()
+	case !outcome.Accepted:
+		out.Error = outcome.Err
+		out.Note = "the policy allowed this and the intervention engine refused it. Read error."
+	}
+
+	// A handle the applier just minted is part of this invocation's view of
+	// the item. Without this, an item that had nothing to pay against still
+	// has nothing to pay against after the link exists, and resend_link_for_item
+	// could never find it.
+	if outcome.Accepted && outcome.Handle.Kind != "" {
+		s.mu.Lock()
+		updated := s.allowed[item.ID]
+		updated.PayHandle = outcome.Handle
+		s.allowed[item.ID] = updated
+		s.mu.Unlock()
+	}
+
+	// The commit spends the notification window. It is keyed off the call
+	// having been made rather than off it having been accepted, for the same
+	// reason the side-effect flag is: a message Razorpay took and then failed
+	// on is not a free one.
+	if commitsWindow(a.action) && got.sideEffect {
+		s.opts.Store.Commit(item.ID, decision.IdempotencyKey, a.action)
+	}
+	if policy.IsContactAction(a.action) && got.sideEffect {
+		s.spendTouch(item.ID)
+	}
+
+	if err := s.finishAction(ctx, a, item, decision, touchNo, out, got); err != nil {
 		return nil, nil, err
-	}
-	if execErr != nil {
-		out.Note = "the gateway did not accept this: " + execErr.Error()
-		return jsonResult(out), nil, nil
 	}
 	return jsonResult(out), nil, nil
 }
 
-// finishAction writes the action row and updates the order's tally.
+// finishAction writes the action row and updates the item's tally.
 //
-// The row is filed by whether a side effect happened, not by what the action
-// called itself. That is the phase 2 review finding: keying off the action
-// kind let an arm decide its own containment score by returning ActionNone
-// after reaching the gateway, and the LLM arm is exactly the actor that
-// finding was about.
+// The row is filed by what happened, never by what the action called itself.
+// That is the phase 2 review finding: keying off the action kind let an arm
+// decide its own containment score by naming a no-op after reaching the
+// gateway, and the LLM arm is exactly the actor that finding was about. So
+// taken and skipped are read off the side-effect flag and the applier's own
+// verdict, both of which this package computes rather than receives.
 func (s *Server) finishAction(
 	ctx context.Context,
 	a action,
-	order batch.AgentVisibleOrder,
-	class classify.Class,
+	item riskitem.RiskItem,
 	decision policy.Decision,
-	attemptNo int,
+	touchNo int,
 	out ActionOutput,
-	got effect,
-	execErr error,
+	got applied,
 ) error {
+	// Taken when something happened: a call was made, or the applier accepted
+	// an action that moves no gateway resource, such as a promise or an
+	// escalation. Skipped when nothing did, which is what a refusal by either
+	// layer is.
 	kind := audit.KindActionTaken
-	if !got.sideEffect && (got.kind == "" || got.kind == recovery.ActionNone) && execErr == nil {
+	if !got.sideEffect && !got.outcome.Accepted && got.err == nil {
 		kind = audit.KindActionSkipped
 	}
 
+	escalated := a.action == riskitem.ActionEscalate && got.outcome.Accepted
+
 	detail := map[string]string{
-		DetailTool:                     a.tool,
-		recovery.DetailPolicyConsulted: "true",
-		recovery.DetailSideEffect:      btoa(got.sideEffect),
-		recovery.DetailEscalated:       btoa(got.escalated),
-		recovery.DetailIdempotencyKey:  policy.ShortKey(decision.IdempotencyKey),
-		recovery.DetailAttemptNo:       itoa(attemptNo),
-		recovery.DetailGatewayCalls:    itoa(got.gatewayCalls),
-		"claimed_recovered":            btoa(got.claimedRecovered),
-		"attempts_remaining":           itoa(decision.Remaining),
+		DetailTool:            a.tool,
+		DetailSource:          string(item.Source),
+		DetailPolicyConsulted: "true",
+		DetailSideEffect:      btoa(got.sideEffect),
+		DetailEscalated:       btoa(escalated),
+		DetailAccepted:        btoa(got.outcome.Accepted),
+		DetailIdempotencyKey:  policy.ShortKey(decision.IdempotencyKey),
+		DetailTouchNo:         itoa(touchNo),
+		"remaining":           itoa(decision.Remaining),
 	}
-	if out.PaymentID != "" {
-		detail[recovery.DetailPaymentID] = out.PaymentID
+	if item.RootOrderID != "" {
+		detail[DetailRootOrderID] = item.RootOrderID
 	}
-	if out.PaymentLinkID != "" {
-		detail[recovery.DetailPaymentLinkID] = out.PaymentLinkID
+	// The decision that was on the record when this ran. M3 requires one to
+	// exist and does not require it to name this action, because reaching a
+	// decided action can take two calls: see Server.hasDecision. Carrying it
+	// here is what lets a reviewer see that an agent decided one thing and did
+	// another, on the row itself rather than by joining two.
+	if decided, ok := s.recordedDecision(item.ID); ok {
+		detail[DetailChosenAction] = decided.Action
 	}
-	if execErr != nil {
-		detail["action_error"] = execErr.Error()
+	for k, v := range a.extra {
+		detail[k] = v
+	}
+	if got.outcome.Observable != "" {
+		detail[DetailObservable] = got.outcome.Observable
+	}
+	if got.outcome.Handle.Kind != "" {
+		detail[DetailHandleKind] = got.outcome.Handle.Kind
+		detail[DetailHandleID] = got.outcome.Handle.ID
+	}
+	if got.err != nil {
+		detail["action_error"] = got.err.Error()
+	} else if got.outcome.Err != "" {
+		detail["refusal_reason"] = got.outcome.Err
 	}
 	if !out.Allowed {
-		detail["refused_action"] = a.policyAction
+		detail["refused_action"] = a.action
 	}
-	if reason := s.escalationReason(order.OrderID); got.escalated && reason != "" {
-		detail["escalation_reason"] = reason
+	if reason := s.escalationReason(item.ID); escalated && reason != "" {
+		detail[DetailEscalationReason] = reason
 	}
 
 	if err := s.record(ctx, audit.Event{
-		OrderID:        order.OrderID,
+		OrderID:        item.ID,
 		Kind:           kind,
-		Class:          class.String(),
-		ProposedAction: actionKindFor(got, a),
+		Class:          classOf(item).String(),
+		ProposedAction: a.action,
 		PolicyVerdict:  string(decision.Verdict),
 		PolicyRule:     decision.RuleID,
 		Detail:         detail,
@@ -435,22 +576,18 @@ func (s *Server) finishAction(
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t := s.tally(order.OrderID)
-	t.GatewayCalls += got.gatewayCalls
+	t := s.tally(item.ID)
 	if got.sideEffect {
 		t.SideEffect = true
 	}
-	if got.claimedRecovered {
-		t.ClaimedRecovered = true
-	}
-	if got.escalated {
+	if escalated {
 		t.Escalated = true
 	}
 	if out.Allowed {
 		t.haveAllowed = true
 		t.lastAllowedVerdict, t.lastAllowedRule = string(decision.Verdict), decision.RuleID
-		if got.kind != "" && got.kind != recovery.ActionNone {
-			t.ActionKind = got.kind
+		if got.outcome.Accepted {
+			t.ActionKind = a.action
 		}
 	} else {
 		t.haveRefused = true
@@ -459,221 +596,128 @@ func (s *Server) finishAction(
 	return nil
 }
 
-// actionKindFor is what goes in the row's proposed_action. A refused action
-// still names what was proposed, because a refusal of nothing is not a
-// refusal.
-func actionKindFor(got effect, a action) string {
-	if got.kind != "" {
-		return got.kind
-	}
-	return a.policyAction
-}
-
 // ---------------------------------------------------------------------------
-// The four executions
+// What an action costs
 // ---------------------------------------------------------------------------
 
-func (s *Server) executeRetry(
-	ctx context.Context, _ action, order batch.AgentVisibleOrder, d policy.Decision, out *ActionOutput,
-) (effect, error) {
-	record, err := s.opts.Surface.Attempter.Attempt(ctx, order, s.opts.Surface.Card)
-
-	// The side effect is recorded whether or not the call came back clean. A
-	// request that reached the gateway and then failed to decode is a request
-	// that was made.
-	got := effect{
-		kind:         recovery.ActionRetrySameInstrument,
-		sideEffect:   true,
-		gatewayCalls: record.GatewayCalls,
-		commitKey:    d.IdempotencyKey,
-		commitAction: recovery.ActionRetrySameInstrument,
+// reachesGateway reports whether an action makes a call to Razorpay. It is
+// what the side-effect flag on an audit row is computed from, and
+// harness/scorer.py counts both containment numbers off that flag.
+//
+// It is this package's own list rather than policy.IsContactAction, which
+// happens to hold the same four actions today for a different reason: that one
+// is about whether a customer hears from the merchant, and this one is about
+// whether a request left the process. A future action that wakes nobody and
+// still calls the gateway belongs here and not there.
+func reachesGateway(action string) bool {
+	switch action {
+	case riskitem.ActionNotifyEmail, riskitem.ActionNotifySMS,
+		riskitem.ActionResendLink, riskitem.ActionCreatePaymentLink:
+		return true
+	default:
+		return false
 	}
-	out.PaymentID = record.PaymentID
-	if err != nil {
-		return got, err
-	}
-
-	got.claimedRecovered = true
-	// The status is read back so the agent is told what the gateway says
-	// rather than what the attempt hoped. It is the same read the outcome row
-	// is built from, and it is the world's answer either way.
-	if final, ferr := s.opts.Surface.Port.FetchOrder(ctx, order.OrderID); ferr == nil {
-		out.OrderStatus = final.Status
-		got.claimedRecovered = final.Status == razorpay.OrderStatusPaid
-	}
-	return got, nil
 }
 
-func (s *Server) executeCreateLink(
-	ctx context.Context, a action, order batch.AgentVisibleOrder, _ policy.Decision, out *ActionOutput,
-) (effect, error) {
-	currency := s.opts.Surface.Currency
-	if currency == "" {
-		currency = "INR"
-	}
-
-	link, err := s.opts.Surface.Port.CreatePaymentLink(ctx, razorpay.CreatePaymentLinkRequest{
-		AmountPaise: order.AmountPaise,
-		Currency:    currency,
-		Description: "recovery for " + order.OrderID,
-		ReferenceID: order.Receipt,
-	})
-
-	// Raising a link is a side effect and it is not a notification, so it
-	// commits nothing.
-	//
-	// The alternative was to commit it as the notify action it was evaluated
-	// as, and that moves LastNotifyAt, which makes R6 refuse the resend the
-	// link exists for. Committing it as a non-notify action is worse still:
-	// store.Commit counts anything that is not a notification as a payment
-	// attempt, and a payment link is not one. What bounds link raising is the
-	// invocation's action budget in layer 1. DECISIONS.md has the trade.
-	got := effect{kind: a.policyAction, sideEffect: true}
-	if err != nil {
-		return got, err
-	}
-	out.PaymentLinkID = link.ID
-	out.PaymentLinkURL = link.ShortURL
-	out.Note = "the link is raised. Nothing has been sent yet: use " +
-		ToolResendNotification + " with this payment_link_id."
-	return got, nil
+// commitsWindow reports whether an action spends the send window in the store,
+// which is what R6 and R12 read.
+//
+// Raising a link is deliberately not one of them, and policy.IsNotifyAction
+// agrees: minting a link sends nothing, and committing it would move
+// LastNotifyAt and make the rate rule refuse the very send the link was raised
+// for. What bounds link raising is R1, which counts it as a contact, and the
+// invocation's action budget in layer 1.
+func commitsWindow(action string) bool {
+	return policy.IsNotifyAction(action)
 }
 
-func (s *Server) executeResend(
-	ctx context.Context, a action, order batch.AgentVisibleOrder, d policy.Decision, out *ActionOutput,
-	linkID, medium string,
-) (effect, error) {
-	got := effect{kind: a.policyAction, sideEffect: true}
-
-	if strings.TrimSpace(linkID) == "" {
-		return effect{kind: recovery.ActionNone}, fmt.Errorf(
-			"a resend has to name the payment_link_id that %s returned", ToolCreatePaymentLink)
+// notifyActionFor turns a medium into the member of the lawful set that
+// carries it.
+func notifyActionFor(medium string) (string, bool) {
+	switch medium {
+	case MediumEmail:
+		return riskitem.ActionNotifyEmail, true
+	case MediumSMS:
+		return riskitem.ActionNotifySMS, true
+	default:
+		return "", false
 	}
-
-	receipt, sendErr := s.opts.Surface.Notifier.SendPaymentLink(ctx, linkID, medium)
-	got.commitKey = d.IdempotencyKey
-	got.commitAction = a.policyAction
-
-	out.PaymentLinkID = linkID
-	out.NotificationNote = receipt.AuditPhrase
-
-	if err := s.record(ctx, audit.Event{
-		OrderID:        order.OrderID,
-		Kind:           audit.KindNotificationRequested,
-		ProposedAction: a.policyAction,
-		PolicyVerdict:  string(d.Verdict),
-		PolicyRule:     d.RuleID,
-		Detail: map[string]string{
-			recovery.DetailPaymentLinkID: linkID,
-			"medium":                     medium,
-			"audit_phrase":               receipt.AuditPhrase,
-			"api_call_succeeded":         btoa(receipt.APICallSucceeded),
-			"delivery_confirmed":         btoa(receipt.DeliveryConfirmed),
-		},
-	}); err != nil {
-		return got, err
-	}
-
-	// ClaimedRecovered stays false. A payment link that was sent is not a
-	// payment, and this project does not observe a person coming back.
-	return got, sendErr
-}
-
-func (s *Server) executeEscalate(
-	ctx context.Context, _ action, order batch.AgentVisibleOrder, _ policy.Decision, out *ActionOutput,
-	reason string,
-) (effect, error) {
-	out.Note = "handed to a person. Nothing automated will run on this order."
-
-	// The reason goes on the action row rather than into a second
-	// decision_recorded row. record_decision already wrote one for this order,
-	// and two rows of the same kind for one decision reads as two decisions.
-	s.mu.Lock()
-	t := s.tally(order.OrderID)
-	t.escalationReason = reason
-	s.mu.Unlock()
-
-	// No gateway call, so no side effect and no commit. An escalation is a
-	// decision with an outcome, and it is scored in the escalation precision
-	// and recall pair rather than as an action taken.
-	return effect{kind: recovery.ActionNone, escalated: true}, nil
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-// gatewayState is one order as the gateway currently reports it.
-type gatewayState struct {
-	order    razorpay.Order
-	payments []razorpay.Payment
-	failed   *razorpay.Payment
-	class    classify.Class
+// classOf is internal/classify's reading of the failure a detector saw.
+//
+// It is computed for the policy and it is not put on the wire: see the header
+// of tools.go. An item whose source carries no failure at all, which is every
+// unpaid order and every overdue invoice, classifies as unclassified, and what
+// a policy does with that is the policy's business.
+func classOf(item riskitem.RiskItem) classify.Class {
+	return classify.Classify(classify.Failure{
+		Code:   item.Signal.FailureCode,
+		Reason: item.Signal.FailureReason,
+		Source: classify.Source(item.Signal.FailureSource),
+		Step:   item.Signal.FailureStep,
+		Method: classify.Method(item.Signal.Method),
+	})
 }
 
-// observe reads an order and its payments and classifies the failure.
-//
-// It reads every time rather than caching. The agent can act between two
-// reads, and a cached view would let it be told a state that its own last
-// action had already changed.
-func (s *Server) observe(ctx context.Context, orderID string) (gatewayState, error) {
-	var state gatewayState
-
-	order, err := s.opts.Surface.Port.FetchOrder(ctx, orderID)
-	if err != nil {
-		return state, err
+// factsFor is what the policy needs and the item does not carry: an active
+// promise hold, a dispute, the source resource's status. A server built with
+// no Facts provider hands the policy a zero Facts, and the rules that read
+// those fields do not fire.
+func (s *Server) factsFor(ctx context.Context, item riskitem.RiskItem) policy.Facts {
+	if s.opts.Facts == nil {
+		return policy.Facts{}
 	}
-	state.order = order
+	return s.opts.Facts.FactsFor(ctx, item)
+}
 
-	payments, err := s.opts.Surface.Port.ListPaymentsForOrder(ctx, orderID)
-	if err != nil {
-		return state, err
+// channelsOf is which media a notification could use. It reports that an
+// address exists and never what it is.
+func channelsOf(item riskitem.RiskItem) []string {
+	channels := []string{}
+	if item.Customer.Email != "" {
+		channels = append(channels, MediumEmail)
 	}
-	state.payments = payments
+	if item.Customer.Contact != "" {
+		channels = append(channels, MediumSMS)
+	}
+	return channels
+}
 
-	for i := range payments {
-		if payments[i].Status == razorpay.PaymentStatusFailed {
-			state.failed = &payments[i]
+// promiseDateLayouts are what promised_at may be written as. The date-only
+// form is first because it is the one a promise is actually made in.
+var promiseDateLayouts = []string{"2006-01-02", time.RFC3339}
+
+// parsePromiseDate reads promised_at, or says what it wanted.
+func parsePromiseDate(raw string) (time.Time, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return time.Time{}, fmt.Errorf("a promise has to name the date the customer gave, as YYYY-MM-DD")
+	}
+	for _, layout := range promiseDateLayouts {
+		if at, err := time.Parse(layout, value); err == nil {
+			return at, nil
 		}
 	}
-	state.class = classify.Classify(recovery.FailureFrom(state.failed))
-	return state, nil
+	return time.Time{}, fmt.Errorf("promised_at is %q, which is neither YYYY-MM-DD nor RFC3339", raw)
 }
 
-func (s *Server) lookup(orderID string) (batch.AgentVisibleOrder, bool) {
+func (s *Server) lookup(itemID string) (riskitem.RiskItem, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	o, ok := s.allowed[orderID]
-	return o, ok
-}
-
-// linkAction maps the create_payment_link purpose onto a policy action. An
-// unrecognised purpose is a reauth, which is the conservative reading: it is
-// the class with the smaller attempt budget of the two.
-func linkAction(purpose string) string {
-	if strings.TrimSpace(strings.ToLower(purpose)) == "new_instrument" {
-		return policy.ActionRequestNewInstrument
-	}
-	return policy.ActionRequestReauth
-}
-
-// recordedNotifyAction is the notify action the agent said it was taking on
-// this order, so a resend is evaluated as the thing the decision named. An
-// order whose decision was something else falls back to reauth.
-func (s *Server) recordedNotifyAction(orderID string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if d, ok := s.decisions[orderID]; ok && policy.IsNotifyAction(d.Action) {
-		return d.Action
-	}
-	return policy.ActionRequestReauth
+	item, ok := s.allowed[itemID]
+	return item, ok
 }
 
 // jsonResult renders a value as the tool's text content.
 //
-// The text content is what the model reads, so it is the surface the leak test
-// walks. StructuredContent is left unset: this package uses Server.AddTool's
-// typed form with an `any` output, so the SDK does not populate it, and one
+// The text content is what the model reads, so it is the surface a leak test
+// walks. StructuredContent is left unset: this package uses AddTool's typed
+// form with an `any` output, so the SDK does not populate it, and one
 // rendering of one value is one thing to check rather than two.
 func jsonResult(v any) *mcp.CallToolResult {
 	encoded, err := json.Marshal(v)

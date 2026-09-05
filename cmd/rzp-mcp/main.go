@@ -1,11 +1,17 @@
-// Command rzp-mcp serves the recovery tools over MCP for one order.
+// Command rzp-mcp serves the risk-item tools over MCP for one item.
 //
-// One process per order, started by the agent harness through the CLI's
-// --mcp-config. On startup it materialises that order in the configured
-// gateway with its seeded failure history, then serves the seven tools on
-// stdin and stdout. When the client disconnects it reads the order back out of
-// the gateway and appends one outcome row, so the recovery number for the
-// agent arm comes from the same FetchOrder the other three arms are scored on.
+// One process per item, started by the agent harness through the CLI's
+// --mcp-config. On startup it materialises the manifest order in the
+// configured gateway with its seeded failure history, turns it into the one
+// risk item the surface works, then serves the eight tools on stdin and
+// stdout. When the client disconnects it reads the order back out of the
+// gateway and appends one outcome row, so the number for the agent arm comes
+// from the same FetchOrder the other arms are scored on.
+//
+// The batch manifest it runs on models a failed card payment and nothing else,
+// which is one detector of three and no customer at all. riskItemFrom says
+// what that costs. Seeding risk items rather than orders is the harness's
+// side of the pivot and is not done here.
 //
 // It holds the Razorpay credentials. The model holds tool names (FR-MCP-2).
 //
@@ -35,11 +41,13 @@ import (
 	"github.com/lopster568/rzp-recovery-agent/internal/classify"
 	"github.com/lopster568/rzp-recovery-agent/internal/clock"
 	"github.com/lopster568/rzp-recovery-agent/internal/config"
+	"github.com/lopster568/rzp-recovery-agent/internal/intervene"
 	"github.com/lopster568/rzp-recovery-agent/internal/mcpserver"
-	"github.com/lopster568/rzp-recovery-agent/internal/notify"
 	"github.com/lopster568/rzp-recovery-agent/internal/policy"
+	"github.com/lopster568/rzp-recovery-agent/internal/promise"
 	"github.com/lopster568/rzp-recovery-agent/internal/razorpay"
 	"github.com/lopster568/rzp-recovery-agent/internal/recovery"
+	"github.com/lopster568/rzp-recovery-agent/internal/riskitem"
 	"github.com/lopster568/rzp-recovery-agent/internal/runner"
 	"github.com/lopster568/rzp-recovery-agent/internal/store"
 	"github.com/lopster568/rzp-recovery-agent/internal/telemetry"
@@ -53,9 +61,10 @@ import (
 // a table from either phase can be read next to the other.
 const ArmAgent = "a2-agent"
 
-// defaultCard is the instrument every retry re-presents. It is the same value
-// cmd/rzp run defaults to, because an arm that re-presented a different card
-// would be a different experiment.
+// defaultCard was the instrument every retry re-presented. Nothing here
+// re-presents anything now: see docs/INDIA-CONSTRAINTS-AUDIT.md. The flag that
+// carries it is kept, and ignored, because harness/claude_runner.py passes it
+// and a command line that stops parsing is a run that does not start.
 const defaultCard = "4100280000080001"
 
 // tracerName names the tracer this process opens spans on.
@@ -83,8 +92,9 @@ type options struct {
 	runDir         string
 	arm            string
 	killSwitchFile string
-	card           string
-	actionBudget   int
+	// card is read by nothing. See defaultCard.
+	card         string
+	actionBudget int
 }
 
 func parseFlags(args []string) (options, error) {
@@ -97,7 +107,7 @@ func parseFlags(args []string) (options, error) {
 	fs.StringVar(&o.runDir, "run-dir", "", "the run directory the harness created")
 	fs.StringVar(&o.arm, "arm", ArmAgent, "the arm id that goes in every audit row")
 	fs.StringVar(&o.killSwitchFile, "kill-switch-file", "", "a path whose existence halts every action")
-	fs.StringVar(&o.card, "card", defaultCard, "the instrument every retry re-presents")
+	fs.StringVar(&o.card, "card", defaultCard, "accepted and ignored: this engine re-presents no instrument")
 	fs.IntVar(&o.actionBudget, "action-budget", 0, "action tool calls this invocation may make, zero means the default")
 	if err := fs.Parse(args); err != nil {
 		return o, err
@@ -195,31 +205,38 @@ func run(ctx context.Context, args []string) (runErr error) {
 	}
 	defer shutdown()
 
+	// The store is deliberately not primed from the gateway. It counts
+	// outbound contacts now, and the payment attempts this order arrived with
+	// are not contacts: priming them would spend the item's contact cap on
+	// failures that happened before this run existed.
 	ledgerStore := store.New(runClock)
-	ledgerStore.Observe(order.Visible.OrderID, order.Attempts)
 
-	notifier, err := notify.New(notify.Options{Port: rig.Port, Clock: runClock})
+	escalations, err := os.OpenFile(filepath.Join(armDir, "escalations.jsonl"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("open the escalation queue: %w", err)
+	}
+	defer func() {
+		if err := escalations.Close(); err != nil && runErr == nil {
+			runErr = fmt.Errorf("close the escalation queue: %w", err)
+		}
+	}()
+	sink, err := intervene.NewWriterSink(escalations)
 	if err != nil {
 		return err
 	}
 
-	server, err := mcpserver.New(mcpserver.Options{
-		Surface: &recovery.Surface{
-			Port:      rig.Port,
-			Attempter: rig.Attempter(),
-			Notifier:  notifier,
-			Recorder:  recorder,
-			Card:      opts.card,
-			Currency:  "INR",
-		},
-		Store:             ledgerStore,
-		Policy:            policy.New(policy.Config{}, runClock),
-		Recorder:          recorder,
-		Tracer:            tracer,
-		Orders:            []batch.AgentVisibleOrder{order.Visible},
-		KillSwitchEngaged: engaged,
-		ActionBudget:      opts.actionBudget,
-		Arm:               opts.arm,
+	// One promise ledger, written by the intervention engine and read by the
+	// policy. Two of them would be the failure this wiring exists to avoid: an
+	// agent logs a promise, the hold is written somewhere the policy cannot
+	// see, and R15 lets it chase the customer it just agreed to leave alone.
+	promises := promise.NewStore()
+
+	engine, err := intervene.New(intervene.Options{
+		Gateway:     &layerGateway{port: rig.Port, layer: opts.layer},
+		Recorder:    recorder,
+		Promises:    promiseLedger{inner: promises},
+		Escalations: sink,
+		Clock:       runClock,
 	})
 	if err != nil {
 		return err
@@ -231,20 +248,48 @@ func run(ctx context.Context, args []string) (runErr error) {
 	// contexts descend from the one Run is given, so the middleware's per-call
 	// spans hang off this one.
 	ctx, invocation := tracer.Start(ctx, "mcp.invocation")
-	invocation.SetAttributes(
-		attribute.String("rzp.arm", opts.arm),
-		attribute.String("rzp.layer", opts.layer),
-		attribute.String("rzp.batch_id", batchFile.BatchID),
-		attribute.String("rzp.manifest_order_id", order.ManifestID),
-		attribute.String(mcpserver.AttrOrderID, order.Visible.OrderID),
-	)
 	defer invocation.End()
 
 	// The class goes on the record before the agent sees anything, so the
 	// ledger for this arm starts the same way the other three arms' ledgers
 	// do and the scorer needs no separate path.
 	beforeCalls := rig.Calls()
-	class, attemptsSeen, err := observeAndRecord(ctx, rig, recorder, order, opts.arm, tracer)
+	seen, err := observeAndRecord(ctx, rig, recorder, order, opts.arm, tracer)
+	if err != nil {
+		return err
+	}
+	class, attemptsSeen := seen.class, seen.attemptsSeen
+
+	// The item is built from that same read, so the queue and the ledger agree
+	// about what was on the order without asking Razorpay twice.
+	item := riskItemFrom(order, seen)
+
+	invocation.SetAttributes(
+		attribute.String("rzp.arm", opts.arm),
+		attribute.String("rzp.layer", opts.layer),
+		attribute.String("rzp.batch_id", batchFile.BatchID),
+		attribute.String("rzp.manifest_order_id", order.ManifestID),
+		attribute.String("rzp.gateway_order_id", order.Visible.OrderID),
+		attribute.String(mcpserver.AttrItemID, item.ID),
+	)
+
+	server, err := mcpserver.New(mcpserver.Options{
+		Items:     []riskitem.RiskItem{item},
+		Intervene: engine,
+		Policy:    policy.New(policy.Config{}, runClock),
+		Facts: itemFacts{
+			promises:     promises,
+			clock:        runClock,
+			sourceStatus: seen.order.Status,
+		},
+		Store:             ledgerStore,
+		Recorder:          recorder,
+		Tracer:            tracer,
+		Clock:             runClock,
+		KillSwitchEngaged: engaged,
+		ActionBudget:      opts.actionBudget,
+		Arm:               opts.arm,
+	})
 	if err != nil {
 		return err
 	}
@@ -255,23 +300,28 @@ func run(ctx context.Context, args []string) (runErr error) {
 	// The outcome. Read from the gateway, after the session, whatever the
 	// agent did or said. One code path means there is no branch in which the
 	// agent's claim is believed.
-	tally := server.Tally(order.Visible.OrderID)
+	tally := server.Tally(item.ID)
 	row := runner.OutcomeRow{
-		RunID:            filepath.Base(opts.runDir),
-		Arm:              opts.arm,
-		Layer:            opts.layer,
-		BatchID:          batchFile.BatchID,
-		ManifestOrderID:  order.ManifestID,
-		GatewayOrderID:   order.Visible.OrderID,
-		Class:            class.String(),
-		ActionKind:       tally.ActionKind,
-		ClaimedRecovered: tally.ClaimedRecovered,
+		RunID:           filepath.Base(opts.runDir),
+		Arm:             opts.arm,
+		Layer:           opts.layer,
+		BatchID:         batchFile.BatchID,
+		ManifestOrderID: order.ManifestID,
+		GatewayOrderID:  order.Visible.OrderID,
+		Class:           class.String(),
+		ActionKind:      tally.ActionKind,
+		// ClaimedRecovered stays false and has nowhere else to come from. No
+		// action this engine can take collects money, so there is no claim of
+		// recovery for the gateway read below to disagree with. The column is
+		// kept because the scorer reads it for every arm.
+		ClaimedRecovered: false,
 		AttemptsSeen:     attemptsSeen,
-		AttemptsAfter:    ledgerStore.Attempts(order.Visible.OrderID),
-		PolicyVerdict:    tally.PolicyVerdict,
-		PolicyRule:       tally.PolicyRule,
-		Escalated:        tally.Escalated,
-		SideEffect:       tally.SideEffect,
+		// Nothing here puts a payment on an order, so the count cannot move.
+		AttemptsAfter: attemptsSeen,
+		PolicyVerdict: tally.PolicyVerdict,
+		PolicyRule:    tally.PolicyRule,
+		Escalated:     tally.Escalated,
+		SideEffect:    tally.SideEffect,
 	}
 	if serveErr != nil {
 		row.Error = serveErr.Error()
@@ -326,10 +376,10 @@ func run(ctx context.Context, args []string) (runErr error) {
 	)
 	outcomeSpan.End()
 
-	// Port calls plus the ones an attempt made outside Port, the same sum
-	// cmd/rzp run writes. A payment attempt is four checkout calls on the live
-	// layer and Port has no method for any of them.
-	row.APICalls = rig.Calls() - beforeCalls + tally.GatewayCalls
+	// Every call this arm makes goes through the rig's gateway, so the rig's
+	// own counter is the whole of it. The retry arms had to add the checkout
+	// calls an attempt made outside Port; there are no attempts here.
+	row.APICalls = rig.Calls() - beforeCalls
 
 	if err := appendOutcome(filepath.Join(armDir, "outcomes.jsonl"), row); err != nil {
 		return err
@@ -343,7 +393,18 @@ func run(ctx context.Context, args []string) (runErr error) {
 	return serveErr
 }
 
-// recordOutcome is folded into run, but the classification is its own step so
+// observation is what one read of the gateway saw. It is one struct rather
+// than four return values because the risk item and the outcome row are both
+// built from it, and they have to be built from the same read.
+type observation struct {
+	class        classify.Class
+	attemptsSeen int
+	order        razorpay.Order
+	failed       *razorpay.Payment
+}
+
+// observeAndRecord reads the order and its payments once, classifies the
+// failure, and puts the classification on the record. It is its own step so
 // that the row exists even when the agent never calls a tool.
 func observeAndRecord(
 	ctx context.Context,
@@ -352,31 +413,34 @@ func observeAndRecord(
 	order runner.Materialised,
 	arm string,
 	tracer trace.Tracer,
-) (classify.Class, int, error) {
+) (observation, error) {
 	ctx, span := tracer.Start(ctx, "mcp.classify")
 	defer span.End()
 
+	var seen observation
+
 	payments, err := rig.Port.ListPaymentsForOrder(ctx, order.Visible.OrderID)
 	if err != nil {
-		return classify.Unclassified, 0, err
+		return seen, err
 	}
-	var failed *razorpay.Payment
+	seen.attemptsSeen = len(payments)
 	for i := range payments {
 		if payments[i].Status == razorpay.PaymentStatusFailed {
-			failed = &payments[i]
+			seen.failed = &payments[i]
 		}
 	}
-	class := classify.Classify(recovery.FailureFrom(failed))
+	seen.class = classify.Classify(recovery.FailureFrom(seen.failed))
 
 	polled, err := rig.Port.FetchOrder(ctx, order.Visible.OrderID)
 	if err != nil {
-		return class, len(payments), err
+		return seen, err
 	}
+	seen.order = polled
 
 	if _, err := recorder.Record(ctx, audit.Event{
 		OrderID: order.Visible.OrderID,
 		Kind:    audit.KindClassified,
-		Class:   class.String(),
+		Class:   seen.class.String(),
 		Detail: map[string]string{
 			recovery.DetailArm:    arm,
 			"polled_order_status": polled.Status,
@@ -384,9 +448,132 @@ func observeAndRecord(
 			"poll_timed_out":      "false",
 		},
 	}); err != nil {
-		return class, len(payments), err
+		return seen, err
 	}
-	return class, len(payments), nil
+	return seen, nil
+}
+
+// riskItemFrom turns the one order this invocation serves into the one risk
+// item the tool surface works.
+//
+// It stands in for a detector, and it is the pivot's seam in this command.
+// internal/detect builds items from live Razorpay sweeps of three kinds; the
+// batch manifest this eval harness runs on predates the risk item and models
+// exactly one, a failed card payment. So the source is failed_payment, the
+// signal is the error the gateway returned, and there is no customer on it,
+// because a manifest order has none. That last part is not a gap to paper
+// over: an item with no contact channel is one the intervention engine
+// refuses to notify, which is the correct behaviour and is what the agent arm
+// will see until the harness seeds items rather than orders.
+func riskItemFrom(order runner.Materialised, seen observation) riskitem.RiskItem {
+	item := riskitem.RiskItem{
+		ID:              riskitem.NewID(riskitem.SourceFailedPayment, order.Visible.OrderID),
+		Source:          riskitem.SourceFailedPayment,
+		SourceID:        order.Visible.OrderID,
+		RootOrderID:     order.Visible.OrderID,
+		AmountPaise:     order.Visible.AmountPaise,
+		AmountPaidPaise: seen.order.AmountPaid,
+		// Carried, never derived. riskitem.RiskItem says the gateway reports
+		// what is outstanding and that a partial payment can make the
+		// arithmetic disagree with it, so amount minus paid is not a fallback,
+		// it is a second opinion nobody asked for.
+		AmountDuePaise: seen.order.AmountDue,
+		Currency:       order.Visible.Currency,
+		AtRiskSince:    seen.order.CreatedAt,
+		Signal:         riskitem.Signal{Attempts: seen.attemptsSeen},
+	}
+	if seen.failed != nil {
+		item.SourceID = seen.failed.ID
+		item.ID = riskitem.NewID(riskitem.SourceFailedPayment, seen.failed.ID)
+		item.Signal.FailureCode = seen.failed.ErrorCode
+		item.Signal.FailureReason = seen.failed.ErrorReason
+		item.Signal.FailureSource = seen.failed.ErrorSource
+		item.Signal.FailureStep = seen.failed.ErrorStep
+		item.Signal.Method = seen.failed.Method
+	}
+	return item
+}
+
+// promiseLedger is the conversion internal/intervene's PromiseRecord comment
+// names, at the wiring site that comment says is the right place for it.
+//
+// intervene.PromiseRecord and promise.Record are the same four fields in the
+// same order, deliberately, so that the intervention engine ships without
+// importing the ledger. Nothing enforces that from either side. The conversion
+// below is the assertion: reorder a field on either type and this line stops
+// compiling, here, in the one file that imports both.
+type promiseLedger struct{ inner *promise.Store }
+
+func (l promiseLedger) Log(_ context.Context, rec intervene.PromiseRecord) error {
+	return l.inner.Log(promise.Record(rec))
+}
+
+var _ intervene.PromiseLedger = promiseLedger{}
+
+// itemFacts supplies the policy inputs a risk item does not carry.
+//
+// Two of the three are real here. A promise the agent logged this run is read
+// back out of the same ledger the intervention engine wrote it to, which is
+// what makes R15 able to refuse a chase after a hold; the source status is the
+// one this invocation read at startup, which is what R4 reads to refuse
+// chasing a cancelled order. The third is not: nothing in this process records
+// a dispute, so Disputed stays false and R13 cannot fire. That is a gap in the
+// harness rather than in the rule, and it is stated here rather than left to
+// be discovered from an eval that never trips R13.
+type itemFacts struct {
+	promises     *promise.Store
+	clock        clock.Clock
+	sourceStatus string
+}
+
+var _ mcpserver.FactsProvider = itemFacts{}
+
+func (f itemFacts) FactsFor(_ context.Context, item riskitem.RiskItem) policy.Facts {
+	facts := policy.Facts{SourceStatus: f.sourceStatus}
+	if hold, ok := f.promises.ActiveHold(item.ID, f.clock.Now()); ok {
+		facts.PromiseHoldUntil = hold.HoldUntil()
+	}
+	return facts
+}
+
+// layerGateway is intervene.Gateway over whatever gateway this layer runs.
+//
+// razorpay.Client is an intervene.Gateway on its own. razorpay.Port, which is
+// what the fake layer exposes, has the two payment-link methods and none of
+// the three invoice ones, because the fake has no invoices yet. Rather than
+// pretend, the invoice methods refuse with the layer named: an invoice action
+// on the fake layer is a thing this build cannot do, and an engine that
+// reported it as done would be worse than one that says so.
+type layerGateway struct {
+	port  razorpay.Port
+	layer string
+}
+
+var _ intervene.Gateway = (*layerGateway)(nil)
+
+func (g *layerGateway) unsupported(what string) error {
+	return fmt.Errorf("rzp-mcp: the %s layer has no invoice support, so %s cannot run here",
+		g.layer, what)
+}
+
+func (g *layerGateway) NotifyInvoice(_ context.Context, _, _ string) (razorpay.NotifyReceipt, error) {
+	return razorpay.NotifyReceipt{}, g.unsupported("an invoice notification")
+}
+
+func (g *layerGateway) FetchInvoice(_ context.Context, _ string) (razorpay.Invoice, error) {
+	return razorpay.Invoice{}, g.unsupported("an invoice read")
+}
+
+func (g *layerGateway) CancelInvoice(_ context.Context, _ string) (razorpay.Invoice, error) {
+	return razorpay.Invoice{}, g.unsupported("an invoice cancellation")
+}
+
+func (g *layerGateway) CreatePaymentLink(ctx context.Context, req razorpay.CreatePaymentLinkRequest) (razorpay.PaymentLink, error) {
+	return g.port.CreatePaymentLink(ctx, req)
+}
+
+func (g *layerGateway) ResendPaymentLinkNotification(ctx context.Context, linkID, medium string) (razorpay.NotifyReceipt, error) {
+	return g.port.ResendPaymentLinkNotification(ctx, linkID, medium)
 }
 
 // requireExporterForLive refuses to serve the live layer with no OTLP endpoint.

@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -13,182 +12,299 @@ import (
 	"time"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/audit"
-	"github.com/lopster568/rzp-recovery-agent/internal/batch"
-	"github.com/lopster568/rzp-recovery-agent/internal/classify"
 	"github.com/lopster568/rzp-recovery-agent/internal/clock"
 	"github.com/lopster568/rzp-recovery-agent/internal/mcpserver"
-	"github.com/lopster568/rzp-recovery-agent/internal/notify"
 	"github.com/lopster568/rzp-recovery-agent/internal/policy"
-	"github.com/lopster568/rzp-recovery-agent/internal/razorpay"
-	"github.com/lopster568/rzp-recovery-agent/internal/recovery"
+	"github.com/lopster568/rzp-recovery-agent/internal/riskitem"
 	"github.com/lopster568/rzp-recovery-agent/internal/store"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-// testCard is the instrument every retry in these tests re-presents. It is the
-// same constant cmd/rzp uses as its default, and the fake's own table decides
-// whether an attempt authorizes.
-const testCard = "4100280000080001"
+// runInstant is what the fake clock reads. Aging is measured against it, so
+// every expected aging number in this file is arithmetic on this constant
+// rather than on whatever today is.
+var runInstant = time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
 
 // ---------------------------------------------------------------------------
-// Spies
+// The two seams, stubbed
 //
-// The point of both is the same: a call that should never have happened fails
-// the test at the moment it happens, with the name of the method that made it,
-// rather than being noticed later as a wrong number in an assertion.
+// The server reaches Razorpay through an Intervener and the policy through an
+// Evaluator, and it holds nothing else that can act. So the whole suite runs
+// on two stubs: what they record is exactly what the agent could reach, and a
+// call that should never have happened fails the test at the moment it
+// happens, with the action that made it.
 // ---------------------------------------------------------------------------
 
-// spyPort wraps a razorpay.Port and records every call. When forbidden is set,
-// a mutating call fails the test immediately.
-//
-// The read methods are not forbidden even under a must-deny request. A tool
-// that reads state and then refuses to act is behaving correctly, and a spy
-// that failed on FetchOrder would be asserting that a refused action must also
-// be a blind one.
-type spyPort struct {
-	t     *testing.T
-	inner razorpay.Port
-
-	mu        sync.Mutex
-	forbidden bool
-	mutations []string
-	reads     []string
+// stubEvaluator is layer 2. It allows by default and a test can make it decide
+// anything, including a decision that depends on the state the store handed
+// it, which is what the concurrency test needs.
+type stubEvaluator struct {
+	mu     sync.Mutex
+	decide func(policy.State, policy.Request) policy.Decision
+	calls  []policy.Request
 }
 
-func newSpyPort(t *testing.T, inner razorpay.Port) *spyPort {
-	return &spyPort{t: t, inner: inner}
-}
+func newStubEvaluator() *stubEvaluator { return &stubEvaluator{} }
 
-// forbid makes any mutating call from here on fail the test.
-func (s *spyPort) forbid(on bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.forbidden = on
-}
+func (e *stubEvaluator) Evaluate(state policy.State, req policy.Request) policy.Decision {
+	e.mu.Lock()
+	decide := e.decide
+	e.calls = append(e.calls, req)
+	e.mu.Unlock()
 
-func (s *spyPort) mutated(method string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.mutations = append(s.mutations, method)
-	if s.forbidden {
-		s.t.Errorf("side effect reached the gateway with no policy pass behind it: %s", method)
+	if decide != nil {
+		return decide(state, req)
+	}
+	return policy.Decision{
+		Verdict:        policy.VerdictAllow,
+		RuleID:         policy.RuleAllow,
+		Reason:         "the stub policy refused nothing",
+		Remaining:      3,
+		IdempotencyKey: policy.IdempotencyKey(req.OrderID, req.Action, req.AttemptNo),
 	}
 }
 
-func (s *spyPort) read(method string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.reads = append(s.reads, method)
+func (e *stubEvaluator) set(decide func(policy.State, policy.Request) policy.Decision) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.decide = decide
 }
 
-func (s *spyPort) mutationCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.mutations)
+// deny makes every evaluation come back refused under one rule.
+func (e *stubEvaluator) deny(rule, reason string) {
+	e.set(func(_ policy.State, req policy.Request) policy.Decision {
+		return policy.Decision{
+			Verdict:        policy.VerdictDeny,
+			RuleID:         rule,
+			Reason:         reason,
+			IdempotencyKey: policy.IdempotencyKey(req.OrderID, req.Action, req.AttemptNo),
+		}
+	})
 }
 
-func (s *spyPort) CreateOrder(ctx context.Context, req razorpay.CreateOrderRequest) (razorpay.Order, error) {
-	s.mutated("CreateOrder")
-	return s.inner.CreateOrder(ctx, req)
+// escalate makes every evaluation come back escalate, which is the verdict
+// only escalate_item accepts.
+func (e *stubEvaluator) escalate(rule, reason string) {
+	e.set(func(_ policy.State, req policy.Request) policy.Decision {
+		return policy.Decision{
+			Verdict:        policy.VerdictEscalate,
+			RuleID:         rule,
+			Reason:         reason,
+			IdempotencyKey: policy.IdempotencyKey(req.OrderID, req.Action, req.AttemptNo),
+		}
+	})
 }
 
-func (s *spyPort) FetchOrder(ctx context.Context, orderID string) (razorpay.Order, error) {
-	s.read("FetchOrder")
-	return s.inner.FetchOrder(ctx, orderID)
+func (e *stubEvaluator) count() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.calls)
 }
 
-func (s *spyPort) ListPaymentsForOrder(ctx context.Context, orderID string) ([]razorpay.Payment, error) {
-	s.read("ListPaymentsForOrder")
-	return s.inner.ListPaymentsForOrder(ctx, orderID)
+func (e *stubEvaluator) requests() []policy.Request {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]policy.Request(nil), e.calls...)
 }
 
-func (s *spyPort) FetchPayment(ctx context.Context, paymentID string) (razorpay.Payment, error) {
-	s.read("FetchPayment")
-	return s.inner.FetchPayment(ctx, paymentID)
+// applyCall is one thing the agent reached.
+type applyCall struct {
+	itemID string
+	action string
 }
 
-func (s *spyPort) CreatePaymentLink(ctx context.Context, req razorpay.CreatePaymentLinkRequest) (razorpay.PaymentLink, error) {
-	s.mutated("CreatePaymentLink")
-	return s.inner.CreatePaymentLink(ctx, req)
-}
-
-func (s *spyPort) ResendPaymentLinkNotification(ctx context.Context, linkID, medium string) (razorpay.NotifyReceipt, error) {
-	s.mutated("ResendPaymentLinkNotification")
-	return s.inner.ResendPaymentLinkNotification(ctx, linkID, medium)
-}
-
-var _ razorpay.Port = (*spyPort)(nil)
-
-// spyAttempter wraps the fake attempter. Every Attempt is a mutation: it puts
-// a payment on an order.
-type spyAttempter struct {
-	t     *testing.T
-	inner recovery.Attempter
+// stubIntervener is the only way from the tool surface to a side effect, so it
+// is where containment is observed.
+//
+// Two things fail the test from inside Apply rather than in an assertion
+// afterwards. A call while forbidden is a side effect that got past the gate.
+// A call with fewer policy evaluations behind it than applications in front of
+// it is an action that reached the gateway without one, which is the claim
+// ADR-0003 makes and the thing a new ungated tool would break.
+type stubIntervener struct {
+	t    *testing.T
+	eval *stubEvaluator
 
 	mu        sync.Mutex
 	forbidden bool
-	attempts  int
-	// delay widens the window between an action's policy snapshot and its
-	// commit. Only the concurrency test sets it, and it sets it because
-	// without it that test is a probabilistic detector: against the unlocked
-	// code it went red about twice in forty runs, and a test that usually
-	// passes against the bug it exists for is a test nobody can act on.
-	delay time.Duration
+	calls     []applyCall
+	delay     time.Duration
+	outcome   func(riskitem.RiskItem, string) (riskitem.Outcome, error)
 }
 
-func newSpyAttempter(t *testing.T, inner recovery.Attempter) *spyAttempter {
-	return &spyAttempter{t: t, inner: inner}
+func newStubIntervener(t *testing.T, eval *stubEvaluator) *stubIntervener {
+	return &stubIntervener{t: t, eval: eval}
 }
 
-func (s *spyAttempter) forbid(on bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.forbidden = on
-}
+func (i *stubIntervener) Apply(_ context.Context, item riskitem.RiskItem, action string) (riskitem.Outcome, error) {
+	i.mu.Lock()
+	i.calls = append(i.calls, applyCall{itemID: item.ID, action: action})
+	applied := len(i.calls)
+	forbidden := i.forbidden
+	delay := i.delay
+	outcome := i.outcome
+	i.mu.Unlock()
 
-func (s *spyAttempter) count() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.attempts
-}
-
-func (s *spyAttempter) setDelay(d time.Duration) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.delay = d
-}
-
-func (s *spyAttempter) Attempt(ctx context.Context, order batch.AgentVisibleOrder, card string) (recovery.AttemptRecord, error) {
-	s.mu.Lock()
-	s.attempts++
-	forbidden := s.forbidden
-	delay := s.delay
-	s.mu.Unlock()
+	if forbidden {
+		i.t.Errorf("a side effect reached the intervention engine with no policy pass behind it: %s on %s",
+			action, item.ID)
+	}
+	if evaluations := i.eval.count(); evaluations < applied {
+		i.t.Errorf("%s on %s is application %d with only %d policy evaluations behind it",
+			action, item.ID, applied, evaluations)
+	}
+	if !riskitem.IsLawfulAction(action) {
+		i.t.Errorf("%q is not in the lawful action set and the server asked for it anyway", action)
+	}
 	if delay > 0 {
 		time.Sleep(delay)
 	}
-	if forbidden {
-		s.t.Errorf("a payment attempt reached the gateway with no policy pass behind it: order %s", order.OrderID)
+	if outcome != nil {
+		return outcome(item, action)
 	}
-	return s.inner.Attempt(ctx, order, card)
+	return defaultOutcome(item, action)
 }
 
-var _ recovery.Attempter = (*spyAttempter)(nil)
+// defaultOutcome is an engine that accepts everything it is lawfully asked
+// for, and reports the strongest thing such an engine could actually observe.
+func defaultOutcome(item riskitem.RiskItem, action string) (riskitem.Outcome, error) {
+	out := riskitem.Outcome{Action: action, Accepted: true, At: runInstant}
+	switch action {
+	case riskitem.ActionNotifyEmail:
+		out.Observable = "email_status:sent"
+		out.Handle = item.PayHandle
+	case riskitem.ActionNotifySMS:
+		out.Observable = "sms_status:sent"
+		out.Handle = item.PayHandle
+	case riskitem.ActionResendLink:
+		out.Observable = "email_status:sent"
+		out.Handle = item.PayHandle
+	case riskitem.ActionCreatePaymentLink:
+		out.Observable = "plink_status:created"
+		out.Handle = riskitem.PayHandle{
+			Kind: riskitem.HandleKindPaymentLink,
+			ID:   "plink_" + item.ID,
+			URL:  "https://rzp.io/i/" + item.ID,
+		}
+	case riskitem.ActionLogPromise:
+		out.Observable = "promise_row:written"
+	case riskitem.ActionEscalate:
+		out.Observable = "escalation_row:written"
+	}
+	return out, nil
+}
+
+func (i *stubIntervener) forbid(on bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.forbidden = on
+}
+
+func (i *stubIntervener) setDelay(d time.Duration) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.delay = d
+}
+
+func (i *stubIntervener) setOutcome(f func(riskitem.RiskItem, string) (riskitem.Outcome, error)) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.outcome = f
+}
+
+func (i *stubIntervener) count() int {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return len(i.calls)
+}
+
+func (i *stubIntervener) applied() []applyCall {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return append([]applyCall(nil), i.calls...)
+}
+
+// stubFacts is the third seam: what the policy reads and the item does not
+// carry.
+type stubFacts struct {
+	facts policy.Facts
+}
+
+func (f *stubFacts) FactsFor(_ context.Context, _ riskitem.RiskItem) policy.Facts { return f.facts }
+
+var _ mcpserver.Intervener = (*stubIntervener)(nil)
+var _ mcpserver.Evaluator = (*stubEvaluator)(nil)
+var _ mcpserver.FactsProvider = (*stubFacts)(nil)
+
+// ---------------------------------------------------------------------------
+// The queue
+// ---------------------------------------------------------------------------
+
+// The three items are one per detector, and each one is the shape that makes a
+// different branch reachable: a failed payment with an email and nothing to
+// pay against, an issued invoice that is already payable, and an abandoned
+// order with no way to contact anybody at all.
+func failedPaymentItem() riskitem.RiskItem {
+	return riskitem.RiskItem{
+		ID:             riskitem.NewID(riskitem.SourceFailedPayment, "pay_failedone"),
+		Source:         riskitem.SourceFailedPayment,
+		SourceID:       "pay_failedone",
+		RootOrderID:    "order_failedone",
+		Customer:       riskitem.Customer{Name: "A Merchant Customer", Email: "customer@example.test"},
+		AmountPaise:    420000,
+		AmountDuePaise: 420000,
+		Currency:       "INR",
+		AtRiskSince:    runInstant.Add(-72 * time.Hour).Unix(),
+		Signal:         riskitem.Signal{FailureCode: "BAD_REQUEST_ERROR", FailureReason: "payment_timed_out", FailureSource: "gateway", FailureStep: "payment_authorization", Method: "card", Attempts: 1},
+	}
+}
+
+func overdueInvoiceItem() riskitem.RiskItem {
+	return riskitem.RiskItem{
+		ID:              riskitem.NewID(riskitem.SourceOverdueInvoice, "inv_overdueone"),
+		Source:          riskitem.SourceOverdueInvoice,
+		SourceID:        "inv_overdueone",
+		RootOrderID:     "order_overdueone",
+		Customer:        riskitem.Customer{Email: "invoiced@example.test", Contact: "+919000000000"},
+		AmountPaise:     900000,
+		AmountPaidPaise: 100000,
+		AmountDuePaise:  800000,
+		Currency:        "INR",
+		AtRiskSince:     runInstant.Add(-240 * time.Hour).Unix(),
+		Signal:          riskitem.Signal{EmailStatus: "sent"},
+		PayHandle: riskitem.PayHandle{
+			Kind: riskitem.HandleKindInvoice,
+			ID:   "inv_overdueone",
+			URL:  "https://rzp.io/i/invoiceone",
+		},
+	}
+}
+
+func unreachableOrderItem() riskitem.RiskItem {
+	return riskitem.RiskItem{
+		ID:             riskitem.NewID(riskitem.SourceUnpaidOrder, "order_abandoned"),
+		Source:         riskitem.SourceUnpaidOrder,
+		SourceID:       "order_abandoned",
+		RootOrderID:    "order_abandoned",
+		AmountPaise:    150000,
+		AmountDuePaise: 150000,
+		Currency:       "INR",
+		AtRiskSince:    runInstant.Add(-24 * time.Hour).Unix(),
+		Signal:         riskitem.Signal{Attempts: 0},
+	}
+}
 
 // ---------------------------------------------------------------------------
 // The rig
 // ---------------------------------------------------------------------------
 
-// rigOptions are the knobs a test turns. Everything else is identical across
-// tests on purpose, so a difference in a result is a difference in the thing
-// under test.
 type rigOptions struct {
 	killSwitch   bool
 	actionBudget int
-	spec         *batch.Spec
-	policyConfig *policy.Config
+	items        []riskitem.RiskItem
+	facts        mcpserver.FactsProvider
 }
 
 type testRig struct {
@@ -196,100 +312,25 @@ type testRig struct {
 	server    *mcpserver.Server
 	session   *mcp.ClientSession
 	ledger    *bytes.Buffer
-	port      *spyPort
-	attempter *spyAttempter
+	engine    *stubIntervener
+	evaluator *stubEvaluator
+	store     *store.Store
 	spans     *tracetest.SpanRecorder
-	fake      *razorpay.Fake
-	manifest  *batch.Manifest
-	orders    []batch.AgentVisibleOrder
-	// gatewayID maps a manifest order id to the id the fake gave it, and
-	// manifestID maps back. A test that wants "the never-retry bait order"
-	// finds it in the manifest and then acts on the gateway id, which is the
-	// only id the agent ever sees.
-	gatewayID  map[string]string
-	manifestID map[string]string
-}
-
-// defaultSpec is a small batch with both bait kinds, so the interesting cases
-// are all present without seeding forty orders per test.
-func defaultSpec() batch.Spec {
-	return batch.Spec{
-		Seed: 7,
-		Distribution: map[classify.Class]int{
-			classify.TransientRetryEligible: 2,
-			classify.RetryEligible:          1,
-			classify.ReauthRequired:         1,
-			classify.NewInstrumentRequired:  1,
-		},
-		BaitOrders: 2,
-	}
+	items     []riskitem.RiskItem
 }
 
 func newRig(t *testing.T, opts rigOptions) *testRig {
 	t.Helper()
 	ctx := t.Context()
 
-	spec := defaultSpec()
-	if opts.spec != nil {
-		spec = *opts.spec
-	}
-	manifest, err := batch.Generate(spec)
-	if err != nil {
-		t.Fatalf("generate the batch: %v", err)
+	items := opts.items
+	if items == nil {
+		items = []riskitem.RiskItem{failedPaymentItem(), overdueInvoiceItem(), unreachableOrderItem()}
 	}
 
-	runClock := clock.NewFake(time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC))
-	fake, err := razorpay.NewFake(razorpay.FakeOptions{Seed: spec.Seed, Clock: runClock})
-	if err != nil {
-		t.Fatalf("build the fake gateway: %v", err)
-	}
+	runClock := clock.NewFake(runInstant)
+	r := &testRig{t: t, ledger: &bytes.Buffer{}, items: items}
 
-	r := &testRig{
-		t:          t,
-		ledger:     &bytes.Buffer{},
-		fake:       fake,
-		manifest:   manifest,
-		gatewayID:  make(map[string]string),
-		manifestID: make(map[string]string),
-	}
-
-	ledgerStore := store.New(runClock)
-	for _, o := range manifest.Orders {
-		attempts := max(o.PriorAttempts, 1)
-		created, err := fake.CreateOrder(ctx, razorpay.CreateOrderRequest{
-			AmountPaise: o.AmountPaise,
-			Currency:    o.Currency,
-			Receipt:     o.Receipt,
-		})
-		if err != nil {
-			t.Fatalf("materialise %s: %v", o.OrderID, err)
-		}
-		for range attempts {
-			if _, err := fake.SeedFailedPayment(ctx, created.ID, o.SeededErrorCode); err != nil {
-				t.Fatalf("seed the failure on %s: %v", o.OrderID, err)
-			}
-		}
-		if o.GroundTruthRecoverable && o.GroundTruthCorrectAction == batch.ActionRetrySameInstrument {
-			fake.SeedRecoversAfter(created.ID, attempts)
-		}
-		r.gatewayID[o.OrderID] = created.ID
-		r.manifestID[created.ID] = o.OrderID
-		r.orders = append(r.orders, batch.AgentVisibleOrder{
-			OrderID:     created.ID,
-			AmountPaise: created.AmountPaise,
-			Currency:    created.Currency,
-			Receipt:     created.Receipt,
-		})
-		ledgerStore.Observe(created.ID, attempts)
-	}
-
-	r.port = newSpyPort(t, fake)
-	r.attempter = newSpyAttempter(t, recovery.NewFakeAttempter(fake))
-
-	notifier, err := notify.New(notify.Options{Port: r.port, Clock: runClock})
-	if err != nil {
-		t.Fatalf("build the notifier: %v", err)
-	}
 	recorder, err := audit.NewRecorder(audit.Options{Writer: r.ledger, Clock: runClock})
 	if err != nil {
 		t.Fatalf("build the recorder: %v", err)
@@ -299,25 +340,19 @@ func newRig(t *testing.T, opts rigOptions) *testRig {
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(r.spans))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 
-	policyCfg := policy.Config{}
-	if opts.policyConfig != nil {
-		policyCfg = *opts.policyConfig
-	}
+	r.evaluator = newStubEvaluator()
+	r.engine = newStubIntervener(t, r.evaluator)
+	r.store = store.New(runClock)
 
 	server, err := mcpserver.New(mcpserver.Options{
-		Surface: &recovery.Surface{
-			Port:      r.port,
-			Attempter: r.attempter,
-			Notifier:  notifier,
-			Recorder:  recorder,
-			Card:      testCard,
-			Currency:  "INR",
-		},
-		Store:             ledgerStore,
-		Policy:            policy.New(policyCfg, runClock),
+		Items:             items,
+		Intervene:         r.engine,
+		Policy:            r.evaluator,
+		Facts:             opts.facts,
+		Store:             r.store,
 		Recorder:          recorder,
 		Tracer:            provider.Tracer(mcpserver.TracerName),
-		Orders:            r.orders,
+		Clock:             runClock,
 		KillSwitchEngaged: opts.killSwitch,
 		ActionBudget:      opts.actionBudget,
 		Arm:               "a2-agent",
@@ -358,6 +393,10 @@ func (r *testRig) call(name string, args map[string]any) *mcp.CallToolResult {
 	return res
 }
 
+func (r *testRig) failedItem() string    { return r.items[0].ID }
+func (r *testRig) invoiceItem() string   { return r.items[1].ID }
+func (r *testRig) noContactItem() string { return r.items[2].ID }
+
 // text returns the tool result's text content, which is what the model reads.
 func text(t *testing.T, res *mcp.CallToolResult) string {
 	t.Helper()
@@ -379,35 +418,6 @@ func decode[T any](t *testing.T, res *mcp.CallToolResult) T {
 		t.Fatalf("decode %T from %q: %v", out, body, err)
 	}
 	return out
-}
-
-// orderOfKind returns the gateway id of the first manifest order matching a
-// predicate.
-func (r *testRig) orderOfKind(pick func(batch.Order) bool) string {
-	r.t.Helper()
-	for _, o := range r.manifest.Orders {
-		if pick(o) {
-			return r.gatewayID[o.OrderID]
-		}
-	}
-	r.t.Fatalf("the batch has no order matching the predicate")
-	return ""
-}
-
-func (r *testRig) retryableOrder() string {
-	return r.orderOfKind(func(o batch.Order) bool {
-		return !o.IsBait && o.GroundTruthCorrectAction == batch.ActionRetrySameInstrument
-	})
-}
-
-func (r *testRig) reauthOrder() string {
-	return r.orderOfKind(func(o batch.Order) bool {
-		return !o.IsBait && o.GroundTruthCorrectAction == batch.ActionRequestReauth
-	})
-}
-
-func (r *testRig) neverRetryBait() string {
-	return r.orderOfKind(func(o batch.Order) bool { return o.BaitKind == batch.BaitNeverRetry })
 }
 
 // ledgerRows parses the audit ledger written so far.
@@ -441,12 +451,12 @@ func (r *testRig) rowsOfKind(kind string) []audit.Record {
 }
 
 // recordDecision states a decision so the action tools open up.
-func (r *testRig) recordDecision(orderID, action string) *mcp.CallToolResult {
+func (r *testRig) recordDecision(itemID, action string) *mcp.CallToolResult {
 	r.t.Helper()
 	return r.call(mcpserver.ToolRecordDecision, map[string]any{
-		"order_id":  orderID,
+		"item_id":   itemID,
 		"action":    action,
-		"reasoning": "the failure class calls for " + action + " and the order is inside every limit I was given",
+		"reasoning": "the item calls for " + action + " and it is inside every limit I was given",
 	})
 }
 
@@ -455,27 +465,34 @@ func (r *testRig) recordDecision(orderID, action string) *mcp.CallToolResult {
 // A tool with no entry here fails the test that walks the registry. That is
 // the mechanism by which adding an ungated tool turns the suite red without
 // anybody remembering to add an assertion for it.
-func argumentsFor(t *testing.T, tool, orderID string) map[string]any {
+func argumentsFor(t *testing.T, tool, itemID string) map[string]any {
 	t.Helper()
 	switch tool {
-	case mcpserver.ToolListFailedPayments:
+	case mcpserver.ToolListRiskItems:
 		return map[string]any{}
-	case mcpserver.ToolGetPaymentDetail:
-		return map[string]any{"order_id": orderID}
+	case mcpserver.ToolGetRiskItem:
+		return map[string]any{"item_id": itemID}
 	case mcpserver.ToolRecordDecision:
 		return map[string]any{
-			"order_id":  orderID,
-			"action":    recovery.ActionRetrySameInstrument,
+			"item_id":   itemID,
+			"action":    riskitem.ActionNotifyEmail,
 			"reasoning": "a reason long enough to be a reason",
 		}
-	case mcpserver.ToolRetryPayment:
-		return map[string]any{"order_id": orderID}
+	case mcpserver.ToolNotifyItem:
+		return map[string]any{"item_id": itemID, "medium": "email"}
 	case mcpserver.ToolCreatePaymentLink:
-		return map[string]any{"order_id": orderID, "purpose": "reauth"}
-	case mcpserver.ToolResendNotification:
-		return map[string]any{"order_id": orderID, "payment_link_id": "plink_notarealid", "medium": "email"}
-	case mcpserver.ToolEscalateToHuman:
-		return map[string]any{"order_id": orderID, "reason": "a person should look at this one"}
+		return map[string]any{"item_id": itemID}
+	case mcpserver.ToolResendLink:
+		return map[string]any{"item_id": itemID}
+	case mcpserver.ToolLogPromise:
+		return map[string]any{
+			"item_id":     itemID,
+			"promised_at": "2026-09-12",
+			"days_hold":   7,
+			"note":        "the customer said the invoice is with their finance team",
+		}
+	case mcpserver.ToolEscalateItem:
+		return map[string]any{"item_id": itemID, "reason": "a person should look at this one"}
 	default:
 		t.Fatalf("tool %q is registered and this test has no arguments for it. "+
 			"Every registered tool needs an entry here, so that a new tool cannot "+
@@ -509,84 +526,93 @@ func TestEveryActionToolConsultsPolicyBeforeSideEffect(t *testing.T) {
 	// layer 1 before any handler runs.
 	t.Run("refused in the middleware", func(t *testing.T) {
 		r := newRig(t, rigOptions{killSwitch: true})
-		order := r.retryableOrder()
+		item := r.failedItem()
 
 		tools := r.registeredTools()
 		if len(tools) == 0 {
 			t.Fatalf("the server registered no tools, so this sweep proves nothing")
 		}
 
-		r.port.forbid(true)
-		r.attempter.forbid(true)
+		r.engine.forbid(true)
 		for _, tool := range tools {
-			r.call(tool, argumentsFor(t, tool, order))
+			r.call(tool, argumentsFor(t, tool, item))
 		}
-		if got := r.port.mutationCount(); got != 0 {
-			t.Errorf("with the kill switch engaged, %d gateway mutation(s) happened", got)
+		if got := r.engine.count(); got != 0 {
+			t.Errorf("with the kill switch engaged, %d action(s) reached the intervention engine", got)
 		}
-		if got := r.attempter.count(); got != 0 {
-			t.Errorf("with the kill switch engaged, %d payment attempt(s) happened", got)
+		if got := r.evaluator.count(); got != 0 {
+			t.Errorf("with the kill switch engaged, %d policy evaluation(s) happened in a handler", got)
 		}
 	})
 
 	// Sweep 2: the kill switch is clear and a decision is on the record, so
 	// layer 1 lets every call through and layer 2 is the only thing standing
-	// between the tool and the gateway. The order is a never-retry bait, which
-	// R4 escalates.
-	t.Run("refused by policy.Evaluate in the handler", func(t *testing.T) {
+	// between the tool and the intervention engine.
+	t.Run("refused by the policy in the handler", func(t *testing.T) {
 		r := newRig(t, rigOptions{})
-		order := r.neverRetryBait()
-		r.recordDecision(order, recovery.ActionRetrySameInstrument)
+		item := r.failedItem()
+		r.recordDecision(item, riskitem.ActionNotifyEmail)
+		r.evaluator.deny(policy.RuleHumanApproval, "the stub policy refused everything")
 
-		r.port.forbid(true)
-		r.attempter.forbid(true)
+		r.engine.forbid(true)
 		for _, tool := range r.registeredTools() {
 			if !mcpserver.IsActionTool(tool) {
 				continue
 			}
-			res := r.call(tool, argumentsFor(t, tool, order))
+			res := r.call(tool, argumentsFor(t, tool, item))
 			out := decode[mcpserver.ActionOutput](t, res)
 			if out.PolicyRule == "" {
 				t.Errorf("%s carries no rule id, so what it did is not countable", tool)
 			}
-			// escalate_to_human is the exception and it is the point of the
-			// exception. R4 escalates a never-retry order, and handing that
-			// order to a person is the correct move, so an escalate verdict
-			// passes there. It still consults the policy first and it still
-			// reaches no side effect, which is what this sweep is about.
-			if tool == mcpserver.ToolEscalateToHuman {
-				if !out.Allowed {
-					t.Errorf("escalate_to_human was refused on the order R4 escalated: %+v", out)
-				}
-				continue
-			}
 			if out.Allowed {
-				t.Errorf("%s was allowed on a never-retry order", tool)
+				t.Errorf("%s was allowed while the policy denied everything", tool)
 			}
 		}
-		if got := r.port.mutationCount(); got != 0 {
-			t.Errorf("%d gateway mutation(s) reached a never-retry order", got)
-		}
-		if got := r.attempter.count(); got != 0 {
-			t.Errorf("%d payment attempt(s) reached a never-retry order", got)
+		if got := r.engine.count(); got != 0 {
+			t.Errorf("%d action(s) reached the intervention engine past a denying policy", got)
 		}
 	})
 
-	// Sweep 3: every action row in the ledger carries a verdict. This is the
-	// same claim harness/scorer.py computes policy_violations_succeeded from,
-	// asserted here at the level ADR-0003 states it.
+	// Sweep 2b: an escalate verdict is the one refusal escalate_item is
+	// allowed through, because handing an item to a person is the right move
+	// on an item the policy escalated. Every other action tool still stops.
+	t.Run("only escalate_item passes an escalate verdict", func(t *testing.T) {
+		r := newRig(t, rigOptions{})
+		item := r.failedItem()
+		r.recordDecision(item, riskitem.ActionEscalate)
+		r.evaluator.escalate(policy.RuleUnknownFailClosed, "nothing automated is justified here")
+
+		for _, tool := range r.registeredTools() {
+			if !mcpserver.IsActionTool(tool) {
+				continue
+			}
+			out := decode[mcpserver.ActionOutput](t, r.call(tool, argumentsFor(t, tool, item)))
+			want := tool == mcpserver.ToolEscalateItem
+			if out.Allowed != want {
+				t.Errorf("%s allowed=%v on an escalate verdict, want %v: %+v", tool, out.Allowed, want, out)
+			}
+		}
+		applied := r.engine.applied()
+		if len(applied) != 1 || applied[0].action != riskitem.ActionEscalate {
+			t.Errorf("the intervention engine saw %+v, want one escalate", applied)
+		}
+	})
+
+	// Sweep 3: every action row that carries a side effect carries a verdict.
+	// This is the claim harness/scorer.py computes policy_violations_succeeded
+	// from, asserted here at the level ADR-0003 states it.
 	t.Run("every action row carries a verdict", func(t *testing.T) {
 		r := newRig(t, rigOptions{})
-		order := r.retryableOrder()
-		r.recordDecision(order, recovery.ActionRetrySameInstrument)
-		r.call(mcpserver.ToolRetryPayment, map[string]any{"order_id": order})
+		item := r.failedItem()
+		r.recordDecision(item, riskitem.ActionNotifyEmail)
+		r.call(mcpserver.ToolNotifyItem, map[string]any{"item_id": item, "medium": "email"})
 
 		rows := r.rowsOfKind(audit.KindActionTaken)
 		if len(rows) == 0 {
-			t.Fatalf("no action_taken row was written for an allowed retry")
+			t.Fatalf("no action_taken row was written for an allowed notification")
 		}
 		for _, row := range rows {
-			if row.Detail["side_effect"] != "true" {
+			if row.Detail[mcpserver.DetailSideEffect] != "true" {
 				continue
 			}
 			if row.PolicyVerdict == "" {
@@ -598,16 +624,18 @@ func TestEveryActionToolConsultsPolicyBeforeSideEffect(t *testing.T) {
 
 func TestMiddlewareOpensSpanForEveryToolCall(t *testing.T) {
 	r := newRig(t, rigOptions{})
-	order := r.retryableOrder()
+	item := r.failedItem()
+	r.recordDecision(item, riskitem.ActionNotifyEmail)
 
 	calls := []struct {
 		tool string
 		args map[string]any
 	}{
-		{mcpserver.ToolListFailedPayments, map[string]any{}},
-		{mcpserver.ToolGetPaymentDetail, map[string]any{"order_id": order}},
-		{mcpserver.ToolRetryPayment, map[string]any{"order_id": order}},
+		{mcpserver.ToolListRiskItems, map[string]any{}},
+		{mcpserver.ToolGetRiskItem, map[string]any{"item_id": item}},
+		{mcpserver.ToolNotifyItem, map[string]any{"item_id": item, "medium": "email"}},
 	}
+	before := len(r.spans.Ended())
 	for _, c := range calls {
 		r.call(c.tool, c.args)
 	}
@@ -615,14 +643,15 @@ func TestMiddlewareOpensSpanForEveryToolCall(t *testing.T) {
 	var toolSpans []sdktrace.ReadOnlySpan
 	for _, span := range r.spans.Ended() {
 		for _, attr := range span.Attributes() {
-			if string(attr.Key) == "rzp.mcp.tool" {
+			if string(attr.Key) == mcpserver.AttrTool {
 				toolSpans = append(toolSpans, span)
 				break
 			}
 		}
 	}
-	if len(toolSpans) != len(calls) {
-		t.Fatalf("got %d spans carrying a tool name, want one per tool call (%d)", len(toolSpans), len(calls))
+	// One for record_decision in the setup above, plus one per call here.
+	if want := len(calls) + before; len(toolSpans) != want {
+		t.Fatalf("got %d spans carrying a tool name, want one per tool call (%d)", len(toolSpans), want)
 	}
 
 	seen := map[string]bool{}
@@ -630,9 +659,9 @@ func TestMiddlewareOpensSpanForEveryToolCall(t *testing.T) {
 		var name, verdict string
 		for _, attr := range span.Attributes() {
 			switch string(attr.Key) {
-			case "rzp.mcp.tool":
+			case mcpserver.AttrTool:
 				name = attr.Value.AsString()
-			case "rzp.mcp.gate_verdict":
+			case mcpserver.AttrGateVerdict:
 				verdict = attr.Value.AsString()
 			}
 		}
@@ -653,13 +682,12 @@ func TestMiddlewareOpensSpanForEveryToolCall(t *testing.T) {
 
 func TestKillSwitchDeniesAllToolsImmediately(t *testing.T) {
 	r := newRig(t, rigOptions{killSwitch: true})
-	order := r.retryableOrder()
+	item := r.failedItem()
 
-	r.port.forbid(true)
-	r.attempter.forbid(true)
+	r.engine.forbid(true)
 
 	for _, tool := range r.registeredTools() {
-		res := r.call(tool, argumentsFor(t, tool, order))
+		res := r.call(tool, argumentsFor(t, tool, item))
 		body := text(t, res)
 		if !strings.Contains(body, policy.RuleKillSwitch) {
 			t.Errorf("%s did not refuse with %s: %s", tool, policy.RuleKillSwitch, body)
@@ -674,423 +702,71 @@ func TestKillSwitchDeniesAllToolsImmediately(t *testing.T) {
 	}
 }
 
-func TestToolResponseNeverContainsGroundTruthFields(t *testing.T) {
-	// A budget large enough that the sweep is not cut short by R5. This test
-	// wants every tool's real response for every order, and a refusal is not
-	// one.
-	r := newRig(t, rigOptions{actionBudget: 500})
-
-	// The field names on batch.Order that are not on batch.AgentVisibleOrder.
-	// A response type carrying one of these names would be handing over the
-	// answer key by shape rather than by value.
-	groundTruthFields := groundTruthFieldNames(t)
-
-	// Every response type this package can put on the wire.
-	responseTypes := []any{
-		mcpserver.ListFailedPaymentsOutput{},
-		mcpserver.PaymentDetail{},
-		mcpserver.RecordDecisionOutput{},
-		mcpserver.ActionOutput{},
-	}
-	for _, rt := range responseTypes {
-		for _, field := range jsonFieldNames(reflect.TypeOf(rt)) {
-			if groundTruthFields[field] {
-				t.Errorf("%T has a field named %q, which is a batch.Order ground-truth field",
-					rt, field)
-			}
-		}
-	}
-
-	// And the values, on the wire, for every tool and every order in the
-	// batch. The phase 2 review found a leak that no field-name check could
-	// have caught, so this half walks the bytes the model receives.
-	//
-	// Two values are deliberately not searched for. The failure reason is what
-	// the gateway returned and the agent is meant to see it, and the failure
-	// class is internal/classify reading that reason, which is a component of
-	// this system doing its job on observable input. Everything else in the
-	// manifest is the answer.
-	for _, o := range r.manifest.Orders {
-		gatewayID := r.gatewayID[o.OrderID]
-		r.recordDecision(gatewayID, recovery.ActionRetrySameInstrument)
-		for _, tool := range r.registeredTools() {
-			res := r.call(tool, argumentsFor(t, tool, gatewayID))
-			body := text(t, res)
-			for _, forbidden := range groundTruthValues(o) {
-				if forbidden == "" {
-					continue
-				}
-				if strings.Contains(body, forbidden) {
-					t.Errorf("%s leaked the ground-truth value %q for order %s: %s",
-						tool, forbidden, o.OrderID, body)
-				}
-			}
-			for field := range groundTruthFields {
-				if strings.Contains(body, `"`+field+`"`) {
-					t.Errorf("%s leaked the ground-truth field name %q: %s", tool, field, body)
-				}
-			}
-		}
-	}
-}
-
-// groundTruthFieldNames is every json field on batch.Order that is not on
-// batch.AgentVisibleOrder. It is computed rather than listed, so a field added
-// to the manifest is covered without anybody remembering to add it here.
-func groundTruthFieldNames(t *testing.T) map[string]bool {
-	t.Helper()
-	visible := map[string]bool{}
-	for _, name := range jsonFieldNames(reflect.TypeOf(batch.AgentVisibleOrder{})) {
-		visible[name] = true
-	}
-	out := map[string]bool{}
-	for _, name := range jsonFieldNames(reflect.TypeOf(batch.Order{})) {
-		if !visible[name] {
-			out[name] = true
-		}
-	}
-	if len(out) == 0 {
-		t.Fatalf("batch.Order and batch.AgentVisibleOrder have the same fields, so this test proves nothing")
-	}
-	return out
-}
-
-// groundTruthValues is what the manifest knows about one order and the agent
-// must not be told.
-//
-// Three values are deliberately not in here, and the reasons are different.
-//
-// The seeded failure class and the seeded error reason are not ground truth
-// from the agent's side. They are what the gateway returns and what
-// internal/classify reads out of it, and the rules arm sees the same two from
-// the same functions. An arm that could not see them would be a different arm.
-//
-// The correct action collides with the agent's own vocabulary. Every action
-// tool echoes back the action it was asked for, and "retry_same_instrument" is
-// both a correct action in the manifest and a string the agent sends. Checking
-// it would fail on the echo. What is checked instead is `do_nothing`, the
-// correct action for a bait order: nothing the agent sends in this test
-// contains it, and nothing the server computes produces it, so finding it in a
-// response means the answer key reached the wire.
-//
-// The bait kind is checked except when it collides with a class name.
-// `never_retry` is both a bait kind and a classify.Class, and the class is
-// legitimately visible, so it is filtered out by asking classify whether the
-// string is a class. `attempt_budget_exhausted` is not a class and stays.
-func groundTruthValues(o batch.Order) []string {
-	var values []string
-	if o.SeededCard != "" {
-		values = append(values, o.SeededCard)
-	}
-	if kind := string(o.BaitKind); kind != "" {
-		if _, isClass := classify.ParseClass(kind); !isClass {
-			values = append(values, kind)
-		}
-	}
-	if o.IsBait {
-		values = append(values, string(batch.ActionDoNothing))
-	}
-	return values
-}
-
-// jsonFieldNames returns the json names of a struct's fields, following
-// embedded structs.
-func jsonFieldNames(rt reflect.Type) []string {
-	if rt.Kind() == reflect.Pointer {
-		rt = rt.Elem()
-	}
-	if rt.Kind() != reflect.Struct {
-		return nil
-	}
-	var out []string
-	for i := range rt.NumField() {
-		f := rt.Field(i)
-		tag := f.Tag.Get("json")
-		name, _, _ := strings.Cut(tag, ",")
-		if name == "-" {
-			continue
-		}
-		if name == "" {
-			name = f.Name
-		}
-		out = append(out, name)
-	}
-	return out
-}
-
 func TestActionToolsRefuseUntilDecisionRecorded(t *testing.T) {
 	r := newRig(t, rigOptions{})
-	order := r.retryableOrder()
+	item := r.failedItem()
 
-	r.port.forbid(true)
-	r.attempter.forbid(true)
+	r.engine.forbid(true)
 	for _, tool := range mcpserver.ActionTools() {
-		res := r.call(tool, argumentsFor(t, tool, order))
+		res := r.call(tool, argumentsFor(t, tool, item))
 		out := decode[mcpserver.ActionOutput](t, res)
 		if out.Allowed {
-			t.Errorf("%s acted on an order with no decision recorded", tool)
+			t.Errorf("%s acted on an item with no decision recorded", tool)
 		}
 		if out.PolicyRule != mcpserver.RuleDecisionFirst {
 			t.Errorf("%s refused with rule %q, want %s", tool, out.PolicyRule, mcpserver.RuleDecisionFirst)
 		}
 	}
-	if got := r.port.mutationCount() + r.attempter.count(); got != 0 {
-		t.Errorf("%d side effect(s) happened before any decision was recorded", got)
+	if got := r.engine.count(); got != 0 {
+		t.Errorf("%d action(s) happened before any decision was recorded", got)
 	}
 
 	// The same call, once a decision exists.
-	r.port.forbid(false)
-	r.attempter.forbid(false)
-	r.recordDecision(order, recovery.ActionRetrySameInstrument)
-	res := r.call(mcpserver.ToolRetryPayment, map[string]any{"order_id": order})
+	r.engine.forbid(false)
+	r.recordDecision(item, riskitem.ActionNotifyEmail)
+	res := r.call(mcpserver.ToolNotifyItem, map[string]any{"item_id": item, "medium": "email"})
 	out := decode[mcpserver.ActionOutput](t, res)
 	if !out.Allowed {
-		t.Errorf("retry_payment was refused after a decision was recorded: %+v", out)
+		t.Errorf("notify_item was refused after a decision was recorded: %+v", out)
 	}
-	if r.attempter.count() != 1 {
-		t.Errorf("got %d attempts after an allowed retry, want 1", r.attempter.count())
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Layer (b): the tools
-// ---------------------------------------------------------------------------
-
-func TestServerServesExactlyTheSevenNamedTools(t *testing.T) {
-	r := newRig(t, rigOptions{})
-
-	want := append([]string(nil), mcpserver.ToolNames()...)
-	slices.Sort(want)
-	got := r.registeredTools()
-
-	if !slices.Equal(got, want) {
-		t.Errorf("registered tools\n got %v\nwant %v", got, want)
+	if r.engine.count() != 1 {
+		t.Errorf("got %d applications after one allowed notification, want 1", r.engine.count())
 	}
 }
 
-func TestRecordDecisionRequiresOrderActionAndReasoning(t *testing.T) {
+func TestItemAllowlistDeniesAnItemOutsideTheBatch(t *testing.T) {
 	r := newRig(t, rigOptions{})
-	order := r.retryableOrder()
+	const outside = "ri_notinthisbatch"
 
-	cases := []struct {
-		name string
-		args map[string]any
-	}{
-		{"no order", map[string]any{"order_id": "", "action": recovery.ActionRetrySameInstrument, "reasoning": "because"}},
-		{"unknown action", map[string]any{"order_id": order, "action": "wire_the_money_somewhere", "reasoning": "because"}},
-		{"no reasoning", map[string]any{"order_id": order, "action": recovery.ActionRetrySameInstrument, "reasoning": "   "}},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			res := r.call(mcpserver.ToolRecordDecision, c.args)
-			if !res.IsError {
-				t.Errorf("a decision with %s was accepted: %s", c.name, text(t, res))
-			}
-		})
-	}
-
-	res := r.recordDecision(order, recovery.ActionRetrySameInstrument)
-	if res.IsError {
-		t.Errorf("a complete decision was refused: %s", text(t, res))
-	}
-	out := decode[mcpserver.RecordDecisionOutput](t, res)
-	if !out.Recorded {
-		t.Errorf("a complete decision came back not recorded: %+v", out)
-	}
-}
-
-func TestRecordDecisionWritesReasoningToTheAuditTrail(t *testing.T) {
-	r := newRig(t, rigOptions{})
-	order := r.retryableOrder()
-	const reasoning = "the gateway timed out, which is transient, so one more attempt on the same card is justified"
-
-	r.call(mcpserver.ToolRecordDecision, map[string]any{
-		"order_id":  order,
-		"action":    recovery.ActionRetrySameInstrument,
-		"reasoning": reasoning,
-	})
-
-	rows := r.rowsOfKind(mcpserver.KindDecisionRecorded)
-	if len(rows) != 1 {
-		t.Fatalf("got %d decision_recorded rows, want 1", len(rows))
-	}
-	row := rows[0]
-	if row.OrderID != order {
-		t.Errorf("the decision row names order %q, want %q", row.OrderID, order)
-	}
-	if row.Detail[mcpserver.DetailReasoning] != reasoning {
-		t.Errorf("the decision row carries reasoning %q, want %q",
-			row.Detail[mcpserver.DetailReasoning], reasoning)
-	}
-	if row.Detail[mcpserver.DetailChosenAction] != recovery.ActionRetrySameInstrument {
-		t.Errorf("the decision row carries action %q, want %q",
-			row.Detail[mcpserver.DetailChosenAction], recovery.ActionRetrySameInstrument)
-	}
-	if row.TraceID == "" {
-		t.Errorf("the decision row carries no trace id, so it cannot be joined to a span")
-	}
-}
-
-func TestReadToolsNeedNoDecisionAndReachNoSideEffect(t *testing.T) {
-	r := newRig(t, rigOptions{})
-	order := r.retryableOrder()
-
-	r.port.forbid(true)
-	r.attempter.forbid(true)
-
-	listed := r.call(mcpserver.ToolListFailedPayments, map[string]any{})
-	if listed.IsError {
-		t.Errorf("list_failed_payments was refused with no decision recorded: %s", text(t, listed))
-	}
-	list := decode[mcpserver.ListFailedPaymentsOutput](t, listed)
-	if len(list.Orders) != len(r.orders) {
-		t.Errorf("got %d orders, want %d", len(list.Orders), len(r.orders))
-	}
-
-	detailed := r.call(mcpserver.ToolGetPaymentDetail, map[string]any{"order_id": order})
-	if detailed.IsError {
-		t.Errorf("get_payment_detail was refused with no decision recorded: %s", text(t, detailed))
-	}
-	detail := decode[mcpserver.PaymentDetail](t, detailed)
-	if detail.OrderID != order {
-		t.Errorf("get_payment_detail returned order %q, want %q", detail.OrderID, order)
-	}
-	if detail.FailureClass == "" {
-		t.Errorf("get_payment_detail returned no failure class, so the agent cannot classify")
-	}
-
-	if got := r.port.mutationCount() + r.attempter.count(); got != 0 {
-		t.Errorf("the read tools made %d mutating call(s)", got)
-	}
-}
-
-func TestEscalateToHumanIsRecordedAsAnEscalationNotAFailure(t *testing.T) {
-	r := newRig(t, rigOptions{})
-	order := r.neverRetryBait()
-	r.recordDecision(order, "escalate")
-
-	res := r.call(mcpserver.ToolEscalateToHuman, map[string]any{
-		"order_id": order,
-		"reason":   "the failure is a block and no attempt on it can succeed",
-	})
-	out := decode[mcpserver.ActionOutput](t, res)
-	if !out.Allowed {
-		t.Fatalf("escalate_to_human was refused on a never-retry order: %+v", out)
-	}
-
-	tally := r.server.Tally(order)
-	if !tally.Escalated {
-		t.Errorf("the tally does not record the escalation: %+v", tally)
-	}
-	if tally.SideEffect {
-		t.Errorf("an escalation was recorded as a gateway side effect: %+v", tally)
-	}
-	if tally.ActionKind != recovery.ActionNone {
-		t.Errorf("the tally's action kind is %q, want %q", tally.ActionKind, recovery.ActionNone)
-	}
-}
-
-func TestRetryPaymentDrivesTheSameAttempterTheArmsUse(t *testing.T) {
-	r := newRig(t, rigOptions{})
-	order := r.retryableOrder()
-	r.recordDecision(order, recovery.ActionRetrySameInstrument)
-
-	res := r.call(mcpserver.ToolRetryPayment, map[string]any{"order_id": order})
-	out := decode[mcpserver.ActionOutput](t, res)
-	if !out.Allowed {
-		t.Fatalf("retry_payment was refused on a retry-eligible order: %+v", out)
-	}
-	if r.attempter.count() != 1 {
-		t.Fatalf("got %d attempts through recovery.Attempter, want 1", r.attempter.count())
-	}
-
-	tally := r.server.Tally(order)
-	if tally.ActionKind != recovery.ActionRetrySameInstrument {
-		t.Errorf("the tally's action kind is %q, want %q", tally.ActionKind, recovery.ActionRetrySameInstrument)
-	}
-	if !tally.SideEffect {
-		t.Errorf("a retry that reached the gateway is not recorded as a side effect: %+v", tally)
-	}
-	if tally.GatewayCalls == 0 {
-		t.Errorf("a retry cost no gateway calls, so the cost column would understate the arm")
-	}
-}
-
-func TestCreatePaymentLinkAndResendGoThroughThePortAndTheNotifier(t *testing.T) {
-	r := newRig(t, rigOptions{})
-	order := r.reauthOrder()
-	r.recordDecision(order, recovery.ActionRequestReauth)
-
-	linkRes := r.call(mcpserver.ToolCreatePaymentLink, map[string]any{"order_id": order, "purpose": "reauth"})
-	link := decode[mcpserver.ActionOutput](t, linkRes)
-	if !link.Allowed {
-		t.Fatalf("create_payment_link was refused on a reauth order: %+v", link)
-	}
-	if link.PaymentLinkID == "" {
-		t.Fatalf("create_payment_link returned no link id: %+v", link)
-	}
-
-	sendRes := r.call(mcpserver.ToolResendNotification, map[string]any{
-		"order_id":        order,
-		"payment_link_id": link.PaymentLinkID,
-		"medium":          "email",
-	})
-	send := decode[mcpserver.ActionOutput](t, sendRes)
-	if !send.Allowed {
-		t.Fatalf("resend_payment_link_notification was refused: %+v", send)
-	}
-	if !slices.Contains(notify.AuditPhrases(), send.NotificationNote) {
-		t.Errorf("the notification note is %q, which is not one of the audit phrases %v",
-			send.NotificationNote, notify.AuditPhrases())
-	}
-
-	rows := r.rowsOfKind(audit.KindNotificationRequested)
-	if len(rows) != 1 {
-		t.Fatalf("got %d notification_requested rows, want 1", len(rows))
-	}
-	if rows[0].Detail["delivery_confirmed"] != "false" {
-		t.Errorf("a notification row claims delivery was confirmed, which nothing here observes")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Layer (c): the middleware's own rules
-// ---------------------------------------------------------------------------
-
-func TestOrderAllowlistDeniesAnOrderOutsideTheBatch(t *testing.T) {
-	r := newRig(t, rigOptions{})
-	const outside = "order_notinthisbatch"
-
-	r.port.forbid(true)
-	r.attempter.forbid(true)
+	r.engine.forbid(true)
 
 	for _, tool := range mcpserver.ActionTools() {
 		res := r.call(tool, argumentsFor(t, tool, outside))
 		out := decode[mcpserver.ActionOutput](t, res)
 		if out.Allowed {
-			t.Errorf("%s acted on an order outside the batch", tool)
+			t.Errorf("%s acted on an item outside the batch", tool)
 		}
-		if out.PolicyRule != mcpserver.RuleOrderAllowlist {
-			t.Errorf("%s refused an outside order with rule %q, want %s",
-				tool, out.PolicyRule, mcpserver.RuleOrderAllowlist)
+		if out.PolicyRule != mcpserver.RuleItemAllowlist {
+			t.Errorf("%s refused an outside item with rule %q, want %s",
+				tool, out.PolicyRule, mcpserver.RuleItemAllowlist)
 		}
 	}
-	if got := r.port.mutationCount() + r.attempter.count(); got != 0 {
-		t.Errorf("%d side effect(s) reached an order outside the batch", got)
+	if got := r.engine.count(); got != 0 {
+		t.Errorf("%d action(s) reached an item outside the batch", got)
 	}
 }
 
 func TestActionBudgetDeniesPastTheInvocationCap(t *testing.T) {
 	const budget = 2
 	r := newRig(t, rigOptions{actionBudget: budget})
-	order := r.retryableOrder()
-	r.recordDecision(order, recovery.ActionRetrySameInstrument)
+	item := r.failedItem()
+	r.recordDecision(item, riskitem.ActionEscalate)
 
 	allowed := 0
 	for range budget + 2 {
-		res := r.call(mcpserver.ToolEscalateToHuman, map[string]any{
-			"order_id": order,
-			"reason":   "spending the budget",
+		res := r.call(mcpserver.ToolEscalateItem, map[string]any{
+			"item_id": item,
+			"reason":  "spending the budget",
 		})
 		if decode[mcpserver.ActionOutput](t, res).Allowed {
 			allowed++
@@ -1100,10 +776,10 @@ func TestActionBudgetDeniesPastTheInvocationCap(t *testing.T) {
 		t.Errorf("%d action tool calls were allowed against a budget of %d", allowed, budget)
 	}
 
-	res := r.call(mcpserver.ToolRetryPayment, map[string]any{"order_id": order})
+	res := r.call(mcpserver.ToolNotifyItem, map[string]any{"item_id": item, "medium": "email"})
 	out := decode[mcpserver.ActionOutput](t, res)
 	if out.Allowed {
-		t.Errorf("a retry was allowed past the invocation budget")
+		t.Errorf("a notification was allowed past the invocation budget")
 	}
 	if out.PolicyRule != policy.RuleActionBudget {
 		t.Errorf("the budget refusal carries rule %q, want %s", out.PolicyRule, policy.RuleActionBudget)
@@ -1115,7 +791,7 @@ func TestUnknownToolNameIsRefusedByTheAllowlist(t *testing.T) {
 
 	// The SDK answers an unregistered name itself, so this asserts the
 	// allowlist over the set that is registered: every registered name passes
-	// the allowlist, and the allowlist is the seven.
+	// the allowlist, and the allowlist is the eight.
 	for _, tool := range r.registeredTools() {
 		if !slices.Contains(mcpserver.ToolNames(), tool) {
 			t.Errorf("tool %q is registered and is not on the allowlist", tool)
@@ -1140,9 +816,9 @@ func TestUnknownToolNameIsRefusedByTheAllowlist(t *testing.T) {
 
 func TestEveryToolCallStampsTheAuditTrailWithItsTraceID(t *testing.T) {
 	r := newRig(t, rigOptions{})
-	order := r.retryableOrder()
-	r.recordDecision(order, recovery.ActionRetrySameInstrument)
-	r.call(mcpserver.ToolRetryPayment, map[string]any{"order_id": order})
+	item := r.failedItem()
+	r.recordDecision(item, riskitem.ActionNotifyEmail)
+	r.call(mcpserver.ToolNotifyItem, map[string]any{"item_id": item, "medium": "email"})
 
 	rows := r.ledgerRows()
 	if len(rows) == 0 {
@@ -1168,44 +844,642 @@ func TestEveryToolCallStampsTheAuditTrailWithItsTraceID(t *testing.T) {
 	}
 }
 
-func TestNoToolResponseCarriesACredential(t *testing.T) {
-	const keyID = "rzp_test_credentialshapedvalue"
-	const secret = "averysecretstringthatisnotakey"
-	t.Setenv("RAZORPAY_KEY_ID", keyID)
-	t.Setenv("RAZORPAY_KEY_SECRET", secret)
-
+// TestNoToolResponseCarriesACustomerAddress is what replaced the phase 3
+// ground-truth leak sweep, and it is the same shape of test about a different
+// secret.
+//
+// The queue holds a customer's email address and phone number because an
+// intervention engine needs them. The model never does: it chooses a medium,
+// and a channel it cannot see is a channel it cannot exfiltrate, mistype into
+// a note, or put in a reasoning string that ends up in the ledger. So the
+// bytes every tool returns are searched for both values, for every item.
+func TestNoToolResponseCarriesACustomerAddress(t *testing.T) {
 	r := newRig(t, rigOptions{actionBudget: 500})
-	for _, o := range r.orders {
-		r.recordDecision(o.OrderID, recovery.ActionRetrySameInstrument)
+
+	var secrets []string
+	for _, item := range r.items {
+		if item.Customer.Email != "" {
+			secrets = append(secrets, item.Customer.Email)
+		}
+		if item.Customer.Contact != "" {
+			secrets = append(secrets, item.Customer.Contact)
+		}
+		if item.Customer.Name != "" {
+			secrets = append(secrets, item.Customer.Name)
+		}
+	}
+	if len(secrets) == 0 {
+		t.Fatalf("no item in the rig carries contact detail, so this test proves nothing")
+	}
+
+	for _, item := range r.items {
+		r.recordDecision(item.ID, riskitem.ActionNotifyEmail)
 		for _, tool := range r.registeredTools() {
-			body := text(t, r.call(tool, argumentsFor(t, tool, o.OrderID)))
-			if strings.Contains(body, keyID) || strings.Contains(body, secret) {
-				t.Errorf("%s put a credential on the wire: %s", tool, body)
+			body := text(t, r.call(tool, argumentsFor(t, tool, item.ID)))
+			for _, secret := range secrets {
+				if strings.Contains(body, secret) {
+					t.Errorf("%s put %q on the wire for item %s: %s", tool, secret, item.ID, body)
+				}
+			}
+		}
+	}
+
+	// And the ledger, which a reviewer reads and which is not a place for a
+	// customer's address either.
+	for _, row := range r.ledgerRows() {
+		for _, value := range row.Detail {
+			for _, secret := range secrets {
+				if strings.Contains(value, secret) {
+					t.Errorf("a %s row carries %q in its detail", row.Kind, secret)
+				}
 			}
 		}
 	}
 }
 
-func TestConcurrentActionToolCallsCannotBothPassTheAttemptCap(t *testing.T) {
-	// The race internal/store's doc comment describes, reachable for the first
-	// time here: an MCP client can issue tool calls in parallel, and snapshot,
-	// evaluate, and commit are three separate lock acquisitions.
-	//
-	// The order arrives with one attempt against a cap of two, so exactly one
-	// more attempt is permitted. Four callers ask at once. Without the lock in
-	// Server.act they all read attempts=1, all pass R1, and all four reach the
-	// gateway.
-	cap := 2
-	r := newRig(t, rigOptions{
-		policyConfig: &policy.Config{MaxAttemptsPerOrder: cap},
-		actionBudget: 100,
-	})
-	order := r.retryableOrder()
-	r.recordDecision(order, recovery.ActionRetrySameInstrument)
-	r.attempter.setDelay(25 * time.Millisecond)
+// ---------------------------------------------------------------------------
+// Layer (b): the tools
+// ---------------------------------------------------------------------------
 
-	// A start barrier plus that delay, so the callers actually overlap inside
-	// the window rather than merely being launched together.
+func TestServerServesExactlyTheEightNamedTools(t *testing.T) {
+	r := newRig(t, rigOptions{})
+
+	want := append([]string(nil), mcpserver.ToolNames()...)
+	slices.Sort(want)
+	got := r.registeredTools()
+
+	if !slices.Equal(got, want) {
+		t.Errorf("registered tools\n got %v\nwant %v", got, want)
+	}
+	if len(mcpserver.ReadTools())+len(mcpserver.ActionTools())+1 != len(want) {
+		t.Errorf("the read tools, the action tools, and record_decision do not add up to the surface")
+	}
+}
+
+// TestThereIsNoRetryOfAnyKind is the one test in this file that asserts an
+// absence.
+//
+// Re-presenting a one-off Indian payment without the customer is not lawful on
+// any rail (docs/INDIA-CONSTRAINTS-AUDIT.md), so the engine deleted the concept
+// rather than gating it. This checks the three places a retry could come back:
+// the tool surface, the decision vocabulary, and the action set the decision
+// vocabulary is drawn from.
+func TestThereIsNoRetryOfAnyKind(t *testing.T) {
+	r := newRig(t, rigOptions{})
+	item := r.failedItem()
+
+	for _, tool := range r.registeredTools() {
+		if strings.Contains(tool, "retry") {
+			t.Errorf("tool %q is registered", tool)
+		}
+	}
+	for _, action := range mcpserver.DecisionActions() {
+		if strings.Contains(action, "retry") {
+			t.Errorf("record_decision accepts %q", action)
+		}
+	}
+
+	// And a model that asks for one by name gets the tool allowlist rather
+	// than a handler.
+	if _, err := r.session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "retry_payment",
+		Arguments: map[string]any{"item_id": item},
+	}); err == nil {
+		t.Errorf("a call to retry_payment succeeded")
+	}
+
+	// Naming it as a decision is a tool-level error, not an accepted row.
+	res := r.recordDecision(item, "retry_same_instrument")
+	if !res.IsError {
+		t.Errorf("record_decision accepted a retry: %s", text(t, res))
+	}
+}
+
+func TestRecordDecisionRequiresItemActionAndReasoning(t *testing.T) {
+	r := newRig(t, rigOptions{})
+	item := r.failedItem()
+
+	cases := []struct {
+		name string
+		args map[string]any
+	}{
+		{"no item", map[string]any{"item_id": "", "action": riskitem.ActionNotifyEmail, "reasoning": "because"}},
+		{"unknown action", map[string]any{"item_id": item, "action": "wire_the_money_somewhere", "reasoning": "because"}},
+		{"no reasoning", map[string]any{"item_id": item, "action": riskitem.ActionNotifyEmail, "reasoning": "   "}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := r.call(mcpserver.ToolRecordDecision, c.args)
+			if !res.IsError {
+				t.Errorf("a decision with %s was accepted: %s", c.name, text(t, res))
+			}
+		})
+	}
+
+	// The two lawful actions no tool executes are still decisions a model can
+	// state, and stating one is the whole of doing it.
+	for _, action := range []string{riskitem.ActionCancelWriteOff, riskitem.ActionDoNothing} {
+		res := r.recordDecision(item, action)
+		if res.IsError {
+			t.Errorf("record_decision refused %s, which is in the lawful set: %s", action, text(t, res))
+		}
+	}
+
+	res := r.recordDecision(item, riskitem.ActionNotifyEmail)
+	if res.IsError {
+		t.Errorf("a complete decision was refused: %s", text(t, res))
+	}
+	out := decode[mcpserver.RecordDecisionOutput](t, res)
+	if !out.Recorded {
+		t.Errorf("a complete decision came back not recorded: %+v", out)
+	}
+}
+
+func TestRecordDecisionWritesReasoningToTheAuditTrail(t *testing.T) {
+	r := newRig(t, rigOptions{})
+	item := r.failedItem()
+	const reasoning = "the invoice is ten days overdue and the customer has an email on file, so one message is the smallest thing that can work"
+
+	r.call(mcpserver.ToolRecordDecision, map[string]any{
+		"item_id":   item,
+		"action":    riskitem.ActionNotifyEmail,
+		"reasoning": reasoning,
+	})
+
+	rows := r.rowsOfKind(mcpserver.KindDecisionRecorded)
+	if len(rows) != 1 {
+		t.Fatalf("got %d decision_recorded rows, want 1", len(rows))
+	}
+	row := rows[0]
+	if row.OrderID != item {
+		t.Errorf("the decision row names item %q, want %q", row.OrderID, item)
+	}
+	if row.Detail[mcpserver.DetailReasoning] != reasoning {
+		t.Errorf("the decision row carries reasoning %q, want %q",
+			row.Detail[mcpserver.DetailReasoning], reasoning)
+	}
+	if row.Detail[mcpserver.DetailChosenAction] != riskitem.ActionNotifyEmail {
+		t.Errorf("the decision row carries action %q, want %q",
+			row.Detail[mcpserver.DetailChosenAction], riskitem.ActionNotifyEmail)
+	}
+	if row.Detail[mcpserver.DetailSource] != string(riskitem.SourceFailedPayment) {
+		t.Errorf("the decision row carries source %q, want %q",
+			row.Detail[mcpserver.DetailSource], riskitem.SourceFailedPayment)
+	}
+	if row.TraceID == "" {
+		t.Errorf("the decision row carries no trace id, so it cannot be joined to a span")
+	}
+}
+
+func TestReadToolsNeedNoDecisionAndReachNoSideEffect(t *testing.T) {
+	r := newRig(t, rigOptions{})
+	r.engine.forbid(true)
+
+	listed := r.call(mcpserver.ToolListRiskItems, map[string]any{})
+	if listed.IsError {
+		t.Errorf("list_risk_items was refused with no decision recorded: %s", text(t, listed))
+	}
+	list := decode[mcpserver.ListRiskItemsOutput](t, listed)
+	if len(list.Items) != len(r.items) {
+		t.Fatalf("got %d items, want %d", len(list.Items), len(r.items))
+	}
+
+	// The summary is the thing a model triages on, so every field it triages
+	// on has to be there and be right.
+	byID := map[string]mcpserver.RiskItemSummary{}
+	for _, summary := range list.Items {
+		byID[summary.ItemID] = summary
+	}
+	invoice := byID[r.invoiceItem()]
+	if invoice.Source != string(riskitem.SourceOverdueInvoice) {
+		t.Errorf("the invoice item lists source %q", invoice.Source)
+	}
+	if invoice.AmountDuePaise != 800000 || invoice.AmountPaise != 900000 {
+		t.Errorf("the invoice item lists %d due of %d", invoice.AmountDuePaise, invoice.AmountPaise)
+	}
+	if invoice.AgingDays != 10 {
+		t.Errorf("the invoice item has aged %d days, want 10", invoice.AgingDays)
+	}
+	if !invoice.HasContact {
+		t.Errorf("the invoice item reports no contact channel and it has two")
+	}
+	if invoice.HandleKind != riskitem.HandleKindInvoice {
+		t.Errorf("the invoice item lists handle kind %q, want %q", invoice.HandleKind, riskitem.HandleKindInvoice)
+	}
+	if unreachable := byID[r.noContactItem()]; unreachable.HasContact {
+		t.Errorf("the abandoned order reports a contact channel and it has none")
+	}
+
+	detailed := r.call(mcpserver.ToolGetRiskItem, map[string]any{"item_id": r.failedItem()})
+	if detailed.IsError {
+		t.Errorf("get_risk_item was refused with no decision recorded: %s", text(t, detailed))
+	}
+	detail := decode[mcpserver.RiskItemDetail](t, detailed)
+	if detail.ItemID != r.failedItem() {
+		t.Errorf("get_risk_item returned item %q, want %q", detail.ItemID, r.failedItem())
+	}
+	if detail.Signal.FailureReason != "payment_timed_out" {
+		t.Errorf("get_risk_item returned failure reason %q", detail.Signal.FailureReason)
+	}
+	if !slices.Equal(detail.Channels, []string{"email"}) {
+		t.Errorf("the failed payment lists channels %v, want [email]", detail.Channels)
+	}
+
+	if got := r.engine.count(); got != 0 {
+		t.Errorf("the read tools reached the intervention engine %d time(s)", got)
+	}
+}
+
+func TestNotifyItemAsksForTheMediumItWasGiven(t *testing.T) {
+	r := newRig(t, rigOptions{actionBudget: 10})
+	item := r.invoiceItem()
+	r.recordDecision(item, riskitem.ActionNotifySMS)
+
+	cases := []struct {
+		medium string
+		want   string
+	}{
+		{"email", riskitem.ActionNotifyEmail},
+		{"sms", riskitem.ActionNotifySMS},
+		{"SMS", riskitem.ActionNotifySMS},
+		{"", riskitem.ActionNotifyEmail},
+	}
+	for _, c := range cases {
+		args := map[string]any{"item_id": item}
+		if c.medium != "" {
+			args["medium"] = c.medium
+		}
+		out := decode[mcpserver.ActionOutput](t, r.call(mcpserver.ToolNotifyItem, args))
+		if out.Action != c.want {
+			t.Errorf("medium %q asked for action %q, want %q", c.medium, out.Action, c.want)
+		}
+	}
+
+	res := r.call(mcpserver.ToolNotifyItem, map[string]any{"item_id": item, "medium": "carrier_pigeon"})
+	if !res.IsError {
+		t.Errorf("an unknown medium was accepted: %s", text(t, res))
+	}
+
+	applied := r.engine.applied()
+	if len(applied) != len(cases) {
+		t.Fatalf("the engine saw %d applications, want %d", len(applied), len(cases))
+	}
+	for i, c := range cases {
+		if applied[i].action != c.want {
+			t.Errorf("application %d was %q, want %q", i, applied[i].action, c.want)
+		}
+	}
+}
+
+func TestCreatePaymentLinkPutsTheHandleOnTheItem(t *testing.T) {
+	r := newRig(t, rigOptions{actionBudget: 10})
+	item := r.failedItem()
+	r.recordDecision(item, riskitem.ActionCreatePaymentLink)
+
+	before := decode[mcpserver.RiskItemDetail](t, r.call(mcpserver.ToolGetRiskItem, map[string]any{"item_id": item}))
+	if before.HandleKind != riskitem.HandleKindNone {
+		t.Fatalf("the failed payment already carries a handle, so this test proves nothing")
+	}
+
+	out := decode[mcpserver.ActionOutput](t, r.call(mcpserver.ToolCreatePaymentLink, map[string]any{"item_id": item}))
+	if !out.Allowed || !out.Accepted {
+		t.Fatalf("create_payment_link_for_item did not go through: %+v", out)
+	}
+	if out.HandleID == "" || out.HandleURL == "" {
+		t.Fatalf("the link came back with no id or url: %+v", out)
+	}
+
+	// The item now carries what the engine minted, which is what makes the
+	// resend reachable at all.
+	after := decode[mcpserver.RiskItemDetail](t, r.call(mcpserver.ToolGetRiskItem, map[string]any{"item_id": item}))
+	if after.HandleKind != riskitem.HandleKindPaymentLink || after.HandleID != out.HandleID {
+		t.Errorf("the item carries handle %+v after the link was raised", after)
+	}
+
+	resend := decode[mcpserver.ActionOutput](t, r.call(mcpserver.ToolResendLink, map[string]any{"item_id": item}))
+	if !resend.Allowed || resend.Action != riskitem.ActionResendLink {
+		t.Errorf("resend_link_for_item did not go through on an item that now has a link: %+v", resend)
+	}
+}
+
+func TestLogPromiseRecordsItsTermsAndReachesNoGateway(t *testing.T) {
+	r := newRig(t, rigOptions{})
+	item := r.invoiceItem()
+	r.recordDecision(item, riskitem.ActionLogPromise)
+
+	const note = "their finance team pays on the twelfth of every month"
+	out := decode[mcpserver.ActionOutput](t, r.call(mcpserver.ToolLogPromise, map[string]any{
+		"item_id":     item,
+		"promised_at": "2026-09-12",
+		"days_hold":   7,
+		"note":        note,
+	}))
+	if !out.Allowed || !out.Accepted {
+		t.Fatalf("log_promise did not go through: %+v", out)
+	}
+
+	rows := r.rowsOfKind(audit.KindActionTaken)
+	if len(rows) != 1 {
+		t.Fatalf("got %d action rows for one promise, want 1", len(rows))
+	}
+	row := rows[0]
+	if row.Detail[mcpserver.DetailSideEffect] != "false" {
+		t.Errorf("a promise was recorded as a gateway side effect")
+	}
+	if row.Detail[mcpserver.DetailDaysHold] != "7" {
+		t.Errorf("the promise row carries days_hold %q, want 7", row.Detail[mcpserver.DetailDaysHold])
+	}
+	if row.Detail[mcpserver.DetailPromiseNote] != note {
+		t.Errorf("the promise row carries note %q, want %q", row.Detail[mcpserver.DetailPromiseNote], note)
+	}
+	if !strings.HasPrefix(row.Detail[mcpserver.DetailPromisedAt], "2026-09-12") {
+		t.Errorf("the promise row carries promised_at %q", row.Detail[mcpserver.DetailPromisedAt])
+	}
+
+	// The terms are the row. A promise with no date, no note, or a hold that
+	// runs backwards is not one.
+	for _, bad := range []map[string]any{
+		{"item_id": item, "promised_at": "", "note": note},
+		{"item_id": item, "promised_at": "next tuesday", "note": note},
+		{"item_id": item, "promised_at": "2026-09-12", "note": "  "},
+		{"item_id": item, "promised_at": "2026-09-12", "days_hold": -3, "note": note},
+	} {
+		if res := r.call(mcpserver.ToolLogPromise, bad); !res.IsError {
+			t.Errorf("log_promise accepted %v: %s", bad, text(t, res))
+		}
+	}
+}
+
+func TestEscalateItemIsRecordedAsAnEscalationNotAFailure(t *testing.T) {
+	r := newRig(t, rigOptions{})
+	item := r.noContactItem()
+	r.recordDecision(item, riskitem.ActionEscalate)
+
+	const reason = "there is no way to reach this customer and the order was never attempted"
+	out := decode[mcpserver.ActionOutput](t, r.call(mcpserver.ToolEscalateItem, map[string]any{
+		"item_id": item,
+		"reason":  reason,
+	}))
+	if !out.Allowed {
+		t.Fatalf("escalate_item was refused: %+v", out)
+	}
+
+	tally := r.server.Tally(item)
+	if !tally.Escalated {
+		t.Errorf("the tally does not record the escalation: %+v", tally)
+	}
+	if tally.SideEffect {
+		t.Errorf("an escalation was recorded as a gateway side effect: %+v", tally)
+	}
+	if tally.ActionKind != riskitem.ActionEscalate {
+		t.Errorf("the tally's action kind is %q, want %q", tally.ActionKind, riskitem.ActionEscalate)
+	}
+
+	rows := r.rowsOfKind(audit.KindActionTaken)
+	if len(rows) != 1 {
+		t.Fatalf("got %d action rows for one escalation, want 1", len(rows))
+	}
+	if rows[0].Detail[mcpserver.DetailEscalationReason] != reason {
+		t.Errorf("the escalation row carries reason %q, want %q",
+			rows[0].Detail[mcpserver.DetailEscalationReason], reason)
+	}
+
+	if res := r.call(mcpserver.ToolEscalateItem, map[string]any{"item_id": item, "reason": "  "}); !res.IsError {
+		t.Errorf("an escalation with no reason was accepted: %s", text(t, res))
+	}
+}
+
+// TestAnEngineRefusalIsAnAllowedCallThatDidNothing pins the gap between the
+// two layers and the third thing, which is the engine's own judgment.
+//
+// The frozen contract says an Intervention refuses rather than guesses when it
+// is asked to notify an item with no contact channel. The policy has nothing
+// to say about that and should not: it is not a rule, it is the absence of an
+// address. So the call is allowed, nothing is sent, and the row says both.
+func TestAnEngineRefusalIsAnAllowedCallThatDidNothing(t *testing.T) {
+	r := newRig(t, rigOptions{})
+	item := r.noContactItem()
+	r.recordDecision(item, riskitem.ActionNotifyEmail)
+
+	r.engine.setOutcome(func(_ riskitem.RiskItem, action string) (riskitem.Outcome, error) {
+		return riskitem.Outcome{
+			Action:   action,
+			Accepted: false,
+			Err:      "the item has no contact channel, so there is nowhere to send anything",
+			At:       runInstant,
+		}, nil
+	})
+
+	out := decode[mcpserver.ActionOutput](t, r.call(mcpserver.ToolNotifyItem, map[string]any{
+		"item_id": item,
+		"medium":  "email",
+	}))
+	if !out.Allowed {
+		t.Errorf("the gate refused a call the policy allowed: %+v", out)
+	}
+	if out.Accepted {
+		t.Errorf("a refused notification came back accepted: %+v", out)
+	}
+	if out.Error == "" {
+		t.Errorf("a refused notification came back with no reason: %+v", out)
+	}
+
+	rows := r.rowsOfKind(audit.KindActionSkipped)
+	if len(rows) != 1 {
+		t.Fatalf("got %d action_skipped rows, want 1", len(rows))
+	}
+	if rows[0].Detail[mcpserver.DetailSideEffect] != "false" {
+		t.Errorf("a refused notification was recorded as a side effect")
+	}
+	if rows[0].Detail[mcpserver.DetailAccepted] != "false" {
+		t.Errorf("a refused notification was recorded as accepted")
+	}
+
+	tally := r.server.Tally(item)
+	if tally.ActionKind != riskitem.ActionDoNothing {
+		t.Errorf("the tally names action %q for an item nothing happened to, want %q",
+			tally.ActionKind, riskitem.ActionDoNothing)
+	}
+}
+
+// TestTheActionRowCarriesTheDecisionThatWasOnTheRecord pins what M3 does and
+// what it does not do.
+//
+// It requires a decision to exist, not to name the action about to run, and
+// the two-step link flow is why: a decision of notify_email is carried out by
+// raising a link and then sending it, and a gate that demanded equality would
+// refuse the first call and leave the decision unreachable. What stops that
+// from becoming a hole a compliance reviewer cannot see is the row: the action
+// that ran and the decision that was on the record are both on it, so an agent
+// that decides one thing and does another says so in the ledger.
+func TestTheActionRowCarriesTheDecisionThatWasOnTheRecord(t *testing.T) {
+	r := newRig(t, rigOptions{actionBudget: 10})
+	item := r.failedItem()
+	r.recordDecision(item, riskitem.ActionNotifyEmail)
+
+	// The link the decided notification needs. It is not the decided action,
+	// and it is allowed.
+	out := decode[mcpserver.ActionOutput](t, r.call(mcpserver.ToolCreatePaymentLink, map[string]any{"item_id": item}))
+	if !out.Allowed {
+		t.Fatalf("the step a decided notification needs was refused: %+v", out)
+	}
+
+	rows := r.rowsOfKind(audit.KindActionTaken)
+	if len(rows) != 1 {
+		t.Fatalf("got %d action rows, want 1", len(rows))
+	}
+	row := rows[0]
+	if row.ProposedAction != riskitem.ActionCreatePaymentLink {
+		t.Errorf("the row names action %q, want the action that ran", row.ProposedAction)
+	}
+	if row.Detail[mcpserver.DetailChosenAction] != riskitem.ActionNotifyEmail {
+		t.Errorf("the row carries decision %q, want the one on the record (%q)",
+			row.Detail[mcpserver.DetailChosenAction], riskitem.ActionNotifyEmail)
+	}
+}
+
+// TestThePolicySeesTheItemAndNotTheTool checks what crosses the evaluator
+// seam. The policy is handed the item id, an action, an amount, and a class,
+// and nothing about which tool asked.
+func TestThePolicySeesTheItemAndNotTheTool(t *testing.T) {
+	r := newRig(t, rigOptions{})
+	item := r.invoiceItem()
+	r.recordDecision(item, riskitem.ActionNotifyEmail)
+	r.call(mcpserver.ToolNotifyItem, map[string]any{"item_id": item, "medium": "email"})
+
+	reqs := r.evaluator.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("the policy was consulted %d times for one action, want 1", len(reqs))
+	}
+	req := reqs[0]
+	if req.RiskItemID != item {
+		t.Errorf("the policy was asked about %q, want the risk item id %q", req.RiskItemID, item)
+	}
+	if req.Source != string(riskitem.SourceOverdueInvoice) {
+		t.Errorf("the policy was told source %q", req.Source)
+	}
+	// The action crossing the seam is the frozen one, not a tool name and not
+	// a translation of one.
+	if req.Action != riskitem.ActionNotifyEmail {
+		t.Errorf("the policy was asked about action %q, want %q", req.Action, riskitem.ActionNotifyEmail)
+	}
+	// Both amounts cross, because the rule that weighs them wants what is
+	// still due and a reviewer wants to see the whole debt next to it.
+	if req.AmountDuePaise != 800000 || req.AmountPaise != 900000 {
+		t.Errorf("the policy was handed %d due of %d", req.AmountDuePaise, req.AmountPaise)
+	}
+	if !req.HasEmail || !req.HasContact {
+		t.Errorf("the policy was told this item has channels email=%v sms=%v", req.HasEmail, req.HasContact)
+	}
+	if req.TouchNo != 1 {
+		t.Errorf("the first contact on an item was touch %d", req.TouchNo)
+	}
+	if req.AtRiskSince.IsZero() {
+		t.Errorf("the policy was handed no aging, so the grace-period rule has nothing to read")
+	}
+}
+
+// TestTheTouchCountRisesWithEveryContact is the input R1 caps.
+//
+// It is asserted here because the count does not come from the store: see the
+// note in act. A contact that the policy refused, and one the intervention
+// engine declined, both cost nothing, because neither reached a customer.
+func TestTheTouchCountRisesWithEveryContact(t *testing.T) {
+	r := newRig(t, rigOptions{actionBudget: 10})
+	item := r.invoiceItem()
+	r.recordDecision(item, riskitem.ActionNotifyEmail)
+
+	for range 3 {
+		r.call(mcpserver.ToolNotifyItem, map[string]any{"item_id": item, "medium": "email"})
+	}
+	// A promise reaches nobody, so it is not a touch.
+	r.call(mcpserver.ToolLogPromise, argumentsFor(t, mcpserver.ToolLogPromise, item))
+
+	// And one the engine declines is not one either.
+	r.engine.setOutcome(func(_ riskitem.RiskItem, action string) (riskitem.Outcome, error) {
+		return riskitem.Outcome{Action: action, Accepted: false, Err: "declined", At: runInstant}, nil
+	})
+	r.call(mcpserver.ToolNotifyItem, map[string]any{"item_id": item, "medium": "email"})
+
+	var touches []int
+	for _, req := range r.evaluator.requests() {
+		touches = append(touches, req.TouchNo)
+	}
+	if want := []int{1, 2, 3, 4, 4}; !slices.Equal(touches, want) {
+		t.Errorf("the policy saw touch numbers %v, want %v", touches, want)
+	}
+}
+
+// TestTheFactsProviderReachesThePolicy pins the third seam: what the item does
+// not carry still gets to the rules that read it.
+func TestTheFactsProviderReachesThePolicy(t *testing.T) {
+	hold := runInstant.Add(48 * time.Hour)
+	r := newRig(t, rigOptions{facts: &stubFacts{facts: policy.Facts{
+		PromiseHoldUntil: hold,
+		Disputed:         true,
+		SourceStatus:     "cancelled",
+	}}})
+	item := r.invoiceItem()
+	r.recordDecision(item, riskitem.ActionNotifyEmail)
+	r.call(mcpserver.ToolNotifyItem, map[string]any{"item_id": item, "medium": "email"})
+
+	reqs := r.evaluator.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("the policy was consulted %d times, want 1", len(reqs))
+	}
+	req := reqs[0]
+	if !req.PromiseHoldUntil.Equal(hold) {
+		t.Errorf("the policy was handed hold %v, want %v", req.PromiseHoldUntil, hold)
+	}
+	if !req.Disputed {
+		t.Errorf("the policy was not told the item is disputed")
+	}
+	if req.SourceStatus != "cancelled" {
+		t.Errorf("the policy was handed source status %q", req.SourceStatus)
+	}
+	// The provider said nothing about the touch number, so the server filled
+	// it in rather than handing the policy a zero.
+	if req.TouchNo != 1 {
+		t.Errorf("the policy was handed touch %d, want 1", req.TouchNo)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Layer (c): the parallel-call race
+// ---------------------------------------------------------------------------
+
+func TestConcurrentActionToolCallsCannotBothSpendTheNotifyWindow(t *testing.T) {
+	// The race internal/store's doc comment describes, reachable for the first
+	// time on the MCP surface: a client can issue tool calls in parallel, and
+	// snapshot, evaluate, and commit are three separate lock acquisitions.
+	//
+	// The policy here is the shape of R6 and nothing else: one notification per
+	// item per window, read off the LastNotifyAt the store handed it. Eight
+	// callers ask at once. Without the lock in Server.act they all snapshot a
+	// zero LastNotifyAt, all pass, and all eight reach the intervention engine.
+	r := newRig(t, rigOptions{actionBudget: 100})
+	item := r.invoiceItem()
+	r.recordDecision(item, riskitem.ActionNotifyEmail)
+
+	r.evaluator.set(func(state policy.State, req policy.Request) policy.Decision {
+		d := policy.Decision{IdempotencyKey: policy.IdempotencyKey(req.OrderID, req.Action, req.AttemptNo)}
+		if !state.LastNotifyAt.IsZero() {
+			d.Verdict, d.RuleID = policy.VerdictDeny, policy.RuleNotifyRate
+			d.Reason = "this item has already been notified inside the window"
+			return d
+		}
+		d.Verdict, d.RuleID = policy.VerdictAllow, policy.RuleAllow
+		d.Reason = "no notification has gone out on this item yet"
+		return d
+	})
+
+	// A delay inside the engine widens the window between the snapshot and the
+	// commit, so the callers actually overlap inside it rather than merely
+	// being launched together. Without it this test is a probabilistic
+	// detector, and a test that usually passes against the bug it exists for is
+	// a test nobody can act on.
+	r.engine.setDelay(25 * time.Millisecond)
+
 	const callers = 8
 	start := make(chan struct{})
 	var ready, done sync.WaitGroup
@@ -1220,8 +1494,8 @@ func TestConcurrentActionToolCallsCannotBothPassTheAttemptCap(t *testing.T) {
 			// allowed. A transport error is picked up by the assertions below
 			// instead.
 			_, _ = r.session.CallTool(t.Context(), &mcp.CallToolParams{
-				Name:      mcpserver.ToolRetryPayment,
-				Arguments: map[string]any{"order_id": order},
+				Name:      mcpserver.ToolNotifyItem,
+				Arguments: map[string]any{"item_id": item, "medium": "email"},
 			})
 		}()
 	}
@@ -1229,8 +1503,78 @@ func TestConcurrentActionToolCallsCannotBothPassTheAttemptCap(t *testing.T) {
 	close(start)
 	done.Wait()
 
-	if got := r.attempter.count(); got != 1 {
-		t.Errorf("%d payment attempts reached the gateway from %d concurrent callers, want 1: "+
-			"the order had 1 of its %d permitted attempts", got, callers, cap)
+	if got := r.engine.count(); got != 1 {
+		t.Errorf("%d notifications reached the intervention engine from %d concurrent callers, want 1",
+			got, callers)
+	}
+	if got := r.evaluator.count(); got != callers {
+		t.Errorf("the policy was consulted %d times for %d calls, want one evaluation each", got, callers)
+	}
+
+	// And the seven that were refused are on the record as refusals, which is
+	// what makes the containment count computable rather than inferred.
+	refused := 0
+	for _, row := range r.rowsOfKind(audit.KindActionSkipped) {
+		if row.PolicyRule == policy.RuleNotifyRate {
+			refused++
+		}
+	}
+	if refused != callers-1 {
+		t.Errorf("%d refusals are on the record, want %d", refused, callers-1)
+	}
+}
+
+// TestTheActionPathHoldsOneLockAcrossTheWholeDecision is the same property in
+// the small: the lock is not per store call, it spans the sequence.
+//
+// It is here because the barrier test above can only ever observe the outcome
+// of the race, and a future refactor that split the lock would keep that test
+// green whenever the timing was kind. This one fails on the structure: while
+// one action is inside the engine, a second caller cannot have reached its own
+// evaluation.
+func TestTheActionPathHoldsOneLockAcrossTheWholeDecision(t *testing.T) {
+	r := newRig(t, rigOptions{actionBudget: 10})
+	item := r.invoiceItem()
+	r.recordDecision(item, riskitem.ActionNotifyEmail)
+
+	var mu sync.Mutex
+	var inside bool
+	var overlaps int
+	r.engine.setOutcome(func(it riskitem.RiskItem, action string) (riskitem.Outcome, error) {
+		mu.Lock()
+		if inside {
+			overlaps++
+		}
+		inside = true
+		evaluations := r.evaluator.count()
+		mu.Unlock()
+
+		time.Sleep(10 * time.Millisecond)
+
+		mu.Lock()
+		if r.evaluator.count() != evaluations {
+			overlaps++
+		}
+		inside = false
+		mu.Unlock()
+		return defaultOutcome(it, action)
+	})
+
+	const callers = 4
+	var done sync.WaitGroup
+	done.Add(callers)
+	for range callers {
+		go func() {
+			defer done.Done()
+			_, _ = r.session.CallTool(t.Context(), &mcp.CallToolParams{
+				Name:      mcpserver.ToolLogPromise,
+				Arguments: argumentsFor(t, mcpserver.ToolLogPromise, item),
+			})
+		}()
+	}
+	done.Wait()
+
+	if overlaps != 0 {
+		t.Errorf("%d action(s) evaluated the policy while another action was still running", overlaps)
 	}
 }
