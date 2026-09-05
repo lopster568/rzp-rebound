@@ -52,6 +52,12 @@ type Options struct {
 
 	// DetectConfig bounds the sweep and sets the detector's own grace period.
 	DetectConfig detect.Config
+	// SinceSource says in plain words where DetectConfig.Since came from: the
+	// operator's flag, or the manifest's created_at less a skew margin, or
+	// neither. The floor itself is a number the caller derived, and a number
+	// with no derivation beside it cannot be reproduced. Empty is recorded as
+	// SinceSourceUnrecorded.
+	SinceSource string
 	// PolicyConfig is the gate's settings. The zero value is the standard
 	// policy.
 	PolicyConfig policy.Config
@@ -138,6 +144,11 @@ func Run(ctx context.Context, opts Options) (Summary, error) {
 	summary.ManifestItems = len(opts.Manifest.Items)
 	summary.KillSwitch = opts.KillSwitch
 	summary.DetectGrace = detectGrace(opts.DetectConfig).String()
+	summary.SweepSince = opts.DetectConfig.Since
+	summary.SweepSinceSource = opts.SinceSource
+	if summary.SweepSinceSource == "" {
+		summary.SweepSinceSource = SinceSourceUnrecorded
+	}
 	summary.AgeSource = AgeSourceGateway
 	if opts.SimulateAge {
 		summary.AgeSource = AgeSourceManifest

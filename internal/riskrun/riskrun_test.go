@@ -743,3 +743,53 @@ func TestTheSummaryRecordsThePolicyTheRunActuallyRanUnder(t *testing.T) {
 			standard.Policy.ContactWindow, quiet.DefaultWindow())
 	}
 }
+
+// TestTheSummaryRecordsTheSweepFloorItRanUnder. The floor decides which items
+// the run could see at all, and zero means an unscoped sweep, so the number
+// alone says nothing. A reader who cannot re-derive the scope cannot reproduce
+// the run.
+func TestTheSummaryRecordsTheSweepFloorItRanUnder(t *testing.T) {
+	run := func(t *testing.T, cfg detect.Config, source string) Summary {
+		t.Helper()
+		var ledger, results bytes.Buffer
+		recorder, err := audit.NewRecorder(audit.Options{Writer: &ledger, Clock: clock.NewFake(fixtureBase.Add(time.Hour))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		summary, err := Run(context.Background(), Options{
+			Manifest:     loadFixture(t),
+			ManifestPath: "testdata/manifest.json",
+			RunTag:       "test",
+			DryRun:       true,
+			SimulateAge:  true,
+			DetectConfig: cfg,
+			SinceSource:  source,
+			Clock:        clock.NewFake(fixtureBase.Add(time.Hour)),
+			Recorder:     recorder,
+			Results:      &results,
+		})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return summary
+	}
+
+	const floor = int64(1757060000)
+	summary := run(t, detect.Config{Since: floor}, "the -since flag")
+	if summary.SweepSince != floor {
+		t.Errorf("sweep_since = %d, want %d", summary.SweepSince, floor)
+	}
+	if summary.SweepSinceSource != "the -since flag" {
+		t.Errorf("sweep_since_source = %q, want the derivation the caller gave", summary.SweepSinceSource)
+	}
+
+	// An unscoped sweep with no derivation beside it is a gap, and it says so
+	// rather than leaving a blank a reader would take for a deliberate choice.
+	unscoped := run(t, detect.Config{}, "")
+	if unscoped.SweepSince != 0 {
+		t.Errorf("sweep_since = %d, want 0", unscoped.SweepSince)
+	}
+	if unscoped.SweepSinceSource != SinceSourceUnrecorded {
+		t.Errorf("sweep_since_source = %q, want %q", unscoped.SweepSinceSource, SinceSourceUnrecorded)
+	}
+}

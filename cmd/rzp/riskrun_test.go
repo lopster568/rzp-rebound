@@ -2,6 +2,7 @@ package main
 
 import (
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,26 +89,45 @@ func TestRiskRunSinceDefaultsToTheManifestCreatedAt(t *testing.T) {
 	manifest := seed.Manifest{CreatedAt: created}
 
 	want := created.Add(-sinceSkewMargin).Unix()
-	if got := sinceFor(parse(t), manifest); got != want {
+	got, source := sinceFor(parse(t), manifest)
+	if got != want {
 		t.Errorf("with no -since, sinceFor = %d, want the manifest's created_at less the skew margin %d", got, want)
+	}
+	// The derivation travels with the number, because zero is a meaningful
+	// value and a floor a reader cannot re-derive is a sweep scope a reader
+	// cannot check.
+	if !strings.Contains(source, "created_at") || !strings.Contains(source, sinceSkewMargin.String()) {
+		t.Errorf("the manifest default described itself as %q, which names neither created_at nor the skew margin", source)
 	}
 
 	// An explicit 0 is a real answer and it means an unscoped sweep. It has to
 	// beat the manifest default, or a run over an account with older debt could
 	// not ask for the whole book.
-	if got := sinceFor(parse(t, "-since", "0"), manifest); got != 0 {
+	got, source = sinceFor(parse(t, "-since", "0"), manifest)
+	if got != 0 {
 		t.Errorf("with an explicit -since 0, sinceFor = %d, want 0", got)
+	}
+	if !strings.Contains(source, "-since") {
+		t.Errorf("an explicit -since 0 described itself as %q, which does not name the flag", source)
 	}
 
 	// A named floor wins over both.
-	if got := sinceFor(parse(t, "-since", "1700000000"), manifest); got != 1700000000 {
+	got, source = sinceFor(parse(t, "-since", "1700000000"), manifest)
+	if got != 1700000000 {
 		t.Errorf("with -since 1700000000, sinceFor = %d, want 1700000000", got)
+	}
+	if !strings.Contains(source, "-since") {
+		t.Errorf("a named floor described itself as %q, which does not name the flag", source)
 	}
 
 	// A manifest with no created_at, which is what a hand-written fixture has,
 	// leaves the sweep unscoped rather than pinning it to 1970.
-	if got := sinceFor(parse(t), seed.Manifest{}); got != 0 {
+	got, source = sinceFor(parse(t), seed.Manifest{})
+	if got != 0 {
 		t.Errorf("with a manifest carrying no created_at, sinceFor = %d, want 0", got)
+	}
+	if source == "" || !strings.Contains(source, "unscoped") {
+		t.Errorf("an unscoped sweep described itself as %q", source)
 	}
 }
 

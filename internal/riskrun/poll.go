@@ -61,6 +61,21 @@ type SnapshotEntry struct {
 	// an entity that could not be read is not an entity that is settled, and
 	// dropping it would let a delta count it as paid.
 	Error string `json:"error,omitempty"`
+	// DuplicateOf names the entry that already carries this debt's amounts.
+	//
+	// An issued invoice and the order Razorpay minted for it are one debt under
+	// two ids, and both report the same three amounts. Summing both is how a
+	// book worth INR 28338 read as INR 56676 gross on 2026-09-05, and it would
+	// have reported a single paid invoice at twice its value in the delta.
+	//
+	// The amounts stay on the entry, because every amount in a snapshot is
+	// Razorpay's own and blanking one would make the file disagree with the
+	// gateway. What changes is that the totals and the money half of Diff skip
+	// an entry carrying this field, so the debt is counted exactly once, on the
+	// invoice. The order entry is still read, still shown, and still compared
+	// for a status change, because created to paid on the order is the
+	// transition a demo points at.
+	DuplicateOf string `json:"duplicate_of,omitempty"`
 }
 
 // Snapshot is every manifest entity as Razorpay reported it at one instant.
@@ -74,13 +89,49 @@ type Snapshot struct {
 	ManifestPath   string          `json:"manifest_path"`
 	ManifestRunTag string          `json:"manifest_run_tag,omitempty"`
 	Entries        []SnapshotEntry `json:"entries"`
-	Totals         SnapshotTotals  `json:"totals"`
+	// Skipped names the manifest items this snapshot could not ask Razorpay
+	// about, one line each. They are listed rather than dropped: a seed run
+	// that stopped partway leaves items with no gateway id on them, and a
+	// snapshot that silently read fewer entities than the manifest holds is a
+	// file that looks complete.
+	Skipped []SkippedItem  `json:"skipped,omitempty"`
+	Totals  SnapshotTotals `json:"totals"`
 }
 
-// SnapshotTotals sums the entries, and counts the ones that could not be read.
+// SkippedItem is one manifest item no read was made for, and why.
+type SkippedItem struct {
+	Kind string `json:"kind"`
+	// CustomerID is the one id an incomplete invoice item does carry, when the
+	// seeder created the customer and stopped before the invoice. It is here so
+	// the operator can find what exists in Razorpay.
+	CustomerID string `json:"customer_id,omitempty"`
+	Reason     string `json:"reason"`
+}
+
+// Reasons a manifest item is skipped.
+const (
+	// SkipNoID is an item the seed run never got an id for, which is what an
+	// item marked seed.Item.Incomplete looks like.
+	SkipNoID = "the manifest item carries no gateway id, so the seed run never created it"
+	// SkipUnknownKind is an item whose kind this snapshot has no fetch for.
+	SkipUnknownKind = "the manifest item has a kind this snapshot cannot read"
+)
+
+// SnapshotTotals sums the entries, and counts the ones that could not be read
+// and the ones whose amounts belong to a debt another entry already carries.
+//
+// The three amount fields are summed over the entries that are neither, so the
+// gross is what the book is worth rather than what its ids add up to.
 type SnapshotTotals struct {
-	Entries         int   `json:"entries"`
-	Errors          int   `json:"errors"`
+	Entries int `json:"entries"`
+	Errors  int `json:"errors"`
+	// Duplicates is how many entries carry DuplicateOf and were therefore left
+	// out of the three sums below.
+	Duplicates int `json:"duplicates"`
+	// Skipped is how many manifest items produced no read at all. It is the
+	// length of Snapshot.Skipped, carried here so a reader comparing Entries
+	// against the manifest's item count has the difference in the same block.
+	Skipped         int   `json:"skipped"`
 	AmountPaise     int64 `json:"amount_paise"`
 	AmountPaidPaise int64 `json:"amount_paid_paise"`
 	AmountDuePaise  int64 `json:"amount_due_paise"`
@@ -104,10 +155,17 @@ type PollOptions struct {
 //
 // An invoice contributes two reads, the invoice and the order it minted,
 // because they are two different answers about one debt: the invoice carries
-// the notification-status fields and the order is what a payment lands on. A
-// read that fails leaves an entry carrying the error rather than no entry at
-// all, and the run carries on, because a snapshot that stopped at the first
-// unreadable entity would be a partial file that looks complete.
+// the notification-status fields and the order is what a payment lands on. The
+// order entry is marked DuplicateOf the invoice for exactly that reason, so the
+// debt reaches the totals once. A read that fails leaves an entry carrying the
+// error rather than no entry at all, and the run carries on, because a snapshot
+// that stopped at the first unreadable entity would be a partial file that
+// looks complete.
+//
+// A manifest item with no gateway id on it produces no read and a line in
+// Skipped instead. That is what a seed run which stopped partway leaves behind,
+// and dropping it silently is how a snapshot comes to hold fewer entities than
+// the manifest it names without saying so.
 func Poll(ctx context.Context, api PollAPI, opts PollOptions) (Snapshot, error) {
 	if api == nil {
 		return Snapshot{}, fmt.Errorf("riskrun: a snapshot needs a Razorpay client")
@@ -133,25 +191,58 @@ func Poll(ctx context.Context, api PollAPI, opts PollOptions) (Snapshot, error) 
 		snapshot.Entries = append(snapshot.Entries, entry)
 	}
 
+	skip := func(kind, customerID, reason string) {
+		snapshot.Skipped = append(snapshot.Skipped, SkippedItem{Kind: kind, CustomerID: customerID, Reason: reason})
+	}
+
 	for _, item := range opts.Manifest.Items {
+		if item.ID == "" {
+			skip(string(item.Kind), item.CustomerID, SkipNoID)
+			continue
+		}
 		switch item.Kind {
 		case seed.EntityInvoice:
-			add(fetchInvoiceEntry(ctx, api, item.ID))
-			if item.OrderID != "" {
-				add(fetchOrderEntry(ctx, api, item.OrderID))
+			invoice := fetchInvoiceEntry(ctx, api, item.ID)
+			add(invoice)
+
+			// The order the invoice minted. Razorpay's own answer for which
+			// order that is comes off the invoice read; the manifest's copy is
+			// the fallback for an invoice that could not be read.
+			orderID := invoice.OrderID
+			if orderID == "" {
+				orderID = item.OrderID
 			}
+			if orderID == "" {
+				break
+			}
+			order := fetchOrderEntry(ctx, api, orderID)
+			// Only when the invoice read succeeded, because only then are the
+			// invoice's amounts in the totals. An unreadable invoice
+			// contributes nothing, so calling its order a duplicate of it would
+			// drop the debt from the snapshot entirely.
+			if invoice.Error == "" {
+				order.DuplicateOf = invoice.ID
+			}
+			add(order)
 		case seed.EntityOrder:
 			add(fetchOrderEntry(ctx, api, item.ID))
+		default:
+			skip(string(item.Kind), item.CustomerID, SkipUnknownKind)
 		}
 	}
 	for _, linkID := range slices.Sorted(slices.Values(opts.PaymentLinkIDs)) {
 		add(fetchPaymentLinkEntry(ctx, api, linkID))
 	}
 
+	snapshot.Totals.Skipped = len(snapshot.Skipped)
 	for _, entry := range snapshot.Entries {
 		snapshot.Totals.Entries++
 		if entry.Error != "" {
 			snapshot.Totals.Errors++
+			continue
+		}
+		if entry.DuplicateOf != "" {
+			snapshot.Totals.Duplicates++
 			continue
 		}
 		snapshot.Totals.AmountPaise += entry.AmountPaise
@@ -219,6 +310,10 @@ type Delta struct {
 	AmountDueChange  int64     `json:"amount_due_change_paise"`
 	EntriesCompared  int       `json:"entries_compared"`
 	EntriesUnmatched int       `json:"entries_unmatched"`
+	// EntriesDeduped is how many compared entries carried DuplicateOf, so their
+	// amounts were left out of the two money figures above. Their status
+	// changes are still in StatusChanges.
+	EntriesDeduped int `json:"entries_deduped"`
 	// StatusChanges names the entities whose status moved, oldest status
 	// first, as "id: before -> after".
 	StatusChanges []string `json:"status_changes,omitempty"`
@@ -235,6 +330,12 @@ type Delta struct {
 // An entity present in one snapshot and not the other, or unreadable in either,
 // is counted as unmatched and contributes nothing. A read that failed is not a
 // zero.
+//
+// An entry marked DuplicateOf is compared for its status but not for its money.
+// An issued invoice and the order it minted both report the same payment, so
+// summing both reports one customer paying one debt at twice its value. The
+// debt is counted on the invoice, which is the entry that also carries the
+// notification-status fields, and the order's status flip is still reported.
 func Diff(before, after Snapshot) Delta {
 	index := make(map[string]SnapshotEntry, len(before.Entries))
 	for _, entry := range before.Entries {
@@ -249,8 +350,15 @@ func Diff(before, after Snapshot) Delta {
 			continue
 		}
 		delta.EntriesCompared++
-		delta.RecoveredPaise += entry.AmountPaidPaise - earlier.AmountPaidPaise
-		delta.AmountDueChange += entry.AmountDuePaise - earlier.AmountDuePaise
+		// A duplicate is compared for its status and not for its money. The
+		// later snapshot is what decides: an entry that became a duplicate
+		// between two reads is one whose debt the invoice now carries.
+		if entry.DuplicateOf != "" || earlier.DuplicateOf != "" {
+			delta.EntriesDeduped++
+		} else {
+			delta.RecoveredPaise += entry.AmountPaidPaise - earlier.AmountPaidPaise
+			delta.AmountDueChange += entry.AmountDuePaise - earlier.AmountDuePaise
+		}
 		if earlier.Status != entry.Status {
 			delta.StatusChanges = append(delta.StatusChanges,
 				fmt.Sprintf("%s: %s -> %s", entry.ID, earlier.Status, entry.Status))

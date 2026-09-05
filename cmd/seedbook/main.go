@@ -12,8 +12,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/signal"
 	"strings"
@@ -47,12 +49,24 @@ func run(ctx context.Context, args []string) error {
 	dryRun := fs.Bool("dry-run", false, "print the plan and make no API calls")
 	callBudget := fs.Int("call-budget", seed.DefaultCallBudget, "refuse to make more than this many Razorpay calls in one run")
 	randSeed := fs.Int64("seed", 1234, "seed for the deterministic synthetic data: names, amounts, contacts")
+	pace := fs.Duration("pace", seed.DefaultPace,
+		"wait this long between creation calls; test mode answered 429 at about 1.9 writes per second on 2026-09-05, so a value small enough to be irrelevant, such as 1ns, is how a run takes the pacing off")
+	force := fs.Bool("force", false,
+		"seed a new book even though -out already holds a manifest, overwriting it; without this a run refuses rather than orphaning what the earlier manifest names")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), `usage: seedbook [flags]
 
 Seeds live Razorpay test-mode data for the risk-engine demo and writes a
 manifest recording it. Reads RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET from the
 environment; test-mode keys only.
+
+Creation calls are paced, because test mode answered 429 partway through an
+unpaced 27-call seed on 2026-09-05. The demo profile therefore takes about
+twenty seconds.
+
+If -out already holds an unfinished manifest, this continues that run under its
+own tag instead of seeding a second book beside it. A finished one is refused.
+-force overwrites either.
 
 flags:
 `)
@@ -71,12 +85,24 @@ flags:
 	if tag == "" {
 		tag = fmt.Sprintf("seedbook-%d", time.Now().UTC().Unix())
 	}
-
-	plan := seed.GeneratePlan(profile, tag, *randSeed)
+	tagSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "run-tag" {
+			tagSet = true
+		}
+	})
 
 	if *dryRun {
-		printPlan(plan, *callBudget)
+		printPlan(seed.GeneratePlan(profile, tag, *randSeed), *callBudget)
 		return nil
+	}
+
+	plan, resume, note, err := planFor(profile, tag, tagSet, *randSeed, *out, *force)
+	if err != nil {
+		return err
+	}
+	if note != "" {
+		fmt.Println(note)
 	}
 
 	cfg, err := config.Load()
@@ -95,9 +121,22 @@ flags:
 		return err
 	}
 
-	fmt.Printf("seedbook: seeding against Razorpay TEST MODE, run tag %s, profile %s\n\n", tag, profile.Name)
+	invoicesLeft, ordersLeft, err := plan.Remaining(resume)
+	if err != nil {
+		return err
+	}
+	calls := invoicesLeft*3 + ordersLeft
+	fmt.Printf("seedbook: seeding against Razorpay TEST MODE, run tag %s, profile %s\n", plan.RunTag, profile.Name)
+	// The pace and what it costs, said out loud, because a seeder that looks
+	// hung for half a minute is the next thing an operator would interrupt.
+	fmt.Printf("seedbook: %d call(s) to make, paced %s apart, so about %s\n\n",
+		calls, *pace, (time.Duration(max(calls-1, 0)) * *pace).Round(time.Second))
 
-	manifest, runErr := seed.ExecutePlan(ctx, client, plan, seed.RunOptions{CallBudget: *callBudget})
+	manifest, runErr := seed.ExecutePlan(ctx, client, plan, seed.RunOptions{
+		CallBudget: *callBudget,
+		Pace:       *pace,
+		Resume:     resume,
+	})
 	manifest.Profile = profile.Name
 
 	if writeErr := manifest.Write(*out); writeErr != nil {
@@ -113,6 +152,64 @@ flags:
 		return fmt.Errorf("the seed run stopped early; the manifest at %s records what it created before that: %w", *out, runErr)
 	}
 	return nil
+}
+
+// planFor decides which run tag this invocation seeds under and which earlier
+// manifest, if any, it continues, and returns the line to print about that
+// decision.
+//
+// The rule it exists for: a seed run that stopped partway leaves real invoices
+// and real orders in Razorpay, and a second `make seedbook` used to overwrite
+// the only file that named them. That happened twice on 2026-09-05 and orphaned
+// five invoices, five orders, and six customers, which then fell inside the
+// next risk run's sweep window with nothing in the manifest to explain them.
+//
+// So an unfinished manifest at -out is continued rather than replaced, under
+// its own run tag, unless the operator named a different one. A finished one is
+// refused, because seeding a second book over the file that names the first is
+// the same loss with a full manifest instead of a partial one. Both are
+// overridable with -force, which is the operator saying they know what is on
+// disk.
+func planFor(profile seed.Profile, tag string, tagSet bool, randSeed int64, out string, force bool) (seed.Plan, seed.Manifest, string, error) {
+	fresh := seed.GeneratePlan(profile, tag, randSeed)
+	if force {
+		return fresh, seed.Manifest{}, "", nil
+	}
+	if _, err := os.Stat(out); errors.Is(err, fs.ErrNotExist) {
+		return fresh, seed.Manifest{}, "", nil
+	} else if err != nil {
+		return seed.Plan{}, seed.Manifest{}, "", fmt.Errorf("check whether %s already holds a manifest: %w", out, err)
+	}
+
+	prior, err := seed.ReadManifest(out)
+	if err != nil {
+		return seed.Plan{}, seed.Manifest{}, "", fmt.Errorf("%w\n%s exists but could not be read as a manifest. Move it aside, choose another -out, or pass -force to overwrite it", err, out)
+	}
+
+	// The prior run's own tag, unless the operator named one. Adopting it is
+	// what makes the plan the same plan, which is what makes continuing it safe.
+	planTag := tag
+	if !tagSet && prior.RunTag != "" {
+		planTag = prior.RunTag
+	}
+	plan := seed.GeneratePlan(profile, planTag, randSeed)
+
+	invoicesLeft, ordersLeft, err := plan.Remaining(prior)
+	if err != nil {
+		return seed.Plan{}, seed.Manifest{}, "", fmt.Errorf(
+			"%s holds a manifest this run cannot continue (%w).\nIt records run tag %q with %d item(s). Move it aside, choose another -out, or pass -force to overwrite it",
+			out, err, prior.RunTag, len(prior.Items))
+	}
+	if invoicesLeft == 0 && ordersLeft == 0 {
+		return seed.Plan{}, seed.Manifest{}, "", fmt.Errorf(
+			"%s already records a complete run: tag %q, %d item(s).\nSeeding over it would leave those in Razorpay with nothing naming them. Choose another -out, or pass -force to overwrite it",
+			out, prior.RunTag, len(prior.Items))
+	}
+
+	note := fmt.Sprintf(
+		"seedbook: %s holds an unfinished run, tag %s, with %d item(s) created.\nseedbook: continuing that run rather than seeding a second book: %d invoice(s) and %d order(s) left.\nseedbook: pass -force to overwrite it instead, or -out to write a new book elsewhere.\n",
+		out, prior.RunTag, len(prior.Items), invoicesLeft, ordersLeft)
+	return plan, prior, note, nil
 }
 
 // printPlan is what -dry-run prints: what would be created, and nothing more.
@@ -147,12 +244,22 @@ func printSummary(m seed.Manifest, outPath string) {
 	fmt.Printf("run tag       %s\n", m.RunTag)
 	fmt.Printf("profile       %s\n", m.Profile)
 	fmt.Printf("gateway       %s\n", m.Gateway)
-	fmt.Printf("calls used    %d / %d\n\n", m.CallsUsed, m.CallBudget)
+	fmt.Printf("calls used    %d / %d\n", m.CallsUsed, m.CallBudget)
+	if m.ResumedItems > 0 {
+		fmt.Printf("resumed       %d item(s) carried over from an earlier attempt at this run tag\n", m.ResumedItems)
+	}
+	fmt.Println()
 
 	fmt.Println("seeded:")
 	for _, item := range m.Items {
+		id := item.ID
+		if item.Incomplete {
+			// No id exists to print. Naming the customer is the only handle
+			// there is on what this item did leave in Razorpay.
+			id = "(not created, customer " + item.CustomerID + ")"
+		}
 		fmt.Printf("  %-8s %-16s age=%-6s %-10s %s\n",
-			item.Kind, item.ID, item.AgeBucket, formatPaise(item.AmountPaise), describeFlags(item.Flags))
+			item.Kind, id, item.AgeBucket, formatPaise(item.AmountPaise), describeFlags(item.Flags))
 	}
 	fmt.Printf("\nmanifest      %s\n\n", outPath)
 

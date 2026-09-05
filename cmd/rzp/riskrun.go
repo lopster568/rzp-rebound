@@ -134,7 +134,8 @@ flags:
 // stale debt the floor exists to exclude, so it costs the scoping nothing.
 const sinceSkewMargin = time.Hour
 
-// sinceFor is the created_at floor the sweep runs with.
+// sinceFor is the created_at floor the sweep runs with, and the plain-words
+// account of where it came from that goes in the summary beside it.
 //
 // An operator who named one gets it, including an explicit 0, which means an
 // unscoped sweep. Otherwise the manifest's own created_at, less the skew margin,
@@ -143,14 +144,24 @@ const sinceSkewMargin = time.Hour
 // payment links against weeks-old debt nobody intended to chase. A manifest with
 // no created_at, which is what a hand-written fixture has, leaves the sweep
 // unscoped.
-func sinceFor(cfg riskRunConfig, manifest seed.Manifest) int64 {
+//
+// The second return value exists because the number alone cannot be reproduced.
+// Zero means an unscoped sweep whether the operator asked for one or the
+// manifest had no clock reading, and a floor a reader cannot re-derive is a
+// sweep scope a reader cannot check.
+func sinceFor(cfg riskRunConfig, manifest seed.Manifest) (int64, string) {
 	if cfg.sinceSet {
-		return cfg.since
+		if cfg.since == 0 {
+			return 0, "the -since flag, set to 0 for an unscoped sweep"
+		}
+		return cfg.since, "the -since flag"
 	}
 	if manifest.CreatedAt.IsZero() {
-		return 0
+		return 0, "unscoped: no -since flag and the manifest carries no created_at"
 	}
-	return manifest.CreatedAt.Add(-sinceSkewMargin).Unix()
+	return manifest.CreatedAt.Add(-sinceSkewMargin).Unix(),
+		fmt.Sprintf("the manifest's created_at (%s) less a %s skew margin",
+			manifest.CreatedAt.UTC().Format(time.RFC3339), sinceSkewMargin)
 }
 
 // riskPolicyConfig is the gate's settings as the flags asked for them.
@@ -230,6 +241,7 @@ func runRiskRun(ctx context.Context, args []string) (runErr error) {
 		return err
 	}
 
+	since, sinceSource := sinceFor(cfg, manifest)
 	opts := riskrun.Options{
 		Manifest:     manifest,
 		ManifestPath: cfg.manifestPath,
@@ -242,9 +254,10 @@ func runRiskRun(ctx context.Context, args []string) (runErr error) {
 			PageSize: cfg.pageSize,
 			MaxPages: cfg.maxPages,
 			Grace:    cfg.detectGrace,
-			Since:    sinceFor(cfg, manifest),
+			Since:    since,
 			Clock:    runClock,
 		},
+		SinceSource:  sinceSource,
 		PolicyConfig: riskPolicyConfig(cfg),
 		Clock:        runClock,
 		Recorder:     recorder,

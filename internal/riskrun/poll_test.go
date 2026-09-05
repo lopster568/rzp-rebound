@@ -3,6 +3,7 @@ package riskrun
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -96,6 +97,9 @@ func TestPollReadsEveryManifestEntityAndTheLinksARunCreated(t *testing.T) {
 	if snapshot.Totals.Errors != 0 {
 		t.Errorf("%d entries could not be read", snapshot.Totals.Errors)
 	}
+	if snapshot.Totals.Duplicates != 1 {
+		t.Errorf("%d duplicate(s), want 1: the order inv_1 minted", snapshot.Totals.Duplicates)
+	}
 	if snapshot.ManifestRunTag != "poll" {
 		t.Errorf("manifest run tag = %q", snapshot.ManifestRunTag)
 	}
@@ -164,20 +168,160 @@ func TestDiffIsTheRiseInWhatTheGatewayReportsCollected(t *testing.T) {
 	}
 
 	delta := Diff(before, after)
-	// The invoice and the order it minted both report the payment, so one
-	// customer paying one debt moves the sum twice. That is what the two reads
-	// say, and a reader of the snapshot pair can see both rows.
-	if delta.RecoveredPaise != 200000 {
-		t.Errorf("recovered = %d paise, want 200000 across the invoice and its order", delta.RecoveredPaise)
+	// The invoice and the order it minted both report the payment. It is one
+	// debt, so it moves the sum once, on the invoice.
+	if delta.RecoveredPaise != 100000 {
+		t.Errorf("recovered = %d paise, want the 100000 the one debt is worth", delta.RecoveredPaise)
 	}
-	if delta.AmountDueChange != -200000 {
-		t.Errorf("amount due change = %d, want -200000", delta.AmountDueChange)
+	if delta.AmountDueChange != -100000 {
+		t.Errorf("amount due change = %d, want -100000", delta.AmountDueChange)
 	}
 	if delta.EntriesCompared != 3 {
 		t.Errorf("%d entries compared, want 3", delta.EntriesCompared)
 	}
+	if delta.EntriesDeduped != 1 {
+		t.Errorf("%d deduped, want 1: the order inv_1 minted", delta.EntriesDeduped)
+	}
+	// Both ends of the debt are still visible. The order's flip to paid is the
+	// transition a demo points at, and dropping the entry to fix the arithmetic
+	// would have taken it away.
 	if len(delta.StatusChanges) != 2 {
 		t.Errorf("%d status change(s), want 2: %v", len(delta.StatusChanges), delta.StatusChanges)
+	}
+}
+
+// TestSnapshotCountsOneDebtOnce is the arithmetic half, on the book shape that
+// produced the defect: five issued invoices, each with the order it minted, and
+// nothing else. The live run on 2026-09-05 read that book as INR 56676 gross
+// against INR 28338 of actual debt, and Diff summed both ends, so a single paid
+// invoice would have been reported at twice its value.
+func TestSnapshotCountsOneDebtOnce(t *testing.T) {
+	const invoices = 5
+	const eachPaise = int64(566760 / invoices)
+
+	manifest := seed.Manifest{RunTag: "double-count"}
+	api := &stubPoll{
+		invoices: map[string]razorpay.Invoice{},
+		orders:   map[string]razorpay.Order{},
+	}
+	for i := range invoices {
+		invoiceID := fmt.Sprintf("inv_%d", i)
+		orderID := fmt.Sprintf("order_%d", i)
+		manifest.Items = append(manifest.Items, seed.Item{
+			Kind: seed.EntityInvoice, ID: invoiceID, OrderID: orderID,
+		})
+		api.invoices[invoiceID] = razorpay.Invoice{
+			ID: invoiceID, OrderID: orderID, Status: "issued", Currency: "INR",
+			AmountPaise: eachPaise, AmountDue: eachPaise,
+		}
+		api.orders[orderID] = razorpay.Order{
+			ID: orderID, Status: "created", Currency: "INR",
+			AmountPaise: eachPaise, AmountDue: eachPaise,
+		}
+	}
+
+	snapshot, err := Poll(context.Background(), api, PollOptions{Manifest: manifest})
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+
+	// Both ends of every debt are read and both are in the file.
+	if snapshot.Totals.Entries != invoices*2 {
+		t.Errorf("%d entries, want %d: every invoice and the order it minted", snapshot.Totals.Entries, invoices*2)
+	}
+	if snapshot.Totals.Duplicates != invoices {
+		t.Errorf("%d duplicate(s), want %d", snapshot.Totals.Duplicates, invoices)
+	}
+	if want := eachPaise * invoices; snapshot.Totals.AmountPaise != want {
+		t.Errorf("gross = %d paise, want %d: the book is worth what it is worth, not twice that",
+			snapshot.Totals.AmountPaise, want)
+	}
+	if want := eachPaise * invoices; snapshot.Totals.AmountDuePaise != want {
+		t.Errorf("due = %d paise, want %d", snapshot.Totals.AmountDuePaise, want)
+	}
+
+	// Every order entry names the invoice its amounts were counted on, so the
+	// file says why its own rows do not add up to its own totals.
+	for _, entry := range snapshot.Entries {
+		if entry.Kind != EntryOrder {
+			continue
+		}
+		if entry.DuplicateOf == "" {
+			t.Errorf("order %s is an invoice's minted order and carries no duplicate_of", entry.ID)
+		}
+		if entry.AmountPaise != eachPaise {
+			t.Errorf("order %s lost the amount Razorpay reported for it: %d", entry.ID, entry.AmountPaise)
+		}
+	}
+
+	// One invoice is paid. The delta is that one debt, once.
+	paid := api.invoices["inv_0"]
+	paid.Status, paid.AmountPaid, paid.AmountDue = "paid", eachPaise, 0
+	api.invoices["inv_0"] = paid
+	paidOrder := api.orders["order_0"]
+	paidOrder.Status, paidOrder.AmountPaid, paidOrder.AmountDue = "paid", eachPaise, 0
+	api.orders["order_0"] = paidOrder
+
+	after, err := Poll(context.Background(), api, PollOptions{Manifest: manifest})
+	if err != nil {
+		t.Fatalf("Poll after the payment: %v", err)
+	}
+	delta := Diff(snapshot, after)
+	if delta.RecoveredPaise != eachPaise {
+		t.Errorf("recovered = %d paise for one paid invoice, want %d", delta.RecoveredPaise, eachPaise)
+	}
+	if delta.AmountDueChange != -eachPaise {
+		t.Errorf("amount due change = %d, want %d", delta.AmountDueChange, -eachPaise)
+	}
+}
+
+// TestSnapshotKeepsAnUnreadableInvoicesDebtOnItsOrder. The dedupe drops the
+// order's amounts because the invoice already carries them. When the invoice
+// could not be read it carries nothing, so the order has to stay countable or
+// the debt disappears from the snapshot altogether.
+func TestSnapshotKeepsAnUnreadableInvoicesDebtOnItsOrder(t *testing.T) {
+	api := gateway(0)
+	delete(api.invoices, "inv_1")
+
+	snapshot, err := Poll(context.Background(), api, PollOptions{Manifest: pollManifest()})
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if snapshot.Totals.Duplicates != 0 {
+		t.Errorf("%d duplicate(s), want 0: the invoice was unreadable and counted nothing", snapshot.Totals.Duplicates)
+	}
+	// order_1 at 100000 plus order_2 at 50000. Losing the first is the failure
+	// this test exists for.
+	if snapshot.Totals.AmountPaise != 150000 {
+		t.Errorf("gross = %d paise, want 150000", snapshot.Totals.AmountPaise)
+	}
+}
+
+// TestPollReportsAManifestItemItCouldNotAskAbout. A seed run that stopped
+// partway leaves an item with a customer id and no invoice id. Poll used to
+// drop it inside add, which made a short snapshot look like a complete one.
+func TestPollReportsAManifestItemItCouldNotAskAbout(t *testing.T) {
+	manifest := pollManifest()
+	manifest.Items = append(manifest.Items, seed.Item{
+		Kind: seed.EntityInvoice, CustomerID: "cust_9", Incomplete: true,
+	})
+
+	snapshot, err := Poll(context.Background(), gateway(0), PollOptions{Manifest: manifest})
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if snapshot.Totals.Skipped != 1 || len(snapshot.Skipped) != 1 {
+		t.Fatalf("skipped %d item(s) and listed %d, want 1 and 1", snapshot.Totals.Skipped, len(snapshot.Skipped))
+	}
+	skipped := snapshot.Skipped[0]
+	if skipped.CustomerID != "cust_9" {
+		t.Errorf("the skipped line lost the one id the item does carry: %+v", skipped)
+	}
+	if skipped.Reason != SkipNoID {
+		t.Errorf("skipped reason = %q, want %q", skipped.Reason, SkipNoID)
+	}
+	if snapshot.Totals.Entries != 3 {
+		t.Errorf("%d entries, want 3: the incomplete item is not one of them", snapshot.Totals.Entries)
 	}
 }
 

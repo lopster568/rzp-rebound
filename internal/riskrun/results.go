@@ -111,10 +111,22 @@ type Summary struct {
 	// It is a run-wide setting, and the per-item rows say which clock each item
 	// actually got, because an item the manifest does not know keeps the
 	// gateway's.
-	AgeSource   string         `json:"age_source"`
-	DetectGrace string         `json:"detect_grace"`
-	KillSwitch  bool           `json:"kill_switch_engaged"`
-	Policy      PolicySnapshot `json:"policy"`
+	AgeSource   string `json:"age_source"`
+	DetectGrace string `json:"detect_grace"`
+	// SweepSince is the created_at floor every one of the three sweeps ran
+	// under, in Unix seconds, and SweepSinceSource says where that number came
+	// from. Zero is a meaningful value and means an unscoped sweep over the
+	// whole account, which is why the source is recorded beside it rather than
+	// left to be inferred.
+	//
+	// Without this pair a reader cannot reproduce what the run looked at.
+	// Everything else in this file describes what the run did with the items it
+	// found; this is the only field that says which items it could find at all,
+	// and the floor moves with the manifest.
+	SweepSince       int64          `json:"sweep_since"`
+	SweepSinceSource string         `json:"sweep_since_source"`
+	KillSwitch       bool           `json:"kill_switch_engaged"`
+	Policy           PolicySnapshot `json:"policy"`
 
 	// SightingsBySource is what the detectors returned, before the dedupe.
 	SightingsBySource map[string]int `json:"sightings_by_source"`
@@ -163,6 +175,11 @@ type Summary struct {
 	AmountDueBySource map[string]int64 `json:"amount_due_by_source"`
 	AmountDueTotal    int64            `json:"amount_due_total"`
 }
+
+// SinceSourceUnrecorded is what Summary.SweepSinceSource holds when the caller
+// did not say where its floor came from. It is a visible gap rather than a
+// blank field a reader would take for an unscoped sweep.
+const SinceSourceUnrecorded = "unrecorded"
 
 // PolicySnapshot is the cadence the run actually ran under, recorded in its own
 // summary.

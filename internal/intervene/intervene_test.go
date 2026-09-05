@@ -17,7 +17,9 @@ import (
 	"github.com/lopster568/rzp-recovery-agent/internal/audit"
 	"github.com/lopster568/rzp-recovery-agent/internal/clock"
 	"github.com/lopster568/rzp-recovery-agent/internal/intervene"
+	"github.com/lopster568/rzp-recovery-agent/internal/policy"
 	"github.com/lopster568/rzp-recovery-agent/internal/razorpay"
+	"github.com/lopster568/rzp-recovery-agent/internal/redact"
 	"github.com/lopster568/rzp-recovery-agent/internal/riskitem"
 )
 
@@ -1160,6 +1162,56 @@ func TestDoNothingIsAnAcceptedNoOp(t *testing.T) {
 	}
 	if row := r.onlyRow(t); row.Kind != audit.KindActionSkipped {
 		t.Errorf("audit kind = %q, want %q", row.Kind, audit.KindActionSkipped)
+	}
+}
+
+// digestWithA13DigitRun is a real sha256 digest, of the ASCII string "13",
+// that holds a run of 13 consecutive decimal digits. internal/redact's
+// cardLike matches that shape, so a ledger row carrying this string whole
+// comes back with the marker in the middle of it. About one digest in twenty
+// is like this, and on 2026-09-05 one of the two intervention_applied rows in
+// a live test-mode run was mangled that way on camera-visible output.
+const digestWithA13DigitRun = "3fdba35f04dc8c462986c992bcf875546257113072a909c162f7e470e581e278"
+
+// TestTheLedgerRowCarriesTheShortIdempotencyKey pins the writing-side fix
+// internal/redact's own doc comment names: policy.ShortKey puts 12 characters
+// in the audit row, and 12 characters cannot hold a run of 13 digits.
+func TestTheLedgerRowCarriesTheShortIdempotencyKey(t *testing.T) {
+	// The premise. If this ever stops holding, the test below proves nothing.
+	if redact.Value(digestWithA13DigitRun) == digestWithA13DigitRun {
+		t.Fatalf("the fixture digest no longer trips the redactor, so this test is vacuous: %q", digestWithA13DigitRun)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/invoices/{id}/notify_by/{medium}", func(w http.ResponseWriter, _ *http.Request) {
+		writeRawJSON(w, http.StatusOK, probeNotifySuccess)
+	})
+	mux.HandleFunc("GET /v1/invoices/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		writeRawJSON(w, http.StatusOK, probeInvoiceNotified)
+	})
+	r := newRig(t, mux)
+
+	ctx := intervene.WithIdempotencyKey(context.Background(), digestWithA13DigitRun)
+	if _, err := r.engine.Apply(ctx, invoiceItem(), riskitem.ActionNotifyEmail); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	row := r.onlyRow(t)
+	got := row.Detail["idempotency_key"]
+	if len(got) != policy.ShortKeyLen {
+		t.Errorf("idempotency_key is %d character(s) (%q), want %d", len(got), got, policy.ShortKeyLen)
+	}
+	if want := digestWithA13DigitRun[:policy.ShortKeyLen]; got != want {
+		t.Errorf("idempotency_key = %q, want the key's first %d characters %q", got, policy.ShortKeyLen, want)
+	}
+	// The point of the whole fix: what the ledger holds survives the redactor
+	// unchanged, so a reviewer can still join this row to the policy_evaluated
+	// row that carries the same prefix.
+	if redacted := redact.Value(got); redacted != got {
+		t.Errorf("the ledger's idempotency_key was mangled by the redactor: %q became %q", got, redacted)
+	}
+	if strings.Contains(got, redact.Marker) {
+		t.Errorf("idempotency_key already carries the redaction marker: %q", got)
 	}
 }
 

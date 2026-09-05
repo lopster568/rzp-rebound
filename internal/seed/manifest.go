@@ -76,6 +76,18 @@ type Item struct {
 	// Status is the last status this run observed: issued for an invoice,
 	// created for an order.
 	Status string `json:"status,omitempty"`
+
+	// Incomplete marks an item the seed run started and did not finish: the
+	// customer call succeeded and the call that mints the entity did not, so ID
+	// is empty and Razorpay has nothing under this item but a customer.
+	//
+	// The item stays in the manifest, because that customer exists and a
+	// manifest that silently drops it is worse than one that says the run
+	// stopped early. What the flag buys is that everything downstream can tell
+	// the difference: riskrun.Poll lists it under Skipped instead of dropping
+	// it inside a nil check, and ExecutePlan on a resume knows to reuse the
+	// customer rather than mint a second one.
+	Incomplete bool `json:"incomplete,omitempty"`
 }
 
 // Instructions is the operator's to-do list for the one class the API cannot
@@ -125,6 +137,18 @@ type Manifest struct {
 	DryRun     bool      `json:"dry_run"`
 	CallBudget int       `json:"call_budget"`
 	CallsUsed  int       `json:"calls_used"`
+
+	// ResumedItems is how many items in Items were carried over from an earlier
+	// attempt at this same run tag rather than created by this run. CallsUsed
+	// counts only this run's calls, so the two together say what this
+	// invocation actually spent.
+	//
+	// CreatedAt on a resumed manifest stays the first attempt's, on purpose:
+	// cmd/rzp risk-run derives its default --since floor from it, and moving it
+	// forward would scope the sweep past the entities the first attempt
+	// created, which is how five invoices and five orders were orphaned outside
+	// a run's window on 2026-09-05.
+	ResumedItems int `json:"resumed_items,omitempty"`
 
 	Items        []Item       `json:"items"`
 	Instructions Instructions `json:"instructions"`

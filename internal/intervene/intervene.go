@@ -10,6 +10,7 @@ import (
 
 	"github.com/lopster568/rzp-recovery-agent/internal/audit"
 	"github.com/lopster568/rzp-recovery-agent/internal/clock"
+	"github.com/lopster568/rzp-recovery-agent/internal/policy"
 	"github.com/lopster568/rzp-recovery-agent/internal/razorpay"
 	"github.com/lopster568/rzp-recovery-agent/internal/riskitem"
 )
@@ -576,7 +577,17 @@ func (e *Engine) record(ctx context.Context, item riskitem.RiskItem, out riskite
 		detail["error"] = out.Err
 	}
 	if key != "" {
-		detail["idempotency_key"] = key
+		// The prefix, not the whole key, for the reason internal/redact's
+		// cardLike doc comment gives: a sha256 digest rendered as 64 hex
+		// characters holds a run of 13 digits about five percent of the time,
+		// and internal/redact treats that shape as a card number, so a full
+		// key comes out of the ledger with the marker in the middle of it. On
+		// 2026-09-05 that mangled one of the two intervention_applied rows in
+		// a live test-mode run. policy.ShortKey is 12 characters, which cannot
+		// hold a run of 13 digits, and it is the same prefix
+		// riskrun.evaluatedEvent already writes for the same key, so the
+		// evaluation row and the action row still join on it.
+		detail["idempotency_key"] = policy.ShortKey(key)
 	}
 	if replay {
 		detail["idempotent_replay"] = "true"
