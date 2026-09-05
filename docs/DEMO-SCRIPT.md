@@ -46,13 +46,30 @@ browser step in beat two takes longer than a shot:
 make seedbook
 ```
 
-The seeder waits between creation calls on purpose. Razorpay test mode answered
-`429` partway through an unpaced seed of this profile on 2026-09-05, twice, and
-left half a book behind each time, so the calls are spaced and the demo profile
-now takes something like half a minute. If a seed does stop early anyway, run
-`make seedbook` again: it reads the manifest already at `seedbook.json`,
-continues that same run tag from where it stopped, and refuses to seed a second
-book over the first. `-force` is how you overwrite one deliberately.
+That is one command and it now finishes the whole book by itself, but it is not
+quick. Razorpay test mode enforces a burst quota on `POST /v1/invoices` of about
+five creations, not a rate: three separate live attempts on 2026-09-05 each
+failed on the sixth invoice, at every pace tried, and the quota took `45` to
+`60` seconds to clear. So the seeder waits it out and makes the same call again
+inside the same run, printing `invoice burst quota hit` when it does.
+
+The arithmetic to expect: the demo profile spends twenty-seven calls paced
+`750ms` apart, which is about twenty seconds, plus `60` seconds for each burst
+wait. Eight invoices against a quota of about five means one wait, and two if
+the quota was already partly spent when you started, so budget one and a half to
+three minutes and do not start it thirty seconds before you want to record. The
+pacing is politeness and not the fix; it cannot prevent a quota.
+
+If a seed does stop for some other reason, run `make seedbook` again: it reads
+the manifest already at `seedbook.json`, continues that same run tag from where
+it stopped, and refuses to seed a second book over the first. `-force` is how
+you overwrite one deliberately.
+
+**Seed at least one hour after any prior seeding on this account.** The sweep
+floor every risk run uses is the manifest's own `created_at` less a one hour
+skew margin, so anything seeded inside that hour, including a rehearsal book you
+have finished with, falls inside the window and shows up in the queue with
+nothing in this manifest to explain it. An hour of clearance is the whole fix.
 
 Keep the printed instruction block. It names the links to open and the documented
 failure cards to use, and beat two is you reading it back. It prints even when a
@@ -358,9 +375,13 @@ Run through this before the first take and again before the final one.
   over the card form. Check the card form once before recording, so the browser
   has already offered and been refused whatever it wants to offer.
 - **Seed the book before recording, not on camera.** The seeder paces its calls
-  and the demo profile takes something like half a minute, the browser decline in
-  beat two takes longer than its shot, and a seed that hits its call budget
-  mid-take is not recoverable inside five minutes.
+  and waits out an invoice burst quota, so a full book is one command that takes
+  one and a half to three minutes, the browser decline in beat two takes longer
+  than its shot, and a seed that hits its call budget mid-take is not recoverable
+  inside five minutes.
+- **Seed at least one hour after any prior seeding on this account**, for the
+  reason the setup section gives: the sweep floor is the manifest's `created_at`
+  less an hour, and rehearsal debris inside that hour lands in the queue.
 - **Check `failed_payment` is a key in `sightings_by_source`** before the take
   that points at it. See the presenter note in the browser-cutaway block.
 - **Rehearse the dry run once** immediately before recording, so the on-camera

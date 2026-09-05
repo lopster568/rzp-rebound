@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"time"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/clock"
@@ -22,20 +24,41 @@ const DefaultCallBudget = 60
 
 // DefaultPace is how long ExecutePlan waits between two creation calls.
 //
-// Razorpay test mode answered 429 to POST /invoices on 2026-09-05, twice, at
-// call 17 of a 27-call demo seed, when the run made its calls back to back at
-// 1.9 to 2.1 writes per second. The account's own probe on 2026-08-31 made 40
-// sequential calls at 1.3 to 1.4 per second and saw none, so the limit sits
-// somewhere between those two rates. razorpay.Client retries a 429 four times
-// with 250ms, 500ms and 1s of backoff, which is 1.75s of budget, and that was
-// not enough to get through.
-//
-// The pace is therefore set under the rate that is known to be safe rather than
-// just under the rate that is known to fail: 750ms between calls is 1.33 calls
-// per second, and it costs about 20 seconds on the 27 calls DemoProfile spends.
-// A seed run is a setup step nobody is filming, so 20 seconds is the cheapest
-// thing in this fix.
+// It is politeness and it is not the rate-limit fix. Three live attempts on
+// 2026-09-05 put POST /v1/invoices at 429 on the sixth invoice creation at
+// every pace tried, including 0.80 calls per second, so no interval between
+// calls prevents it: see DefaultBurstWait for what the limit turned out to be.
+// The pace stays because a setup step nobody is filming can afford to spread
+// 27 calls over about 20 seconds, and because it keeps the run under the 1.3 to
+// 1.4 calls per second the 2026-08-31 probe ran clean at.
 const DefaultPace = 750 * time.Millisecond
+
+// DefaultBurstWait is how long ExecutePlan waits out an invoice burst quota
+// before making the same call again.
+//
+// What Razorpay test mode enforces on POST /v1/invoices is a burst quota of
+// about five creations, not a rate. Three independent live attempts on
+// 2026-09-05 each failed on the sixth invoice, at paces from 0.80 to 2.1 calls
+// per second; an immediate retry failed as well, and a retry about 45 seconds
+// later succeeded on its first attempt. The recovery window measured 45 to 60
+// seconds.
+//
+// razorpay.Client already retries a 429 four times with 250ms, 500ms and 1s of
+// backoff, which is 1.75s in total, so a quota that clears in tens of seconds
+// outlives the whole retry budget. 60 seconds is the top of the observed
+// recovery window, chosen over the bottom of it because a seed run that waits
+// 15 seconds too long costs 15 seconds and a seed run that resumes too early
+// spends another call on the same refusal.
+const DefaultBurstWait = 60 * time.Second
+
+// DefaultBurstWaits bounds how many burst waits one run takes in total.
+//
+// DemoProfile creates 8 invoices against a quota of about 5, so a whole book
+// needs one wait and, if the quota is partly spent when the run starts, two. 5
+// leaves room for a larger profile and still stops: an account answering 429
+// for a reason this seeder has not understood produces a run that gives up with
+// a manifest, not a process that waits all night.
+const DefaultBurstWaits = 5
 
 // ErrCallBudgetExceeded is returned when a run stops because the next call
 // would spend more than its budget allows. Whatever was created before the
@@ -63,9 +86,23 @@ type RunOptions struct {
 	// small enough to be irrelevant, such as one nanosecond, and thereby says so
 	// in its own flags.
 	Pace time.Duration
-	// Sleep is how the pace is waited out. Nil means a context-aware sleep on
-	// the wall clock. A test passes one that records the interval and returns.
+	// BurstWait is how long a run waits out an invoice burst quota before
+	// making the same call again. Zero or negative means DefaultBurstWait,
+	// following CallBudget's convention in this struct.
+	BurstWait time.Duration
+	// MaxBurstWaits bounds how many such waits the whole run takes. Zero means
+	// DefaultBurstWaits. A negative value means never wait, which is how a
+	// caller asks for the pre-2026-09-05 behaviour of stopping on the first
+	// 429 and leaving the rest to a resumed run.
+	MaxBurstWaits int
+	// Sleep is how the pace and the burst wait are waited out. Nil means a
+	// context-aware sleep on the wall clock. A test passes one that records the
+	// interval and returns.
 	Sleep func(ctx context.Context, d time.Duration) error
+	// Log receives the plain-language lines about a burst wait, so an operator
+	// watching a terminal that has gone quiet for a minute knows why. Nil means
+	// they are dropped.
+	Log io.Writer
 	// Resume is the manifest an earlier attempt at this same plan wrote. Its
 	// completed items are carried into the returned manifest and the plan
 	// entries behind them are not created a second time. The zero value means
@@ -89,6 +126,74 @@ func (p *pacer) wait(ctx context.Context) error {
 		return nil
 	}
 	return p.sleep(ctx, p.interval)
+}
+
+// caller makes one creation call: it paces it, and on a burst quota it waits
+// the quota out and makes the same call again, inside the same process.
+//
+// The cross-process fallback is still there and is still the answer to a run
+// that dies for another reason: cmd/seedbook reads the manifest at -out and
+// continues that run tag rather than seeding a second book. What this adds is
+// that the commonest interruption, an invoice burst quota that clears in under
+// a minute, no longer needs a second command at all.
+type caller struct {
+	pace     *pacer
+	burst    time.Duration
+	maxWaits int
+	waits    int
+	sleep    func(context.Context, time.Duration) error
+	log      io.Writer
+}
+
+// do paces and then runs call, retrying it after a burst wait for as long as
+// the wait budget allows.
+//
+// what names the call in the operator line, such as "invoice". The budget is
+// not charged again for a retry: b.spend counts the calls a plan intends to
+// make, and razorpay.Client's own four attempts at a 429 are not charged either,
+// so a resumed call staying one call keeps the two accounts consistent.
+func (c *caller) do(ctx context.Context, what string, call func() error) error {
+	if err := c.pace.wait(ctx); err != nil {
+		return err
+	}
+	for {
+		err := call()
+		if err == nil || !isBurstQuota(err) {
+			return err
+		}
+		if c.waits >= c.maxWaits {
+			return err
+		}
+		c.waits++
+		// Seconds rather than a time.Duration, because a minute renders as
+		// "1m0s" and the line exists for somebody watching a terminal that has
+		// stopped printing.
+		c.logf("seedbook: %s burst quota hit, waiting %ds and making the same call again (wait %d of %d)\n",
+			what, int(c.burst.Round(time.Second)/time.Second), c.waits, c.maxWaits)
+		if waitErr := c.sleep(ctx, c.burst); waitErr != nil {
+			return fmt.Errorf("wait out the %s burst quota: %w (the call that hit it: %w)", what, waitErr, err)
+		}
+	}
+}
+
+func (c *caller) logf(format string, args ...any) {
+	if c.log == nil {
+		return
+	}
+	fmt.Fprintf(c.log, format, args...)
+}
+
+// isBurstQuota reports whether err is Razorpay answering 429 after the client's
+// own retries were spent.
+//
+// It reads the status off razorpay.APIError rather than matching on
+// ErrRetryBudgetExhausted, because that sentinel says the attempts ran out and
+// not what they ran out against, and a 429 is the only status this seeder has a
+// second strategy for. Any other refusal is returned to the caller unchanged:
+// waiting a minute on a 400 would spend a minute learning the same thing.
+func isBurstQuota(err error) bool {
+	var apiErr *razorpay.APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusTooManyRequests
 }
 
 // sleepContext waits for d, or until ctx is done. A cancelled seed run stops
@@ -171,7 +276,24 @@ func executePlan(ctx context.Context, client Client, plan Plan, opts RunOptions)
 	if sleep == nil {
 		sleep = sleepContext
 	}
-	p := &pacer{interval: pace, sleep: sleep}
+	burst := opts.BurstWait
+	if burst <= 0 {
+		burst = DefaultBurstWait
+	}
+	maxWaits := opts.MaxBurstWaits
+	switch {
+	case maxWaits == 0:
+		maxWaits = DefaultBurstWaits
+	case maxWaits < 0:
+		maxWaits = 0
+	}
+	p := &caller{
+		pace:     &pacer{interval: pace, sleep: sleep},
+		burst:    burst,
+		maxWaits: maxWaits,
+		sleep:    sleep,
+		log:      opts.Log,
+	}
 
 	now := clk.Now()
 	m := Manifest{
@@ -328,7 +450,7 @@ func (p Plan) Remaining(prior Manifest) (invoices, orders int, err error) {
 //
 // A non-empty customerID is one an earlier attempt at this same spec already
 // created. It is used as-is and the CreateCustomer call is skipped.
-func createInvoiceItem(ctx context.Context, client Client, b *budget, p *pacer, spec InvoiceSpec, runTag string, now time.Time, customerID string) (Item, error) {
+func createInvoiceItem(ctx context.Context, client Client, b *budget, p *caller, spec InvoiceSpec, runTag string, now time.Time, customerID string) (Item, error) {
 	item := Item{
 		Kind:                 EntityInvoice,
 		CustomerName:         spec.CustomerName,
@@ -356,14 +478,16 @@ func createInvoiceItem(ctx context.Context, client Client, b *budget, p *pacer, 
 		if err := b.spend(1); err != nil {
 			return item, fmt.Errorf("create a customer for %s: %w", spec.CustomerName, err)
 		}
-		if err := p.wait(ctx); err != nil {
-			return item, fmt.Errorf("pace the call before the customer for %s: %w", spec.CustomerName, err)
-		}
-		customer, err := client.CreateCustomer(ctx, razorpay.CreateCustomerRequest{
-			Name:    spec.CustomerName,
-			Email:   spec.CustomerEmail,
-			Contact: spec.CustomerContact,
-			Notes:   map[string]string{"seedbook_run": runTag},
+		var customer razorpay.Customer
+		err := p.do(ctx, "customer", func() error {
+			var callErr error
+			customer, callErr = client.CreateCustomer(ctx, razorpay.CreateCustomerRequest{
+				Name:    spec.CustomerName,
+				Email:   spec.CustomerEmail,
+				Contact: spec.CustomerContact,
+				Notes:   map[string]string{"seedbook_run": runTag},
+			})
+			return callErr
 		})
 		if err != nil {
 			return item, fmt.Errorf("create a customer for %s: %w", spec.CustomerName, err)
@@ -374,25 +498,27 @@ func createInvoiceItem(ctx context.Context, client Client, b *budget, p *pacer, 
 	if err := b.spend(1); err != nil {
 		return item, err
 	}
-	if err := p.wait(ctx); err != nil {
-		return item, fmt.Errorf("pace the call before the invoice for customer %s: %w", item.CustomerID, err)
-	}
-	invoice, err := client.CreateInvoice(ctx, razorpay.CreateInvoiceRequest{
-		CustomerID:     item.CustomerID,
-		Draft:          true,
-		Description:    spec.Description,
-		Currency:       "INR",
-		PartialPayment: spec.PartialPayment,
-		LineItems: []razorpay.CreateInvoiceLineItem{
-			{Name: "seedbook demo line item", AmountPaise: spec.AmountPaise, Currency: "INR", Quantity: 1},
-		},
-		Notes: map[string]string{
-			"seedbook_run": runTag,
-			"age_bucket":   string(spec.AgeBucket),
-			"disputed":     boolNote(spec.Disputed),
-			"partial_plan": boolNote(spec.PartialPlan),
-			"no_contact":   boolNote(spec.CustomerContact == ""),
-		},
+	var invoice razorpay.Invoice
+	err := p.do(ctx, "invoice", func() error {
+		var callErr error
+		invoice, callErr = client.CreateInvoice(ctx, razorpay.CreateInvoiceRequest{
+			CustomerID:     item.CustomerID,
+			Draft:          true,
+			Description:    spec.Description,
+			Currency:       "INR",
+			PartialPayment: spec.PartialPayment,
+			LineItems: []razorpay.CreateInvoiceLineItem{
+				{Name: "seedbook demo line item", AmountPaise: spec.AmountPaise, Currency: "INR", Quantity: 1},
+			},
+			Notes: map[string]string{
+				"seedbook_run": runTag,
+				"age_bucket":   string(spec.AgeBucket),
+				"disputed":     boolNote(spec.Disputed),
+				"partial_plan": boolNote(spec.PartialPlan),
+				"no_contact":   boolNote(spec.CustomerContact == ""),
+			},
+		})
+		return callErr
 	})
 	if err != nil {
 		return item, fmt.Errorf("create an invoice for customer %s: %w", item.CustomerID, err)
@@ -403,10 +529,12 @@ func createInvoiceItem(ctx context.Context, client Client, b *budget, p *pacer, 
 	if err := b.spend(1); err != nil {
 		return item, err
 	}
-	if err := p.wait(ctx); err != nil {
-		return item, fmt.Errorf("pace the call before issuing invoice %s: %w", invoice.ID, err)
-	}
-	issued, err := client.IssueInvoice(ctx, invoice.ID)
+	var issued razorpay.Invoice
+	err = p.do(ctx, "invoice issue", func() error {
+		var callErr error
+		issued, callErr = client.IssueInvoice(ctx, invoice.ID)
+		return callErr
+	})
 	if err != nil {
 		return item, fmt.Errorf("issue invoice %s: %w", invoice.ID, err)
 	}
@@ -436,7 +564,7 @@ func createInvoiceItem(ctx context.Context, client Client, b *budget, p *pacer, 
 // package writes into the manifest and never into Razorpay. An unset bucket
 // reads as AgeFresh rather than as the empty string, so every manifest item
 // names a bucket a scorer recognises.
-func createOrderItem(ctx context.Context, client Client, b *budget, p *pacer, spec OrderSpec, runTag string, now time.Time) (Item, error) {
+func createOrderItem(ctx context.Context, client Client, b *budget, p *caller, spec OrderSpec, runTag string, now time.Time) (Item, error) {
 	hasContact := riskitem.Customer{Email: spec.CustomerEmail, Contact: spec.CustomerContact}.HasContactChannel()
 	bucket := spec.AgeBucket
 	if bucket == "" {
@@ -477,14 +605,16 @@ func createOrderItem(ctx context.Context, client Client, b *budget, p *pacer, sp
 	if err := b.spend(1); err != nil {
 		return item, err
 	}
-	if err := p.wait(ctx); err != nil {
-		return item, fmt.Errorf("pace the call before the abandoned order: %w", err)
-	}
-	order, err := client.CreateOrder(ctx, razorpay.CreateOrderRequest{
-		AmountPaise: spec.AmountPaise,
-		Currency:    "INR",
-		Receipt:     "seedbook_" + runTag,
-		Notes:       notes,
+	var order razorpay.Order
+	err := p.do(ctx, "order", func() error {
+		var callErr error
+		order, callErr = client.CreateOrder(ctx, razorpay.CreateOrderRequest{
+			AmountPaise: spec.AmountPaise,
+			Currency:    "INR",
+			Receipt:     "seedbook_" + runTag,
+			Notes:       notes,
+		})
+		return callErr
 	})
 	if err != nil {
 		return item, fmt.Errorf("create an abandoned order: %w", err)

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -360,11 +362,13 @@ func TestExecutePlanPacesItsCreationCalls(t *testing.T) {
 			t.Fatalf("wait %d was %s, want the default pace %s", i, d, DefaultPace)
 		}
 	}
-	// The rate this puts the seeder at, stated as the thing the fix is about.
-	// 750ms between calls is 1.33 per second, under the 1.4 per second that ran
-	// clean on 2026-08-31 and well under the 1.9 that did not on 2026-09-05.
+	// The rate this puts the seeder at. It is politeness rather than the
+	// rate-limit fix: the 429 turned out to be a burst quota that no interval
+	// prevents, and TestExecutePlanWaitsOutTheInvoiceBurstQuota is what covers
+	// that. What this bound still says is that the run stays under the 1.3 to
+	// 1.4 calls per second the 2026-08-31 probe ran clean at.
 	if perSecond := float64(time.Second) / float64(DefaultPace); perSecond > 1.4 {
-		t.Errorf("the default pace is %g calls per second, which is not under the rate that was observed to be safe", perSecond)
+		t.Errorf("the default pace is %g calls per second, which is over the rate the 2026-08-31 probe ran clean at", perSecond)
 	}
 }
 
@@ -594,5 +598,174 @@ func TestPlanRemainingReportsWhatIsLeft(t *testing.T) {
 	}
 	if invoices != 0 || orders != 0 {
 		t.Errorf("Remaining over a complete book = %d, %d, want 0, 0", invoices, orders)
+	}
+}
+
+// burstQuotaClient answers 429 to CreateInvoice once a fixed number of invoice
+// creations have been made, and keeps answering 429 until release is called.
+//
+// That is the shape live test mode showed three times on 2026-09-05, and it is
+// a quota rather than a rate: the sixth POST /v1/invoices failed at every pace
+// tried, including 0.80 calls per second, an immediate retry failed too, and a
+// retry about 45 seconds later succeeded on its first attempt. The error it
+// returns is the one razorpay.Client produces when its own four attempts are
+// spent, so the seeder is tested against the value it will actually be handed.
+type burstQuotaClient struct {
+	stubClient
+
+	// quota is how many invoice creations succeed before the window closes.
+	quota int
+	// used is how many have been made in the current window. release resets it,
+	// which is what makes an immediate retry fail and a retry after a wait
+	// succeed.
+	used int
+	// refusals counts the 429s handed out, so a test can say the quota fired.
+	refusals int
+}
+
+func (c *burstQuotaClient) release() { c.used = 0 }
+
+func (c *burstQuotaClient) CreateInvoice(ctx context.Context, req razorpay.CreateInvoiceRequest) (razorpay.Invoice, error) {
+	if c.used >= c.quota {
+		c.refusals++
+		return razorpay.Invoice{}, fmt.Errorf("%w after 4 attempt(s): %w",
+			razorpay.ErrRetryBudgetExhausted,
+			&razorpay.APIError{StatusCode: http.StatusTooManyRequests, Method: http.MethodPost, Path: "/invoices"})
+	}
+	c.used++
+	return c.stubClient.CreateInvoice(ctx, req)
+}
+
+// burstRecorder is paceRecorder plus the one thing the quota needs: a wait long
+// enough to be a burst wait clears the client's window, so the test models a
+// recovery that takes time rather than one that takes a retry.
+type burstRecorder struct {
+	paceRecorder
+	client *burstQuotaClient
+	burst  time.Duration
+}
+
+func (b *burstRecorder) sleep(ctx context.Context, d time.Duration) error {
+	if d == b.burst {
+		b.client.release()
+	}
+	return b.paceRecorder.sleep(ctx, d)
+}
+
+func (b *burstRecorder) burstWaits() []time.Duration {
+	var out []time.Duration
+	for _, d := range b.waits {
+		if d == b.burst {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// TestExecutePlanWaitsOutTheInvoiceBurstQuota is the 2026-09-05 defect. The
+// 750ms pace cannot prevent a quota, so a seed run that stopped on the sixth
+// invoice needed a second process to finish the book. It now waits and resumes
+// the same call inside one run, and the book it writes is whole and has no
+// entity in it twice.
+func TestExecutePlanWaitsOutTheInvoiceBurstQuota(t *testing.T) {
+	plan := GeneratePlan(DemoProfile(), "run-burst", 1)
+	client := &burstQuotaClient{quota: 5}
+	rec := &burstRecorder{client: client, burst: DefaultBurstWait}
+	var log strings.Builder
+
+	manifest, err := ExecutePlan(context.Background(), client, plan, RunOptions{
+		Clock: testClock,
+		Sleep: rec.sleep,
+		Log:   &log,
+	})
+	if err != nil {
+		t.Fatalf("ExecutePlan: %v", err)
+	}
+
+	if client.refusals == 0 {
+		t.Fatal("the quota never fired, so this test proves nothing")
+	}
+	waits := rec.burstWaits()
+	if len(waits) == 0 {
+		t.Fatalf("no burst wait was taken for %d refusal(s)", client.refusals)
+	}
+	for i, d := range waits {
+		if d != DefaultBurstWait {
+			t.Errorf("burst wait %d was %s, want %s", i, d, DefaultBurstWait)
+		}
+	}
+	if !strings.Contains(log.String(), "invoice burst quota hit") {
+		t.Errorf("the operator was told nothing about the wait, log:\n%s", log.String())
+	}
+
+	if want := len(plan.Invoices) + len(plan.Orders); len(manifest.Items) != want {
+		t.Fatalf("len(Items) = %d, want %d", len(manifest.Items), want)
+	}
+	if client.invoices != len(plan.Invoices) {
+		t.Errorf("created %d invoice(s), want %d", client.invoices, len(plan.Invoices))
+	}
+	if client.customers != len(plan.Invoices) {
+		t.Errorf("created %d customer(s), want %d", client.customers, len(plan.Invoices))
+	}
+	if client.issues != len(plan.Invoices) {
+		t.Errorf("issued %d invoice(s), want %d", client.issues, len(plan.Invoices))
+	}
+	if client.orders != len(plan.Orders) {
+		t.Errorf("created %d order(s), want %d", client.orders, len(plan.Orders))
+	}
+
+	seen := map[string]bool{}
+	for _, item := range manifest.Items {
+		if item.ID == "" || item.Incomplete {
+			t.Errorf("item is not finished: %+v", item)
+			continue
+		}
+		if seen[item.ID] {
+			t.Errorf("item %s is in the manifest twice", item.ID)
+		}
+		seen[item.ID] = true
+	}
+}
+
+// TestExecutePlanStopsAfterTheBurstWaitBudget. The waiting is bounded: an
+// account that answers 429 forever gets a run that stops and a manifest that
+// records what it created, not a process that waits all night.
+func TestExecutePlanStopsAfterTheBurstWaitBudget(t *testing.T) {
+	plan := GeneratePlan(DemoProfile(), "run-burst-budget", 1)
+	client := &burstQuotaClient{quota: 5}
+	rec := &paceRecorder{}
+
+	manifest, err := ExecutePlan(context.Background(), client, plan, RunOptions{
+		Clock:         testClock,
+		Sleep:         rec.sleep,
+		MaxBurstWaits: 2,
+	})
+	if err == nil {
+		t.Fatal("ExecutePlan returned no error over an account that never recovers")
+	}
+	var apiErr *razorpay.APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("ExecutePlan error = %v, want one carrying a 429", err)
+	}
+
+	var burstWaits int
+	for _, d := range rec.waits {
+		if d == DefaultBurstWait {
+			burstWaits++
+		}
+	}
+	if burstWaits != 2 {
+		t.Errorf("took %d burst wait(s), want the configured 2", burstWaits)
+	}
+	// Five invoices were created and the sixth got as far as its customer, so
+	// the manifest holds six items and the last one is marked unfinished. That
+	// is the same shape a budget stop leaves, and it is what makes the run
+	// resumable across processes when the waiting was not enough.
+	if len(manifest.Items) != 6 {
+		t.Fatalf("the manifest records %d item(s), want 5 created invoices plus the one that stopped", len(manifest.Items))
+	}
+	last := manifest.Items[len(manifest.Items)-1]
+	if !last.Incomplete || last.ID != "" || last.CustomerID == "" {
+		t.Errorf("the last item is %+v, want an unfinished invoice carrying only its customer", last)
 	}
 }

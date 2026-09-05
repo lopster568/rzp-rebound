@@ -50,7 +50,9 @@ func run(ctx context.Context, args []string) error {
 	callBudget := fs.Int("call-budget", seed.DefaultCallBudget, "refuse to make more than this many Razorpay calls in one run")
 	randSeed := fs.Int64("seed", 1234, "seed for the deterministic synthetic data: names, amounts, contacts")
 	pace := fs.Duration("pace", seed.DefaultPace,
-		"wait this long between creation calls; test mode answered 429 at about 1.9 writes per second on 2026-09-05, so a value small enough to be irrelevant, such as 1ns, is how a run takes the pacing off")
+		"wait this long between creation calls; it is politeness rather than the rate-limit fix, so a value small enough to be irrelevant, such as 1ns, is how a run takes the pacing off")
+	burstWait := fs.Duration("burst-wait", seed.DefaultBurstWait,
+		"wait this long and make the same call again when test mode answers 429 to an invoice creation; the limit is a burst quota of about five creations, not a rate, and it cleared in 45 to 60 seconds on 2026-09-05")
 	force := fs.Bool("force", false,
 		"seed a new book even though -out already holds a manifest, overwriting it; without this a run refuses rather than orphaning what the earlier manifest names")
 	fs.Usage = func() {
@@ -60,9 +62,11 @@ Seeds live Razorpay test-mode data for the risk-engine demo and writes a
 manifest recording it. Reads RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET from the
 environment; test-mode keys only.
 
-Creation calls are paced, because test mode answered 429 partway through an
-unpaced 27-call seed on 2026-09-05. The demo profile therefore takes about
-twenty seconds.
+Creation calls are paced, and a POST /v1/invoices that answers 429 anyway is
+waited out and made again inside this same run. Test mode enforces a burst quota
+of about five invoice creations rather than a rate, observed three times on
+2026-09-05, and it cleared in 45 to 60 seconds. The demo profile creates eight
+invoices, so expect a wait or two and a run of a couple of minutes.
 
 If -out already holds an unfinished manifest, this continues that run under its
 own tag instead of seeding a second book beside it. A finished one is refused.
@@ -128,14 +132,20 @@ flags:
 	calls := invoicesLeft*3 + ordersLeft
 	fmt.Printf("seedbook: seeding against Razorpay TEST MODE, run tag %s, profile %s\n", plan.RunTag, profile.Name)
 	// The pace and what it costs, said out loud, because a seeder that looks
-	// hung for half a minute is the next thing an operator would interrupt.
-	fmt.Printf("seedbook: %d call(s) to make, paced %s apart, so about %s\n\n",
+	// hung is the next thing an operator would interrupt. The burst wait is
+	// named on the same line for the same reason: a run that goes quiet for a
+	// whole minute has to have said in advance that it might.
+	fmt.Printf("seedbook: %d call(s) to make, paced %s apart, so about %s\n",
 		calls, *pace, (time.Duration(max(calls-1, 0)) * *pace).Round(time.Second))
+	fmt.Printf("seedbook: plus %s per invoice burst quota hit, and this profile creates %d invoice(s) against a quota of about five\n\n",
+		*burstWait, invoicesLeft)
 
 	manifest, runErr := seed.ExecutePlan(ctx, client, plan, seed.RunOptions{
 		CallBudget: *callBudget,
 		Pace:       *pace,
+		BurstWait:  *burstWait,
 		Resume:     resume,
+		Log:        os.Stdout,
 	})
 	manifest.Profile = profile.Name
 
