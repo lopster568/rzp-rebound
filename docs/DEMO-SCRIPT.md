@@ -176,10 +176,39 @@ reporting nothing, and narrating it as one is the same mistake as reading
 
 ```
 make risk-run FLAGS='--manifest seedbook.json --out results/risk-runs/demo \
-    --detect-grace 1s --notify-window 1ns'
+    --seed 5 --detect-grace 1s --notify-window 1ns'
 ```
 
-Both of those flags are load bearing and neither is cosmetic.
+All three of those flags are load bearing and none is cosmetic.
+
+`--seed 5` is the arm assignment, and it is pinned so the link-minting beat
+happens on camera. Items are split between the two arms by a shuffle that is
+deterministic in this seed, stratified by source. The demo profile seeds three
+abandoned orders and only one of them can reach an allow: one is deliberately
+fresh so `R11-NOT-YET-DUE` denies it, one has no contact channel at all so
+`R10-NO-CONTACT-CHANNEL` escalates it, and the third is the aged, contactable
+one. On the old default of `--seed 1234` the shuffle puts that one order in
+`a0-control`, which decides and executes nothing, so the engine mints no link
+and `create_payment_link` never appears as an executed action. On `--seed 5` it
+lands in `a1-engine`, and a dry run over a manifest matching `seed.DemoProfile`
+gives three `notify_email` allows and one `create_payment_link` allow in that
+arm.
+
+Say this out loud if anyone asks, because it is a chosen seed and pretending
+otherwise would be the dishonest version: the arms are assigned by a seeded
+shuffle, the seed is pinned in the command on screen, and it was picked so a
+demo of a link-minting engine actually mints a link. It changes which arm sees
+which item and it changes nothing about what the gate decides. Check it before a
+take with a dry run over the manifest you just seeded, which costs no API call:
+
+```
+make risk-run FLAGS='--dry-run --seed 5 --manifest seedbook.json --out /tmp/seedcheck'
+```
+
+If `a1-engine` has no `create_payment_link` allow in `/tmp/seedcheck/results.jsonl`,
+the book is a different shape from the one this seed was checked against. Try
+other small seeds the same way and pin whichever one works, in the command and
+in this note.
 
 `--detect-grace 1s` is the one without which the demo shows an empty queue.
 `OverdueInvoiceDetector.Detect` measures its grace against Razorpay's own
@@ -386,7 +415,11 @@ Run through this before the first take and again before the final one.
   that points at it. See the presenter note in the browser-cutaway block.
 - **Rehearse the dry run once** immediately before recording, so the on-camera
   run is warm and finishes inside its block:
-  `make risk-run FLAGS='--dry-run --manifest internal/riskrun/testdata/manifest.json --out /tmp/rehearsal'`
+  `make risk-run FLAGS='--dry-run --seed 5 --manifest internal/riskrun/testdata/manifest.json --out /tmp/rehearsal'`
+- **Check `--seed 5` still mints a link on the book you actually seeded**, with
+  the dry run in the risk-run block. The committed fixture above is a warm-up
+  for the binary and not a check of the seed: its orders are all fresh and older
+  than the grace by the time anyone runs it, so every seed mints a link over it.
 - **Check the audio** on a ten second test before spending five minutes.
 
 ## What is not in this video, and why
