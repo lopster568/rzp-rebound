@@ -66,3 +66,5 @@
 
 # A cross-reference to a numbered item, not a measurement.
 36      the HONEST-LIMITATIONS item number the demo script points at for the trace-id gap
+42      the HONEST-LIMITATIONS item number RESULTS.md points at for the disputed-flag limit
+43      the HONEST-LIMITATIONS item number RESULTS.md points at for the failed-payment seeding gap

@@ -122,7 +122,7 @@ evidence for whoever ran it, not a committed artefact.
 |---|---|---|
 | `sequence` | int | Starts at 1 and increases by 1 per order, independently per order. A gap means a row was refused. |
 | `order_id` | string | Required. It is what joins a row to a batch manifest, and an event without one is rejected. |
-| `kind` | string | One of `classified`, `policy_evaluated`, `action_taken`, `action_skipped`, `notification_requested`, `outcome_observed`. The set is closed. |
+| `kind` | string | One of `classified`, `policy_evaluated`, `action_taken`, `action_skipped`, `notification_requested`, `outcome_observed`, plus `intervention_applied`, `escalation_raised`, and `promise_logged` written by `internal/intervene`. The set is closed. |
 | `class` | string, omitted when empty | The failure class. |
 | `proposed_action` | string, omitted when empty | `none`, `retry_same_instrument`, `request_reauth`, `request_new_instrument`. |
 | `policy_verdict` | string, omitted when empty | Phase 2. |

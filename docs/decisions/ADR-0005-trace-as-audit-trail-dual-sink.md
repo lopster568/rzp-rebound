@@ -60,7 +60,12 @@ redaction call, not one per sink.
 The ledger row kinds are a closed set: `classified`, `policy_evaluated`,
 `action_taken`, `action_skipped`, `notification_requested`,
 `outcome_observed`, plus `tool_call` and `decision_recorded` written directly
-by the MCP server. A denied action still writes a row, which is what FR-AUD-1
+by the MCP server, and `intervention_applied`, `escalation_raised`, and
+`promise_logged` written by `internal/intervene`. The last three split on
+whether anything was called and on what it was: an escalation and a logged
+promise reach no Razorpay resource, so filing either as an intervention would
+put a refusal to act automatically in the same bucket as an action.
+A denied action still writes a row, which is what FR-AUD-1
 asks for: a refusal has to be reconstructable from the trail the same way an
 allow is.
 

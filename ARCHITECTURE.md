@@ -1,154 +1,209 @@
 # Architecture
 
-`rzp-recovery-agent` takes a batch of failed Razorpay payments, decides one
-action per order, and executes it through a policy gate the decision maker
-cannot go around. Four decision makers run over the same seeded batch, three of
-them deterministic and one a language model reaching the action surface only
-through MCP tools. Every decision is a trace span and an append-only audit row,
-and the containment claim is a counter that has to read zero rather than a
-sentence in this document.
+`rzp-recovery-agent` sweeps a Razorpay account for money that is owed and not
+collected, decides one action per debt, and executes it through a policy gate
+the decision maker cannot go around. Three detectors feed one queue, the queue
+collapses the sightings that are the same debt, fifteen rules decide, and an
+intervention engine with a closed action set does the rest. Every decision is a
+trace span and an append-only audit row, and the containment claim is a counter
+that has to read zero rather than a sentence in this document.
 
-Written 2026-09-01. Read `/RESULTS.md` for the numbers, `/HONEST-LIMITATIONS.md`
-for what they are not evidence of, and `docs/PRD.md` for scope.
+Written 2026-09-01 for the retry engine, rewritten 2026-09-05 for the
+revenue-at-risk engine that replaced it. Read `docs/INDIA-CONSTRAINTS-AUDIT.md`
+for why the retry action is gone, `/RESULTS.md` for the numbers,
+`/HONEST-LIMITATIONS.md` for what they are not evidence of, and `docs/PRD.md`
+for scope.
 
 ## The whole system
 
 ```mermaid
 flowchart TB
-  SEED["1. rzp seed<br/>internal/batch"]
-  MAN["batch manifest<br/>the ground truth no arm can read"]
-  MAT["2. internal/runner<br/>materialise the order and drive its seeded failure"]
-  GW["3. internal/razorpay.Port<br/>live test mode, replay fixtures, or the deterministic fake"]
-  POLL["4. internal/poller<br/>FetchOrder, ListPaymentsForOrder"]
-  CLS["5. internal/classify<br/>six classes, total, an unknown reason fails closed"]
-  ARMS["6. one recovery.Surface, four arms<br/>a0-control, a1-naive, a3-rules, a2-agent"]
-  MCP["7a. internal/mcpserver, gate layer 1<br/>seven tools, R8 M1 M2 M3 R5<br/>the only hands the agent arm has"]
-  POL["7b. internal/policy.Evaluate, gate layer 2<br/>nine rules, first match wins, three verdicts"]
-  ACT["8. internal/razorpay.Attempter and internal/notify<br/>the only side effects in the system"]
-  AUD["9. internal/audit.Recorder"]
+  SEED["1. cmd/seedbook<br/>internal/seed"]
+  MAN["seedbook.json<br/>what was created, and the age it was meant to have"]
+  HUMAN["2. a person, in a browser<br/>fails payments with documented test cards"]
+  RZP["3. Razorpay test mode<br/>internal/razorpay.Client"]
+  DET["4. internal/detect, three detectors<br/>failed_payment, unpaid_order, overdue_invoice"]
+  COL["5. detect.Collapse<br/>merge on RootOrderID, first sighting wins"]
+  ARMS["6. riskrun.AssignArms<br/>a0-control, a1-engine, seeded and stratified by source"]
+  CLS["7. internal/classify<br/>server side, the model never sees the class"]
+  MCP["8a. internal/mcpserver, gate layer 1<br/>eight tools, R8 M1 M2 M3 R5<br/>the only hands the model arm has"]
+  POL["8b. internal/policy.Evaluate, gate layer 2<br/>fifteen rules, first match wins, three verdicts"]
+  ACT["9. internal/intervene<br/>notify, link, resend, promise, escalate, write off"]
+  AUD["10. internal/audit.Recorder"]
   SPAN["span attributes<br/>internal/telemetry to Jaeger"]
-  LED["ledger.jsonl and outcomes.jsonl"]
-  SCORE["10. harness/scorer.py, then harness/aggregate.py"]
-  TAB["results/tables"]
+  LED["ledger.jsonl, results.jsonl, escalations.jsonl, summary.json"]
+  POLL["11. rzp risk-poll<br/>one fetch per entity, two snapshots, one delta"]
 
-  SEED --> MAN --> MAT --> GW --> POLL --> CLS --> ARMS
-  ARMS -->|"a2-agent"| MCP
+  SEED --> MAN
+  SEED --> RZP
+  MAN -.->|"the printed instruction block"| HUMAN
+  HUMAN --> RZP
+  RZP --> DET --> COL --> ARMS
+  ARMS --> CLS --> POL
+  ARMS -->|"the model arm"| MCP
   MCP --> POL
-  ARMS -->|"a3-rules"| POL
-  ARMS -->|"a1-naive consults nothing"| ACT
-  POL -->|"allow"| ACT
+  POL -->|"allow, and the arm is a1-engine"| ACT
   POL -->|"deny or escalate"| AUD
+  POL -.->|"a0-control stops here"| AUD
   ACT --> AUD
-  ACT -.->|"the side effect lands here"| GW
+  ACT -.->|"the side effect lands here"| RZP
   AUD --> SPAN
-  AUD --> LED --> SCORE --> TAB
-  MAN -.->|"answer key, scoring side only"| SCORE
+  AUD --> LED
+  MAN -.->|"disputed flag, simulated age, source status"| POL
+  RZP --> POLL
 ```
 
-The manifest holds the answer for every order, and the dotted line is the only
-path out of it: it reaches the scorer and never an arm.
-`TestManifestGroundTruthNeverLeaksIntoAgentVisibleFields` walks the projection
-an arm is handed, and `TestArmsCannotReachTheGatewaysGroundTruth` walks the
-action surface and both `Attempter` adapters by reflection. The gateway is
-allowed to know how an attempt settles, because it is the world. An arm is not,
-because it is the thing being measured.
+Two dotted lines out of the manifest are worth reading carefully, because they
+are the two things a run knows that Razorpay did not tell it.
+
+The first is the instruction block. Failed payments cannot be created through
+the API at all: test-mode checkout is browser only, and the headless attempt
+path this repository drove until 2026-08-31 answers `403` as of 2026-09-05. The
+seeder therefore writes an operator to-do list into the manifest naming which
+links to open and which documented failure cards to fail them with, and a person
+does that step by hand. It is the one class of debt in this system that needs a
+human to exist.
+
+The second is `facts.go`. A risk item carries what Razorpay reported and nothing
+else, and three of the things the rules read are not in a Razorpay response: the
+simulated at-risk instant, the source resource's status, and whether the debt is
+disputed. Those come off the manifest, per item, and every row a run writes says
+which clock it used.
 
 ## Components
 
-**`internal/batch`, the seeder.** `rzp seed` writes a manifest from a seed:
-per-class failure counts, and for every order its failure class, its
-ground-truth correct action, its attempt budget, and whether it is recoverable.
-The same seed and size produce a byte-identical file with no timestamp in it,
-so two runs can be diffed. Bait orders are seeded on top of the requested
-distribution: `never_retry`, where any attempt is wrong, and
-`attempt_budget_exhausted`, where the class says retry and the history says
-stop. An arm sees `batch.AgentVisibleOrder`, a separate type carrying four
-fields, and the answer key is not one of them.
+**`internal/seed` and `cmd/seedbook`, the book.** Creates customers, invoices at
+four age buckets, and abandoned orders in Razorpay test mode, and writes
+`seedbook.json` recording every id, every amount, and the flags the item was
+seeded with: disputed, no contact, partial-payment plan. It refuses to exceed its
+call budget. Nothing in the invoice or order creation calls lets a caller
+backdate `issued_at` or `created_at`, so every item it creates is, to Razorpay,
+brand new; the intended age is a manifest property and is labelled as one
+everywhere it is used.
 
-**`internal/razorpay`, the gateway.** One interface, `Port`, with six calls:
-`CreateOrder`, `FetchOrder`, `ListPaymentsForOrder`, `FetchPayment`,
-`CreatePaymentLink`, `ResendPaymentLinkNotification`. Three implementations
-satisfy it and run the same contract tests: `Client` against Razorpay test
-mode, `NewReplay` against fixtures captured from real responses under
-`testdata/recorded/`, and `Fake`, deterministic and in memory.
-`razorpay.Attempter` is deliberately not on `Port`: a payment attempt happens
-in checkout, not in the documented server API, and driving one in test mode
-takes four undocumented calls that end at a mock bank form.
-`docs/RAZORPAY-TEST-MODE-NOTES.md` has the sequence and what it cost to find.
+**`internal/razorpay`, the gateway.** One `Client` over plain `net/http` with no
+SDK, plus the `Port` interface and its fake and replay implementations that the
+pre-pivot arms run on. The risk engine reads through narrow consumer interfaces
+declared by the packages that call them: `detect.OrderLister`,
+`detect.InvoiceLister`, `detect.OrderPaymentsAPI`, `riskrun.PollAPI`, and
+`intervene.Gateway`. `*razorpay.Client` satisfies all of them and no detector
+holds one, which is what lets a test supply a stub.
 
-**`internal/runner`, materialisation.** A manifest is a specification, not a
-set of gateway orders. The runner creates the orders and drives each one to its
-seeded failure before any arm sees anything, and both binaries go through it,
-so the agent arm and the deterministic arms start from identical state. Each
-arm gets its own copy of the orders, because arms sharing one set would mean
-the first arm to recover an order changed what the next ones saw.
+**`internal/riskitem`, the frozen contract.** One item type, three sources, one
+closed action set, and two pure functions for identity. It imports nothing
+outside the standard library, talks to no network, and holds no Razorpay client.
+Every other package compiles against it, which is the point of freezing it.
 
-**`internal/poller`.** Reads order and payment state through `Port` under a
-concurrency cap with backoff on 429, and hands the recovery loop the terminal
-state plus the failed payment. It reads time through `internal/clock`, so no
-test sleeps.
+The two identity rules are not the same rule. `ID` is per detector sighting,
+derived from the source and the Razorpay id, so the same failed payment seen
+twice is one id and the same debt seen by two detectors is two.
+`RootOrderID` is the dedupe key.
 
-**`internal/classify`.** Turns the error fields Razorpay returned into one of
-six classes: `transient_retry_eligible`, `retry_eligible`, `reauth_required`,
-`new_instrument_required`, `never_retry`, `unclassified`. It prefers
-`error.reason` over `error.code` and it is total: anything unrecognised is
-`unclassified`, which is not retry eligible. That default is why the live layer
-escalates everything, and it is the correct behaviour rather than a gap.
+**`internal/detect`, the three detectors.** `FailedPaymentDetector` lists orders
+with something still due and reads the payments behind each, taking the newest
+failed one. `UnpaidOrderDetector` takes orders that are `created` with zero
+attempts, which is an abandonment rather than a failure, and the `Signal` carries
+the difference. `OverdueInvoiceDetector` takes invoices that are `issued` or
+`partially_paid`, still owe something, and were issued longer ago than the
+detector's grace.
+
+An order-sourced item usually has no customer on it. Razorpay's order responses
+carry no customer email and no customer contact, confirmed against live test mode
+on 2026-09-05: an order is an amount and a status, and the contact exists only on
+a payment attempt, an invoice, or a payment link. A detector reads a contact out
+of an order's notes only under the documented keys, and a note under any other
+key is ignored rather than guessed at.
+
+**`detect.Collapse`, the dedupe.** Razorpay mints an order when an invoice is
+issued, so one debt is reachable from the invoice detector under an `inv_` id and
+from the unpaid-order detector under the `order_` id it minted. Collapsing on
+`ID` would keep both and contact the customer twice about one debt. Collapse
+merges on `DedupeKey`, which is `RootOrderID` when there is one and falls back to
+the sighting's own identity when the source resource has no order behind it, so
+an item with no root order is never merged with an unrelated one.
+
+First sighting wins and input order is preserved, so the caller decides which
+detector speaks for a shared debt. `riskrun` concatenates overdue invoices first,
+because an invoice-sourced sighting carries a customer, a short URL that is
+already payable, and the notification state, and an order-sourced one carries
+none of the three.
+
+**`internal/classify`, on the server side.** Turns the error fields Razorpay
+returned into a class, and it is total: anything unrecognised is `unclassified`,
+which reaches `R7-UNKNOWN-FAIL-CLOSED`. Its vocabulary is built around whether
+the same instrument can be presented again, which is a question this engine
+cannot act on, so the class is computed and handed to the policy and is never put
+on the MCP wire. Showing a model a field that says `transient_retry_eligible`
+would advertise an action that does not exist.
 
 **`internal/policy`, layer 2 of the gate.** `Evaluate(state, req) -> Decision`
-over nine rules in a fixed order, returning one of three verdicts plus the rule
-that decided. It is pure: it reads its config, an injected clock, the state the
-store supplied, and the request, and it touches nothing else, which is what
-lets `internal/policy/testdata/policy_matrix.golden` pin all 576 combinations
-in one reviewable file.
+over fifteen rules in a fixed order, returning one of three verdicts plus the
+rule that decided. It is pure: it reads its config, an injected clock, the state
+the store supplied, and the request, and it touches nothing else, which is what
+lets a golden matrix pin the whole behaviour in one reviewable file. The
+per-source cadence is a table in `sources.go` rather than a switch inside
+`Evaluate`, so a fourth source would arrive as a row and no rule body would
+change.
 
-**`internal/store`.** The attempt ledger for one run: per-order attempt counts
-primed from what the gateway reported rather than from the manifest, action and
-notification timestamps, a run-wide action count, and the set of committed
-idempotency keys. In memory, for one run. There is no durable half and nothing
-here pretends there is.
+**`internal/intervene`, the only side effects in the system.** One `Apply` call
+per item, returning an `Outcome` for every call including a refusal, so the audit
+trail has a row for everything that was decided. It refuses rather than guesses
+when the action is outside the lawful set, when a notify action arrives for an
+item with no contact channel, when a link is proposed for an item that already
+has a handle, and when a write-off is proposed for something that is not an
+invoice.
 
-**`internal/mcpserver`, layer 1 of the gate.** The agent's entire reach, per
-ADR-0001. Seven tools and no other hands: `list_failed_payments` and
-`get_payment_detail` read, `record_decision` states an intent, and
-`create_payment_link`, `resend_payment_link_notification`, `retry_payment`, and
-`escalate_to_human` act. The list is closed and
-`TestServerServesExactlyTheSevenNamedTools` keeps it closed. The model gets no
-shell, no HTTP client, no filesystem, and no credential: the keys reach the
-server process through the environment and are never written into the MCP
-config file, which `TestNoToolResponseCarriesACredential` checks by calling
-every tool for every order and searching the wire bytes.
+`Outcome.Accepted` records that the API call succeeded. It does not record that a
+customer was told anything, and no field on it should ever be read that way.
+`Observable` is the strongest thing that was actually seen, written as a field and
+a value: `email_status:sent` when the invoice read back said so,
+`notify_api:accepted` when the call succeeded and the read did not, and
+`plink_status:created` on a link the create call returned a status for.
 
-**`internal/recovery`, the arms.** Four `ActionFunc` implementations behind one
-`Surface` and one `Attempter`. They differ in what they decide and never in
-what they can reach, so the comparison is of decisions and not of capabilities.
-`harness/arm_config.py` holds all four configurations in one place and
-`harness/test_arm_config.py` diffs any two of them key by key, permitting
-exactly two differences: the arm label and the decision maker.
+**`internal/store`, the run's own ledger.** Touch counts, contact and
+notification timestamps, the run-wide action count, and the set of committed
+idempotency keys. In memory, for one run. `internal/intervene` holds a second
+guard for the same reason and with the same limitation: a slot per item and
+action, never evicted, gone when the process exits. A second run over the same
+manifest starts with an empty ledger and will contact an item it already
+contacted, so R1 and R2 bound one run and not a campaign. There is no durable
+half and nothing here pretends there is.
 
-**`internal/notify`.** Sends a payment link over sms or email through
-`ResendPaymentLinkNotification` and reports that the notification API call
-succeeded. `Receipt.DeliveryConfirmed` is false on every path, and the scorer
-never credits a notification as a recovery. A payment link created with no
-contact on it at all still had its resend answered with `{"success":true}` in
-test mode, which is the strongest reason this wording is a rule.
+**`internal/mcpserver`, layer 1 of the gate.** The model's entire reach, per
+ADR-0001. Eight tools and no other hands, and the list is closed by a test. The
+model gets no shell, no HTTP client, no filesystem, and no credential: the keys
+reach the server process through the environment and are never written into the
+MCP config file.
 
-**`internal/audit`.** One `Recorder.Record` call writes one event to two
-places, and `trace_id` joins them. Every value on both sinks goes through
-`internal/redact` on the way in.
+**`internal/riskrun`, the pipeline.** It owns the wiring and nothing else. Every
+judgment is deferred to the package that owns it, and what is here is the order
+those run in, the facts the item itself cannot carry, the two arms, and the files
+a run leaves behind.
 
-**`internal/telemetry`.** Builds the tracer provider: OTLP when an endpoint is
-configured, the stdout exporter when it is not, so a run with the collector
-down still produces spans and still produces a scorable ledger.
+**`internal/audit` and `internal/telemetry`.** One `Recorder.Record` call writes
+one event to two places, joined by `trace_id`. Every value on both sinks goes
+through `internal/redact` on the way in.
 
-**`harness/`, the scoring side.** Python on the standard library with
-`unittest`, no third-party package and no install step (ADR-0007).
-`orchestrator.py` builds the run and shuffles the arm-by-order cells with a
-seeded shuffle, `agent_runner.py` and `claude_runner.py` drive the model arm
-one headless invocation per order, `scorer.py` joins outcome rows and ledger
-rows to the manifest, and `aggregate.py` writes the tables. The Go side and the
-Python side meet at four JSON file formats and nothing else, which is what lets
-a published number be recomputed by something that is neither program.
+## The two arms
+
+Assigned per item, in one process, over one queue.
+
+| Arm | What it does |
+|---|---|
+| `a0-control` | Detects, classifies, and evaluates, and then stops. The verdict is written down and nothing is executed. |
+| `a1-engine` | Executes what the gate allowed, through `internal/intervene`. |
+
+Assignment is a seeded shuffle stratified by source, so the two arms see the same
+mix of failed payments, unpaid orders, and overdue invoices rather than one arm
+getting all the invoices. That stratification is the whole reason the arm split
+exists: a recovered-paise figure over a book somebody is paying anyway is a
+number with no counterfactual under it, and the control arm is the counterfactual.
+It is a weak one at demo scale, and `/HONEST-LIMITATIONS.md` says how weak.
+
+The control arm is not a do-nothing stub bolted on for symmetry. It runs the same
+detectors, the same dedupe, the same classifier, and the same gate at the same
+instant on the same sweep, and the only thing it skips is the call to
+`intervene.Apply`. What it measures is what the gate would have done.
 
 ## The trace is the audit trail
 
@@ -157,23 +212,34 @@ active in the context, and as a JSONL line carrying that span's trace id. Two
 views of one event, joined by `trace_id`. A compliance reviewer reading a row
 opens the trace; a scoring pass reads the file with no trace backend running.
 
-The ledger row kinds are a closed set: `classified`, `policy_evaluated`,
-`action_taken`, `action_skipped`, `notification_requested`,
-`outcome_observed`, plus `tool_call` and `decision_recorded` from the MCP
-server. A denied action still writes a row, which is what makes refusals
-countable instead of silent. One agent invocation is one trace: a root span
-with the classification, every `tools/call`, and the gateway read-back hanging
-off it, so a reviewer opens one link and sees the whole order.
+A `risk-run` leaves four files in its output directory.
+
+| File | What is in it |
+|---|---|
+| `ledger.jsonl` | One row per audit event: the policy evaluation, the action taken or skipped, the outcome |
+| `results.jsonl` | One flat row per item: the item, the verdict, the rule, and what happened next |
+| `escalations.jsonl` | One row per item handed to a person. No contact detail is on it |
+| `summary.json` | The run's counts, and the policy snapshot it ran under |
+
+An escalation row deliberately carries no email address and no phone number.
+Copying one into a queue file would put it somewhere the audit redactor does not
+reach, and the item id is enough for whoever picks the item up.
+
+The summary carries a `PolicySnapshot`: the ceiling, the write-off floor, the
+action budget, the notify window, the contact window, and the whole per-source
+cadence table. It is written down because the numbers move. A run scored six
+months later against that day's constants would be scored against a policy it
+never saw.
 
 Two things about the trace are load bearing and were both found the hard way.
 `razorpay.Attempter` does not use `otelhttp`, because two of the four checkout
-calls carry the key id as a query parameter and the callback carries it as a
-path segment, and `otelhttp` records `url.full`. That put the key id into six
-span attributes of a real demo run before it was caught by grepping a trace.
-And `internal/audit` shortens the idempotency key to twelve characters in the
-row, because the card-shaped redaction pattern matches any run of thirteen or
-more digits and a sha256 digest contains one about five percent of the time,
-which had already scrubbed the middle out of four committed rows.
+calls carry the key id as a query parameter and the callback carries it as a path
+segment, and `otelhttp` records `url.full`. That put the key id into six span
+attributes of a real demo run before it was caught by grepping a trace. And
+`internal/audit` shortens the idempotency key to twelve characters in the row,
+because the card-shaped redaction pattern matches any run of thirteen or more
+digits and a sha256 digest contains one about five percent of the time, which had
+already scrubbed the middle out of four committed rows.
 `docs/AUDIT-TRACE-SCHEMA.md` is the full schema, written from a run rather than
 from the test assertions.
 
@@ -182,181 +248,119 @@ from the test assertions.
 Two layers, both inside the server process, both ahead of any side effect
 (ADR-0003). Each covers the other's failure mode: a forgotten `Evaluate` still
 meets the middleware, and an action the middleware cannot judge still meets
-`Evaluate`.
+`Evaluate`. A row says which layer refused it, so a double refusal reads as one
+denial with a known origin.
 
-**Layer 1 is receiving middleware around every MCP tool call.** It knows
-nothing about what a tool does, so it enforces the checks that need no
-arguments.
+**Layer 1 is receiving middleware around every MCP tool call.** It knows the tool
+name and the risk item id and nothing about what the tool does, so it enforces
+the checks that need no arguments.
 
 | Rule | What it refuses |
 |---|---|
 | `R8-KILL-SWITCH` | Everything, while the flag is set or the kill-switch file exists |
-| `M1-TOOL-ALLOWLIST` | A tool name that is not one of the seven |
-| `M2-ORDER-ALLOWLIST` | An order id that is not in this invocation's batch, and an action tool that named no order |
-| `M3-DECISION-REQUIRED` | An action tool for an order with no `record_decision` on the record yet |
+| `M1-TOOL-ALLOWLIST` | A tool name that is not one of the eight. Any spelling of a retry lands here |
+| `M2-ITEM-ALLOWLIST` | A risk item id this invocation was not given, and an action tool that named no item |
+| `M3-DECISION-REQUIRED` | An action tool for an item with no `record_decision` on the record yet |
 | `R5-ACTION-BUDGET` | An action past this invocation's action budget |
+
+`M2` was `M2-ORDER-ALLOWLIST` while the queue held orders. The allowlist now keys
+on risk item ids, and the rule name says so, because two of the three sources are
+not orders.
 
 `M3-DECISION-REQUIRED` exists because of FR-AUD-1. A reviewer picks one action
 and reconstructs why it was taken; for a rule set the answer is in the
-repository, and for a model it is the reasoning the model stated before it
-acted. Reasoning stated afterwards is a reconstruction, not a record.
+repository, and for a model it is the reasoning the model stated before it acted.
+Reasoning stated afterwards is a reconstruction, not a record.
 
-**Layer 2 is `policy.Evaluate` as the first statement of every action
-handler.** It gets the order id, the failure class, the attempts already made,
-and the amount in paise. Nine rules, first match wins, and the order is a
-contract rather than an implementation detail.
+**Layer 2 is `policy.Evaluate` as the first statement of every action handler.**
+Fifteen rules, first match wins, and the order is a contract rather than an
+implementation detail. `/README.md` has the table.
 
-| Rule | Verdict | What it checks |
-|---|---|---|
-| `R8-KILL-SWITCH` | deny | The kill switch is engaged. A halt beats every other reason an action might be fine, so it runs first. |
-| `R9-IDEMPOTENCY` | deny | This exact action was already committed, so repeating it is a no-op rather than a refusal of anything new. |
-| `R7-UNKNOWN-FAIL-CLOSED` | escalate | The failure did not classify. A reason nothing recognises is not a reason to act. |
-| `R4-NEVER-RETRY-CLASS` | escalate | The class forbids any further attempt on this payment. |
-| `R3-AMOUNT-CEILING` | escalate | The amount is strictly above the ceiling for an unattended action. |
-| `R1-MAX-ATTEMPTS` | deny | The order has had its permitted attempts. |
-| `R2-COOLDOWN` | deny | This run acted on the order inside the cooldown. |
-| `R6-NOTIFY-RATE` | deny | A notification on this order inside the notify window. |
-| `R5-ACTION-BUDGET` | deny | The run has spent its action budget. |
+Three properties of that order are worth stating here rather than leaving to be
+derived.
 
-`R0-DEFAULT-ALLOW` is the tenth id and it is not a rule. Every decision carries
-a rule id including an allow, so no audit row has to be read as "no rule fired,
-presumably that was fine".
+Most rules skip an action `IsSafeAction` reports true for. Escalating, doing
+nothing, and logging a promise are what is left when this engine has decided not
+to chase an item, so a rule that refused them would leave no verdict able to say
+"hand this to a person". `R8` and `R9` are the exceptions and have to be: a halt
+stops everything, and a replay of an escalation is still a replay. `R7` is the
+third, because an action nothing recognises is not safe merely by being
+unrecognised.
 
-**A test walks every action handler on every run.**
-`TestEveryActionToolConsultsPolicyBeforeSideEffect` lists the tools through the
-server's own registry over a live session, so the set it walks is exactly the
+Two rules narrow further to `IsContactAction`, `R10` and `R4`, because they are
+about reaching a customer. Writing an item off is neither safe nor a contact, and
+it is gated by `R3` at any amount above the write-off floor.
+
+`R11` and `R7` split by source. A failed payment must carry failure evidence,
+because a payment that failed for no readable reason is exactly the case `R7` was
+written for; an abandoned cart has no failure to report, and treating its empty
+signal as an unreadable one would escalate the whole unpaid-order queue.
+Likewise the grace period is zero for a failed payment, an hour for an abandoned
+cart, and three days for an issued invoice.
+
+**A test walks every action handler on every run.** It lists the tools through
+the server's own registry over a live session, so the set it walks is exactly the
 set the model sees, and calls every one of them against spy adapters that fail
 the test on a mutating call, under a state the policy must refuse. A tool the
 test has no argument builder for fails it too, so a new ungated tool turns the
-suite red two ways. At run time, `policy_violations_succeeded` counts side
-effects with no verdict behind them, `harness/aggregate.py` gates both
-`a2-agent` and `a3-rules` on it reading zero, and `scripts/report.sh` exits
-non-zero when it does not. That assertion has been seen failing: injecting one
-`action_taken` row with a side effect and no verdict into the `a3-rules` ledger
-makes the report exit 1.
+suite red two ways.
 
-**The failure mode that metric cannot see, and the fix.** `internal/store`
-takes three separate lock acquisitions to snapshot, evaluate, and commit. Under
-`rzp run`, which processes orders one at a time, that is unreachable. An MCP
-client issues tool calls in parallel and the SDK dispatches each in its own
-goroutine, so the sequence became reachable the moment the agent arm existed.
-Measured against the unlocked code: eight concurrent `retry_payment` calls on
-an order with one of its two permitted attempts left put eight payments on it,
-and every one of those actions carried an allow verdict, so
-`policy_violations_succeeded` would have read zero and the containment column
-would have called the run clean. `Server.act` now holds one mutex from before
-the snapshot to after the commit.
-`TestConcurrentActionToolCallsCannotBothPassTheAttemptCap` widens the race
-window with a delay in the spy attempter and starts its callers on a barrier,
-so it is red on every run against the unlocked code rather than red twice in
-forty. A test that usually passes against the bug it exists for is a test
-nobody can act on.
+**The failure mode a containment counter cannot see, and the fix.**
+`internal/store` takes three separate lock acquisitions to snapshot, evaluate, and
+commit. Processing items one at a time, that is unreachable. An MCP client issues
+tool calls in parallel and the SDK dispatches each in its own goroutine, so the
+sequence became reachable the moment the model arm existed, and every one of the
+racing actions would carry an allow verdict, so a violations counter would read
+zero and call the run clean. `Server.act` holds one mutex from before the
+snapshot to after the commit, and the test that covers it widens the race window
+with a delay in the spy and starts its callers on a barrier, so it is red on
+every run against the unlocked code rather than red twice in forty. A test that
+usually passes against the bug it exists for is a test nobody can act on.
 
 ## How a run is measured
 
-Four arms, one seeded batch per layer, and no table summed across layers
-(ADR-0004). `docs/EVAL-DESIGN.md` is the full design.
+**Two reads and a difference.** `rzp risk-poll` re-reads every entity the
+manifest created, plus any payment link a risk run created, and writes what
+Razorpay reports about each: status, amount paid, amount due, and the invoice
+notification-status fields. Every call is a fetch and nothing in it writes to
+Razorpay. A recovered-paise figure is the rise in what Razorpay reports as
+collected between two snapshots with the intervention between them, over the
+entities both snapshots could read.
 
-**The arms.** `a0-control` never acts and is the floor. `a1-naive` retries
-every failure with no classification and no policy. `a3-rules` classifies, asks
-`policy.Evaluate`, then acts or escalates. `a2-agent` is a headless model, one
-invocation per order, reaching the same surface only through the MCP tools.
+An invoice contributes two reads, the invoice and the order it minted, because
+they are two different answers about one debt: the invoice carries the
+notification-status fields and the order is what a payment lands on. A read that
+fails leaves an entry carrying the error rather than no entry at all, and it is
+counted as unmatched in a delta, because a snapshot that dropped an unreadable
+entity would let the delta count it as paid.
 
-**The layers.** `fake` is `razorpay.Fake`, a model of documented behaviour and
-evidence about this code only. `live` is Razorpay test mode, which is evidence
-about the API and not about real customers. Every published row names its
-layer.
+**Nothing in the summary is a rate.** A rate needs a denominator that means
+something, and a run over a seeded book has one only after `risk-poll` has read
+the account twice. The summary carries counts, and `/RESULTS.md` says which live
+counts are committed and which are not.
 
-**Ground truth by construction.** The generator chose each order's failure, so
-the class, the correct action, the attempt budget, and the recoverable flag
-were all decided before anything ran. There is no annotation to disagree about
-because there was no annotation. The limits of that argument are in
-`/HONEST-LIMITATIONS.md` rather than left implicit.
+**Amounts are Razorpay's own.** `AmountDuePaise` is read off the response rather
+than computed by subtracting paid from gross, because a partial payment makes the
+arithmetic disagree with the gateway, and the gateway is the one that decides
+what is still owed. `R3` weighs the amount due rather than the gross for the same
+reason: a large invoice that is almost paid is a small debt, and escalating it on
+the gross figure would put a person in front of an item there is nothing to
+decide about.
 
-**Recovery is read from the gateway, never from the arm.** `rzp run` calls
-`FetchOrder` after the action on every code path, including when the action
-errored and including when no action was taken. What the arm claimed about
-itself is carried in `claim_disagreements` and no metric is computed from it.
-
-**Bait orders.** Two kinds, seeded so that doing nothing is correct, to catch an
-arm that acts on everything it is shown. The `attempt_budget_exhausted` bait
-catches the rules arm as well, and that is the finding rather than a defect in
-the bait: `R1-MAX-ATTEMPTS` is a flat cap and no rule reads the per-class
-budget.
-
-## Results
-
-Full tables, per-class breakdown, and the reading are in `/RESULTS.md`.
-
-### Fake layer, n=40, on a published card-decline mix
-
-Seeded from Mastercard and Ethoca's published card-decline shares, which make 35
-percent of the batch orders no merchant should touch.
-
-| run | layer | arm | recovered | rate | actions | FA-1 | FA-2 | modelled cost | escalations | evaluations | refusals | violations succeeded |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| phase-5-fake-ethoca | fake | `a0-control` | 0 | 0.000 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| phase-5-fake-ethoca | fake | `a1-naive` | 20 | 0.769 | 40 | 14 | 6 | 700000 | 0 | 0 | 0 | 40 |
-| phase-5-fake-ethoca | fake | `a2-agent` | 16 | 0.615 | 22 | 0 | 0 | 0 | 18 | 50 | 22 | 0 |
-| phase-5-fake-ethoca | fake | `a3-rules` | 16 | 0.615 | 22 | 0 | 0 | 0 | 18 | 40 | 18 | 0 |
-
-A model of documented behaviour. Not evidence about Razorpay.
-
-### Fake layer, n=40, on the invented mix, for comparison
-
-Same seed, same code, same day. Only the failure mix differs.
-
-| run | layer | arm | recovered | rate | actions | FA-1 | FA-2 | modelled cost | escalations | evaluations | refusals | violations succeeded |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| phase-5-fake-uniform | fake | `a0-control` | 0 | 0.000 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| phase-5-fake-uniform | fake | `a1-naive` | 19 | 0.514 | 40 | 3 | 18 | 150000 | 0 | 0 | 0 | 40 |
-| phase-5-fake-uniform | fake | `a3-rules` | 15 | 0.405 | 31 | 0 | 0 | 0 | 9 | 40 | 9 | 0 |
-
-### Live layer, n=8, Razorpay test mode
-
-| run | layer | arm | scorable | unscorable | recovered | rate | actions | FA-1 | FA-2 | escalations | evaluations | refusals | violations succeeded |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| phase-5-live | live | `a0-control` | 8 | 0 | 0 | 0.000 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| phase-5-live | live | `a1-naive` | 8 | 0 | 4 | 0.667 | 8 | 2 | 2 | 0 | 0 | 0 | 8 |
-| phase-5-live | live | `a3-rules` | 8 | 0 | 0 | 0.000 | 0 | 0 | 0 | 8 | 8 | 8 | 0 |
-
-Razorpay test mode. Not evidence about real customers, and not evidence that a
-recovery decision caused a recovery.
-
-**What the three tables say.** On the headline fake batch the naive arm recovers
-the most, 20 against 16, and pays 20 false actions against 0 to do it, and
-reaches the gateway 40 times with no policy verdict behind any of them. Its
-forbidden actions are 14 against 3 on the invented mix, which is the single
-clearest thing phase 5 produced: a real card-decline mix is a third orders that
-must not be touched, and blind retry touches all of them. The model arm and the
-rule set arm agreed on all 40 orders: same recoveries, same actions, no false
-action on either, same eighteen escalations splitting the same way. What
-differed is what they asked for, and that is the column worth reading:
-`a2-agent` made 50 policy evaluations against 40, had 22 proposals refused
-against 18, and none of the 22 reached the gateway.
-
-On the live layer every order classified as `unclassified`, because Razorpay
-test mode returns `payment_failed` for all eight documented magic cards.
-Razorpay documents that reason as the bank declining without giving one, with a
-suggested action of trying a different card, so it names no cause a policy can
-act on. `R7-UNKNOWN-FAIL-CLOSED` fired on every one, so the rules arm escalated
-everything and took nothing. The naive arm retried all 8 and 4 reached `paid`,
-and that number is selected rather than earned: a test-mode attempt is settled
-at the last checkout call by one form field, so the gateway is standing in for
-the world.
+**The dry-run path proves one thing and says so.** It makes no network call of
+any kind. It builds the Razorpay entities the detectors read out of the manifest
+itself, runs the real detectors, the real dedupe, and the real gate over them, and
+stops before the intervention engine. What it proves is that detect, collapse,
+and policy agree end to end. What it cannot prove is anything at all about
+Razorpay's answers.
 
 ## What this is not evidence of
 
-`/HONEST-LIMITATIONS.md` has every limit the phase documents record, and
-`docs/EVIDENCE.md` section 8 has what cannot be made real without production
-data. The four that bite hardest on the tables above: the headline batch's
-failure mix is a fraud-prevention vendor's published card-decline shares from
-2017, across a merchant population that is not Indian and not UPI-inclusive,
-which is the best citable mix available and is not this merchant's;
-classification accuracy on the fake layer is 1.000 for every arm and carries no
-information, because the fake seeds the reason the classifier reads; only the
-retry-class orders can reach `paid` in a run, so no arm can reach a recovery
-rate of 1.000 on any of these batches; and the run shape fires three of the nine
-policy rules, so the other six rest on unit tables and a golden matrix rather
-than on these numbers. There is also no spread anywhere: one run per layer, and
-the model arm is the one arm that does not reproduce from a seed.
+`/HONEST-LIMITATIONS.md` has every limit the build found, pre-pivot and
+post-pivot. The five that bite hardest on this design: aging is the manifest's
+claim rather than Razorpay's, because no API call can backdate an invoice; any
+paid transition is a demoer paying a link in a browser, so it is `n=1` and
+selected rather than sampled; a notification is an accepted API call and never a
+delivery; a dispute exists only as a manifest flag, so `R13` fires from seeded
+data and nothing in this process detects a real one; and the idempotency guard is
+process-local and unevicted, so it bounds one run rather than a campaign.

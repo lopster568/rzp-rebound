@@ -1,5 +1,224 @@
 # Results
 
+This file has two halves and they are about two different systems.
+
+The first half is the revenue-at-risk engine, which is what the repository is
+now. It describes what a run writes and states plainly which live numbers are
+committed and which are not. The second half is the four-arm retry comparison,
+which is what the repository was until 2026-09-05. Those tables are kept,
+unedited, under a banner saying what they measured, because
+`docs/INDIA-CONSTRAINTS-AUDIT.md` retired the action they measured and deleting a
+published table is a worse habit than labelling one.
+
+Written 2026-09-05. Every cell in every table here is checked against the CSV of
+the committed run behind it by `scripts/claims-check.sh`, which is why the old
+tables are untouched rather than rewritten.
+
+## The revenue-at-risk engine
+
+### What a run writes
+
+`rzp risk-run` leaves four files in its `--out` directory. Three of them are one
+line per something and the fourth is the roll-up.
+
+| File | One line per | What it is for |
+|---|---|---|
+| `ledger.jsonl` | audit event | The trail: the policy evaluation, the action taken or skipped, the outcome |
+| `results.jsonl` | risk item | The flat row a scoring pass reads without knowing anything about this code |
+| `escalations.jsonl` | item handed to a person | The queue. No contact detail is on it |
+| `summary.json` | run | Counts, and the policy snapshot the run used |
+
+`rzp risk-poll` writes one file, a snapshot, and nothing else. Every call it
+makes is a fetch.
+
+### The summary schema
+
+`riskrun.Summary` is derived entirely from the result rows, so the summary and
+the results file cannot disagree.
+
+| Field | What it holds |
+|---|---|
+| `run_tag`, `mode`, `seed`, `started_at`, `finished_at` | Which run this was, and whether it was `live` or `dry-run` |
+| `manifest_path`, `manifest_run_tag`, `manifest_items` | The seedbook run it is about |
+| `age_source` | `gateway` or `manifest_simulated`, run-wide. Per-item rows carry their own |
+| `detect_grace`, `kill_switch_engaged` | The sweep's grace period, and whether R8 was engaged |
+| `policy` | The full cadence the run ran under: ceiling, write-off floor, action budget, notify window, contact window, and the per-source table of grace, max touches, cooldown, and whether the source requires a signal |
+| `sightings_by_source` | What the detectors returned, before the dedupe |
+| `items_by_source`, `collapsed_away`, `items_total` | What was left after `detect.Collapse`, and how many sightings it merged |
+| `items_by_arm` | The split between `a0-control` and `a1-engine` |
+| `verdicts_by_rule`, `verdict_totals` | Rule id to verdict to count. Exactly one entry per item |
+| `escalation_verdicts_by_rule`, `escalation_verdict_totals` | The same shape for the follow-up decision an escalating verdict raises, kept apart so the first pair stays one entry per item |
+| `actions_proposed`, `actions_executed`, `actions_accepted` | Proposed, run, and answered with success, by action |
+| `escalations` | Items a sink took the record for |
+| `observables` | `riskitem.Outcome.Observable` values, verbatim, counted |
+| `refusals` | The intervention engine's own refusal strings. These are not policy verdicts |
+| `errors` | Rows carrying an error, whatever its origin |
+| `amount_due_by_source`, `amount_due_total` | What Razorpay reported as outstanding, summed. Never a subtraction of paid from gross |
+
+**Nothing in it is a rate.** A rate needs a denominator that means something, and
+a run over a seeded book has one only after `risk-poll` has read the account
+twice.
+
+`actions_accepted` counts API calls that were accepted. It does not count
+customers who were reached, and no reading of it should say that it does. What
+the run has instead is `observables`, which carries the strongest thing that was
+actually seen per action, as a field and a value: `email_status:sent` where the
+invoice read back said so, `notify_api:accepted` where the call returned success
+and the read was not available, `plink_status:created` on a new link.
+
+The `policy` block is written down because the numbers move. Every one of them is
+either a configured choice or a cited value, `policy.ConfiguredChoices` and
+`policy.CitedValues` say which per rule, and a run scored six months later
+against that day's constants would be scored against a policy it never saw.
+
+### The snapshot schema and the delta
+
+`riskrun.Snapshot` is `taken_at`, the manifest it is about, a list of entries,
+and their totals. An entry carries `kind`, the id, the order behind it, `status`,
+the three amounts, the currency, and the invoice `email_status` and `sms_status`.
+An entry whose read failed carries `error` and stays in the file, because an
+entity that could not be read is not an entity that is settled and dropping it
+would let a delta count it as paid.
+
+An invoice contributes two entries, the invoice and the order it minted, because
+they are two different answers about one debt: the invoice carries the
+notification-status fields and the order is what a payment lands on. A payment
+link reports no amount due at all, so that field is left at zero on one rather
+than filled in by arithmetic.
+
+`riskrun.Delta` is what moved between two snapshots: `recovered_paise`,
+`amount_due_change_paise`, how many entities were compared, how many were
+unmatched or unreadable, and the entities whose status changed. An entity present
+in one snapshot and not the other contributes nothing and is counted as
+unmatched.
+
+**`recovered_paise` is not a claim about what this program caused.** It is the
+rise in what Razorpay reports as collected between two reads. A customer who paid
+for their own reasons moves the same number. The control arm exists so the
+question can be asked of two groups rather than of one, and at demo scale that is
+a handful against a handful.
+
+### Live numbers
+
+**There are none in this file yet, and that is deliberate.** A live risk-engine
+figure goes here when the run behind it is committed under `results/` and
+`scripts/claims_check.py` can read it back, and not before. The rule the rest of
+this repository runs on is that a number in prose is a claim that gets checked
+against the run that produced it, and an uncommitted run cannot be checked.
+
+What a demo produces in the meantime is on screen and in the operator's own
+output directory, and `docs/DEMO-SCRIPT.md` is explicit that the figures a viewer
+sees are that run's rather than a published result.
+
+### The dry run over the committed fixture
+
+The one risk-engine output this file can quote is the offline one, because its
+input is committed and it reproduces. It is a fixture, it made no API call of any
+kind, and every number in the block below is a dry-run number over
+`internal/riskrun/testdata/manifest.json`.
+
+```
+go run ./cmd/rzp risk-run --dry-run \
+    --manifest internal/riskrun/testdata/manifest.json --out /tmp/riskdocs-dryrun
+```
+
+```
+run       risk-1788594735
+mode      dry-run  (the manifest replayed through the real detectors and the real gate, no API call of any kind)
+manifest  internal/riskrun/testdata/manifest.json (11 seeded item(s))
+items     11 after the dedupe merged 6 sighting(s)
+age       manifest_simulated
+
+  overdue_invoice  ri_48fa6e63454e  a1-engine   notify_email           allow     R0-DEFAULT-ALLOW
+  overdue_invoice  ri_a404858ae4a8  a0-control  notify_email           allow     R0-DEFAULT-ALLOW
+  overdue_invoice  ri_738072f120a5  a0-control  notify_email           allow     R0-DEFAULT-ALLOW
+  overdue_invoice  ri_01e7a49a66ad  a1-engine   notify_email           escalate  R13-DISPUTED-NEVER-CHASE
+  overdue_invoice  ri_81f158068a5a  a0-control  notify_email           allow     R0-DEFAULT-ALLOW
+  overdue_invoice  ri_cbb34f348069  a1-engine   notify_sms             escalate  R10-NO-CONTACT-CHANNEL
+  unpaid_order     ri_f5cf96adfacd  a1-engine   create_payment_link    escalate  R10-NO-CONTACT-CHANNEL
+  unpaid_order     ri_084c9c7e7b31  a1-engine   create_payment_link    escalate  R10-NO-CONTACT-CHANNEL
+  unpaid_order     ri_7f91c05d2868  a0-control  create_payment_link    allow     R0-DEFAULT-ALLOW
+  unpaid_order     ri_445b5a2293c8  a0-control  create_payment_link    allow     R0-DEFAULT-ALLOW
+  unpaid_order     ri_23a80a26d4fe  a1-engine   create_payment_link    escalate  R10-NO-CONTACT-CHANNEL
+
+items      11, from 17 sighting(s) with 6 merged by the dedupe
+  overdue_invoice    6, INR 30976.00 outstanding
+  unpaid_order       5, INR 18969.00 outstanding
+arms
+  a0-control         5
+  a1-engine          6
+verdicts by rule, one per item
+  allow     R0-DEFAULT-ALLOW             6
+  escalate  R10-NO-CONTACT-CHANNEL       4
+  escalate  R13-DISPUTED-NEVER-CHASE     1
+verdicts on the escalations those refusals raised
+  allow     R0-DEFAULT-ALLOW             5
+escalations 0
+
+ledger      /tmp/riskdocs-dryrun/ledger.jsonl
+results     /tmp/riskdocs-dryrun/results.jsonl
+escalations /tmp/riskdocs-dryrun/escalations.jsonl
+summary     /tmp/riskdocs-dryrun/summary.json
+```
+
+The run tag carries a unix timestamp, so it differs per invocation. Everything
+else in the block reproduces byte for byte: the arm assignment is a seeded
+shuffle and the input is a committed file.
+
+Four things in that block are worth reading, and none of them is a result about
+Razorpay.
+
+**The dedupe is doing the work it exists for.** The sightings line and the items
+line are different numbers, and the gap is invoice-minted orders being merged
+into the invoices that minted them. Every one of those is a customer who would
+otherwise have been contacted twice about one debt, by two detectors that were
+each individually right.
+
+**The two containment rules fire, and they fire on seeded conditions.**
+`R10-NO-CONTACT-CHANNEL` escalates the items the seeder deliberately created with
+no email and no phone number, because nothing in this system may guess an
+address. `R13-DISPUTED-NEVER-CHASE` escalates the one invoice the manifest flags
+as contested. Both refusals are real gate behaviour and both inputs were planted:
+limitation 42 says why a dispute cannot be anything else here.
+
+**Every escalation was itself put through the gate and allowed.** Handing an item
+to a person is an action like any other and the kill switch stops it like any
+other, so an escalating verdict raises a second decision and that decision gets
+its own row. They are counted separately from the first pass, because folding the
+two together made the allow count larger than the number of items.
+
+**The escalation count is zero and that is correct for a dry run.** The gate
+decided on the escalations; nothing executed them, because a dry run stops before
+the intervention engine. The `escalations` field counts items a sink took the
+record for, and no sink was called.
+
+The fixture manifest carries no failed-payment items, so this run exercises two
+detectors of the three. That is not an oversight in the fixture: the seeder cannot
+create a failed payment through the API at all. `/HONEST-LIMITATIONS.md`
+limitation 43 has the whole of it.
+
+## Pre-pivot: the retired retry engine
+
+**Everything below this line measured a system that no longer exists.** The
+action under test in these runs was `retry_payment`, an unattended re-presentment
+of a failed one-off payment. `docs/INDIA-CONSTRAINTS-AUDIT.md` finds that action
+to be fiction twice over: the mechanism does not exist in Razorpay live mode, and
+the thing it simulated is not lawful on any Indian rail. It has been deleted from
+the codebase, not gated.
+
+So read these tables as a record of what was measured and not as a claim about
+what this repository does. The audit's section 3 is explicit about which of the
+columns survive the India frame and which die. Dying: `recovery_rate`,
+`recovered_orders`, `recovered_amount_paise`, `fa2_over_attempt`, and the entire
+naive arm, because they are rates for outcomes the harness chose about an action
+that may not be taken. Surviving: escalation precision and recall,
+`policy_evaluations`, `policy_refusals`, `notifications_sent`, `api_calls`, and
+the containment column `policy_violations_succeeded`.
+
+The cells are not edited. They still check against the CSVs of the runs behind
+them, which is the only reason it is safe to leave a retired system's numbers in
+a published file.
+
 Four arms, two layers, three runs. Written 2026-08-31 at the end of phase 2,
 rewritten 2026-09-01 at the end of phase 3 when the LLM arm arrived, and
 rewritten again 2026-09-01 at the end of phase 5, when the batch mix stopped
@@ -7,7 +226,7 @@ being invented and the cost model stopped being invented with it. Every number
 below comes from a run whose output is in `results/`, and both fake-layer runs
 are committed so their tables can be recomputed.
 
-## How to read a row
+### How to read a row
 
 - **Run** is which committed run the row comes from. It is a column because
   phase 5 published two fake-layer runs from one seed with two failure mixes,
@@ -46,7 +265,7 @@ Full tables, including the per-class breakdown, are in
 and `results/tables/phase-5-live.md`, with the phase 2 and phase 3 tables kept
 alongside them. The columns are defined in `docs/EVAL-DESIGN.md` section 5.
 
-## The arms
+### The arms
 
 | Arm | Decision maker |
 |---|---|
@@ -60,7 +279,7 @@ scored by one `harness/scorer.py` against one manifest.
 `harness/test_arm_config.py` diffs any two arms' settings key by key and
 permits exactly two differences: the arm label and the decision maker.
 
-## Fake layer, n=40, published card-decline mix
+### Fake layer, n=40, published card-decline mix
 
 The headline run. Batch `b-5150-40-ethoca-card-mix-2017`, seed 5150, on the
 `ethoca-card-mix-2017` profile: 17 retry-eligible, 3 transient, 3 reauth, 3
@@ -99,7 +318,7 @@ it is the only comparable unit the CLI reports. The input token count is small
 because the charter is cached across invocations and the envelope counts
 uncached input only.
 
-### The headline: a cited failure mix costs the naive arm Rs 7,000 on 40 orders
+#### The headline: a cited failure mix costs the naive arm Rs 7,000 on 40 orders
 
 `a1-naive` recovers the most. It recovers 20 of 26 recoverable orders, a rate of
 0.769, against 16 and 0.615 for both gated arms. Read alone, that is the naive
@@ -118,7 +337,7 @@ modelled cost move by the same factor, a little under five, and they move in
 exactly the way the mix predicts: the invented mix had almost no orders that
 must not be touched, and a real one is a third of them.
 
-### The agent and the rule set agreed on all 40 orders, again
+#### The agent and the rule set agreed on all 40 orders, again
 
 Recovered 16 and 16. Actions 22 and 22. False actions 0 and 0. Notifications 6
 and 6. Escalations 18 and 18, splitting the same way, 4 under
@@ -141,7 +360,7 @@ That is the ADR-0003 number arriving. An agent that never proposes anything out
 of bounds has not been tested against a policy, and this one proposed 22 things
 the policy refused. None of them reached the gateway.
 
-### Both gated arms took zero false actions on this batch
+#### Both gated arms took zero false actions on this batch
 
 That is new. On the phase 3 batch each of them had exactly one, on the
 `attempt_budget_exhausted` bait order that no rule reads the per-class budget
@@ -157,7 +376,7 @@ avoided. `phase-5-fake-uniform` still carries the bait kind that sets it, and
 that order escalates on amount before it can be over-attempted. The finding is
 that the trap now needs a batch built to spring it.
 
-### The falsifiability clause, applied to four arms
+#### The falsifiability clause, applied to four arms
 
 The PRD says: if the naive-retry arm recovers as much with equal or fewer false
 actions, the agent adds nothing and the report says so.
@@ -179,7 +398,7 @@ A reader who wants the agent to have won should notice what it would take: a
 batch where the correct action is not a function of the class. This one is not,
 by construction. `docs/EVAL-DESIGN.md` section 2 says so.
 
-### Containment held, mechanically, for both gated arms
+#### Containment held, mechanically, for both gated arms
 
 `policy_violations_succeeded` is 0 for `a2-agent` and 0 for `a3-rules`, and 40
 for `a1-naive`, which has no policy and whose column says so. Every
@@ -191,7 +410,7 @@ carrying a refusal, which in a system where the refusal comes first is 0 by
 construction. Phase 3 `DECISIONS.md` entry 8 has why that number was left alone
 and what was added instead.
 
-## Fake layer, n=40, invented mix, kept for comparison
+### Fake layer, n=40, invented mix, kept for comparison
 
 Batch `b-5150-40`, seed 5150, on the `uniform-invented` profile: 10 transient, 9
 retry-eligible, 9 reauth, 9 new-instrument, and 3 bait. Run
@@ -222,7 +441,7 @@ policy, same day. What changed is where the failure mix came from.
 None of that is the code getting better. It is the same code measured against a
 batch somebody else's data shaped.
 
-## Live layer, n=8, Razorpay TEST MODE
+### Live layer, n=8, Razorpay TEST MODE
 
 Batch `b-8080-8`, seed 8080, on the `uniform-invented` profile: 2 transient, 2
 retry-eligible, 1 reauth, 1 new-instrument, 2 bait. Run `phase-5-live` on
@@ -244,7 +463,7 @@ gave neither of them anything to work with.
 `live` is Razorpay **test mode**. Not evidence about real customers, and not
 evidence that a recovery decision caused a recovery. See below.
 
-### The rules arm escalated all eight, and the reason is now documented
+#### The rules arm escalated all eight, and the reason is now documented
 
 Every one of the 8 orders classified as `unclassified`, so
 `R7-UNKNOWN-FAIL-CLOSED` fired on every one, so the rules arm escalated
@@ -272,7 +491,7 @@ on it would mean sending a payment link to every customer whose payment a bank
 declined without saying why. Phase 5 `DECISIONS.md` entry 11 has the argument
 and `TestPaymentFailedIsDocumentedAndStillUnclassified` holds it.
 
-### The naive arm beat it, and the number needs its caveat
+#### The naive arm beat it, and the number needs its caveat
 
 `a1-naive` consults nothing, retried all 8, and 4 reached `paid`. Its recovery
 rate on the recoverable set is 0.667.
@@ -293,7 +512,7 @@ orders, and 0 for the rules arm. That column is the whole comparison on this
 layer, and the modelled cost column now prices it: 100000 paise for two
 forbidden actions against 0.
 
-### What the live layer is evidence of
+#### What the live layer is evidence of
 
 - The whole loop runs against the real API for all three arms: create, fail,
   read, classify, evaluate, act or refuse, read back, score.
@@ -305,7 +524,7 @@ forbidden actions against 0.
 - Test mode collapses every card to one reason, which is a fact about Razorpay
   test mode worth knowing before anyone builds a classifier against it.
 
-## Honest limitations
+### Honest limitations
 
 All of them are in `/HONEST-LIMITATIONS.md`, which is the one home for them so
 two files cannot drift apart. Four bear directly on the tables above and are
@@ -331,7 +550,7 @@ worth carrying here:
   ids in `docs/DEMO-SCRIPT.md` are therefore still the phase 3 ones and that
   document says so. Limitation 36 has the counts.
 
-## Reproducing the fake-layer tables
+### Reproducing the fake-layer tables
 
 ```
 make seed SEED_ARGS="--seed 5150 --n 40 --profile ethoca-card-mix-2017"
