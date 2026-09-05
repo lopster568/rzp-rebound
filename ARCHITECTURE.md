@@ -4,9 +4,10 @@
 collected, decides one action per debt, and executes it through a policy gate
 the decision maker cannot go around. Three detectors feed one queue, the queue
 collapses the sightings that are the same debt, fifteen rules decide, and an
-intervention engine with a closed action set does the rest. Every decision is a
-trace span and an append-only audit row, and the containment claim is a counter
-that has to read zero rather than a sentence in this document.
+intervention engine with a closed action set does the rest. Every decision is an
+append-only audit row carrying its rule id, a trace span as well in the MCP
+path, and the containment claim is a counter that has to read zero rather than
+a sentence in this document.
 
 Written 2026-09-01 for the retry engine, rewritten 2026-09-05 for the
 revenue-at-risk engine that replaced it. Read `docs/INDIA-CONSTRAINTS-AUDIT.md`
