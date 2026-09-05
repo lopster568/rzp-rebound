@@ -102,6 +102,33 @@ transition. `totals.duplicates` is how many entries were treated that way.
 An invoice that could not be read counts nothing, so its order is not marked and
 the debt stays in the totals rather than disappearing from them.
 
+**A duplicated ask is not a duplicated payment.** A payment link a risk run
+minted for an order is a second statement of the same ask, so the money the
+order already reports must not be counted again on the link. It is not the same
+relationship the invoice and its order have. An invoice and its minted order
+mirror each other, and a payment shows on both; a standalone payment link does
+not mirror the order it was raised for, because its `reference_id` is the risk
+item rather than the order, paying the link does not mark the order paid, and
+paying the order does not mark the link paid. A customer can pay through either
+route and neither route reflects the other.
+
+So the marking is two markers and not one. `duplicate_of` excludes all three
+amounts, and it is what an invoice's minted order carries. `duplicate_ask_of`
+names the entry that already carries the ask, excludes the gross and the amount
+due, and keeps `amount_paid_paise` in the totals, because that field is the only
+place a payment made through that route is visible and dropping it would report
+a real payment as no recovery. A live snapshot on 2026-09-05 counted a minted
+link's ask on top of its order's and read the book as worth more than it was.
+That run is not committed either, so its figures are not published here, for the
+reason the live-numbers section below gives; the test that holds them is
+`TestSnapshotCountsARunMintedLinksAskOnce`. Neither marker edits what Razorpay
+said: every amount stays on the entry
+and every entry stays in the file. `totals.duplicates` and
+`totals.duplicate_asks` are how many entries were treated each way, and the
+delta counts them as `entries_deduped` and `entries_ask_deduped`. A link is only
+marked when the debt it names was itself readable and counted, for the same
+reason an unreadable invoice does not get its order marked.
+
 A manifest item with no gateway id on it, which is what a seed run that stopped
 partway leaves behind, produces no read. It is listed under `skipped` with the
 reason and with the customer id it does carry, and counted in `totals.skipped`,
@@ -109,10 +136,10 @@ rather than being dropped inside a nil check. A snapshot holding fewer entities
 than its manifest has to say so.
 
 `riskrun.Delta` is what moved between two snapshots: `recovered_paise`,
-`amount_due_change_paise`, how many entities were compared, how many were
-deduped, how many were unmatched or unreadable, and the entities whose status
-changed. An entity present in one snapshot and not the other contributes nothing
-and is counted as unmatched.
+`amount_due_change_paise`, how many entities were compared, how many were deduped
+on each of the two markers, how many were unmatched or unreadable, and the
+entities whose status changed. An entity present in one snapshot and not the
+other contributes nothing and is counted as unmatched.
 
 **`recovered_paise` is not a claim about what this program caused.** It is the
 rise in what Razorpay reports as collected between two reads. A customer who paid

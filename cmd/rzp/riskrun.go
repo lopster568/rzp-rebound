@@ -362,10 +362,10 @@ flags:
 	}
 
 	snapshot, err := riskrun.Poll(ctx, client, riskrun.PollOptions{
-		Manifest:       manifest,
-		ManifestPath:   *manifestPath,
-		PaymentLinkIDs: links,
-		Now:            time.Now(),
+		Manifest:     manifest,
+		ManifestPath: *manifestPath,
+		PaymentLinks: links,
+		Now:          time.Now(),
 	})
 	if err != nil {
 		return err
@@ -390,12 +390,24 @@ flags:
 		formatPaise(snapshot.Totals.AmountPaise),
 		formatPaise(snapshot.Totals.AmountPaidPaise),
 		formatPaise(snapshot.Totals.AmountDuePaise))
+	// The two dedupe counts, said out loud, because without them the gross line
+	// looks like it lost money against the entries printed under it.
+	if snapshot.Totals.Duplicates > 0 || snapshot.Totals.DuplicateAsks > 0 {
+		fmt.Printf("counted   %d entit(ies) whose debt another entry carries, %d whose ask another entry carries\n",
+			snapshot.Totals.Duplicates, snapshot.Totals.DuplicateAsks)
+	}
 	for _, entry := range snapshot.Entries {
 		note := entry.Status
 		if entry.Error != "" {
 			note = "unreadable: " + entry.Error
 		}
-		fmt.Printf("  %-13s %-22s %-14s paid %s\n", entry.Kind, entry.ID, note, formatPaise(entry.AmountPaidPaise))
+		switch {
+		case entry.DuplicateOf != "":
+			note += " (debt on " + entry.DuplicateOf + ")"
+		case entry.DuplicateAskOf != "":
+			note += " (ask on " + entry.DuplicateAskOf + ")"
+		}
+		fmt.Printf("  %-13s %-22s %-24s paid %s\n", entry.Kind, entry.ID, note, formatPaise(entry.AmountPaidPaise))
 	}
 
 	if *against == "" {
@@ -421,9 +433,17 @@ flags:
 	return nil
 }
 
-// paymentLinksFrom reads the payment link ids a risk run created out of its
-// results file. An empty run directory means there are none to read.
-func paymentLinksFrom(runDir string) ([]string, error) {
+// paymentLinksFrom reads the payment links a risk run created out of its
+// results file, each with the debt it was minted against. An empty run
+// directory means there are none to read.
+//
+// The debt is the row's root order when it has one and its source id otherwise,
+// which is the same precedence riskitem.DedupeKey uses: the root order is the
+// entity a payment lands on, and a sighting with no order behind it is only
+// reachable under its own id. It is carried because a link's own reference_id
+// is the risk item id, which names no Razorpay entity, and without it a snapshot
+// cannot tell that the link and the order state one ask.
+func paymentLinksFrom(runDir string) ([]riskrun.MintedLink, error) {
 	if runDir == "" {
 		return nil, nil
 	}
@@ -434,7 +454,7 @@ func paymentLinksFrom(runDir string) ([]string, error) {
 	}
 	defer file.Close()
 
-	var links []string
+	var links []riskrun.MintedLink
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -443,7 +463,11 @@ func paymentLinksFrom(runDir string) ([]string, error) {
 			return nil, fmt.Errorf("parse a result row in %s: %w", path, err)
 		}
 		if row.HandleID != "" && row.ExecutedAction == riskitem.ActionCreatePaymentLink {
-			links = append(links, row.HandleID)
+			debt := row.RootOrderID
+			if debt == "" {
+				debt = row.SourceID
+			}
+			links = append(links, riskrun.MintedLink{ID: row.HandleID, DebtID: debt})
 		}
 	}
 	if err := scanner.Err(); err != nil {

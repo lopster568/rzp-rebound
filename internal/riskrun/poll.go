@@ -1,6 +1,7 @@
 package riskrun
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -76,6 +77,27 @@ type SnapshotEntry struct {
 	// for a status change, because created to paid on the order is the
 	// transition a demo points at.
 	DuplicateOf string `json:"duplicate_of,omitempty"`
+	// DuplicateAskOf names the entry that already carries this entry's ask,
+	// where the two do not mirror each other on payment.
+	//
+	// It is the weaker of the two markers and the difference is the whole point.
+	// An invoice and its minted order mirror: a payment on either shows on both,
+	// so DuplicateOf excludes all three of the order's amounts. A payment link a
+	// run minted for an order does not mirror it. The link's reference_id is the
+	// risk item, paying the link does not mark the order paid, and paying the
+	// order does not mark the link paid, so the two are one ask reachable by two
+	// routes and either route can collect.
+	//
+	// So an entry carrying this field is left out of the gross and the due,
+	// where it would state the same debt twice, and its amount_paid is counted,
+	// because it is the only place a payment made through that route is visible.
+	// Summing the ask on both is how a book worth INR 49945 read as INR 51732
+	// gross on 2026-09-05; dropping the paid figure with it would have made a
+	// payment on the link read as no recovery at all.
+	//
+	// As with DuplicateOf, every amount Razorpay reported stays on the entry and
+	// the entry stays in the file. Nothing here edits what the gateway said.
+	DuplicateAskOf string `json:"duplicate_ask_of,omitempty"`
 }
 
 // Snapshot is every manifest entity as Razorpay reported it at one instant.
@@ -126,8 +148,12 @@ type SnapshotTotals struct {
 	Entries int `json:"entries"`
 	Errors  int `json:"errors"`
 	// Duplicates is how many entries carry DuplicateOf and were therefore left
-	// out of the three sums below.
+	// out of all three sums below.
 	Duplicates int `json:"duplicates"`
+	// DuplicateAsks is how many entries carry DuplicateAskOf, so their gross and
+	// their due were left out and their paid figure was counted. See
+	// SnapshotEntry.DuplicateAskOf for why those are not the same exclusion.
+	DuplicateAsks int `json:"duplicate_asks"`
 	// Skipped is how many manifest items produced no read at all. It is the
 	// length of Snapshot.Skipped, carried here so a reader comparing Entries
 	// against the manifest's item count has the difference in the same block.
@@ -137,16 +163,33 @@ type SnapshotTotals struct {
 	AmountDuePaise  int64 `json:"amount_due_paise"`
 }
 
+// MintedLink is one payment link a risk run created, and the debt it was
+// minted against.
+//
+// DebtID is what makes the ask countable exactly once. The link's own
+// reference_id is the risk item id, which is a hash of a source and a source id
+// and names no Razorpay entity, so the id of the entity the link was raised for
+// has to be carried here rather than read back off the link.
+type MintedLink struct {
+	// ID is the plink_ id.
+	ID string
+	// DebtID is the Razorpay id of the entity whose ask this link restates:
+	// the order or the invoice the risk item was built from. Empty when the
+	// run did not record one, and then the link's amounts are counted on their
+	// own, because nothing says they are a second statement of anything.
+	DebtID string
+}
+
 // PollOptions configures a snapshot.
 type PollOptions struct {
 	// Manifest is the seed run to re-read.
 	Manifest seed.Manifest
 	// ManifestPath is recorded in the snapshot.
 	ManifestPath string
-	// PaymentLinkIDs are links a risk run created, which the manifest does not
+	// PaymentLinks are links a risk run created, which the manifest does not
 	// know about because the seeder did not make them. Empty is the ordinary
 	// case.
-	PaymentLinkIDs []string
+	PaymentLinks []MintedLink
 	// Clock stamps the snapshot. Nil means the wall clock.
 	Now time.Time
 }
@@ -161,6 +204,12 @@ type PollOptions struct {
 // error rather than no entry at all, and the run carries on, because a snapshot
 // that stopped at the first unreadable entity would be a partial file that
 // looks complete.
+//
+// A payment link a run minted is marked DuplicateAskOf the entry that already
+// carries the ask it restates, which is a weaker statement and a different
+// exclusion: the link does not mirror that entity on payment, so its ask is
+// dropped from the gross and its paid figure is kept. See the field's own doc
+// comment.
 //
 // A manifest item with no gateway id on it produces no read and a line in
 // Skipped instead. That is what a seed run which stopped partway leaves behind,
@@ -182,12 +231,26 @@ func Poll(ctx context.Context, api PollAPI, opts PollOptions) (Snapshot, error) 
 	}
 
 	seen := make(map[string]bool)
+	// askOf maps an entity id to the entry whose totals actually carry its ask:
+	// itself, or the entry it is a duplicate of. A link is only called a second
+	// statement of an ask that is in the totals once already. An entity that
+	// could not be read gets no entry here, so a link raised against it stays
+	// countable on its own, which is the rule the unreadable-invoice case below
+	// follows for the same reason.
+	askOf := make(map[string]string)
 	add := func(entry SnapshotEntry) {
 		key := entry.Kind + "|" + entry.ID
 		if entry.ID == "" || seen[key] {
 			return
 		}
 		seen[key] = true
+		if entry.Error == "" {
+			carrier := entry.ID
+			if entry.DuplicateOf != "" {
+				carrier = entry.DuplicateOf
+			}
+			askOf[entry.ID] = carrier
+		}
 		snapshot.Entries = append(snapshot.Entries, entry)
 	}
 
@@ -230,8 +293,20 @@ func Poll(ctx context.Context, api PollAPI, opts PollOptions) (Snapshot, error) 
 			skip(string(item.Kind), item.CustomerID, SkipUnknownKind)
 		}
 	}
-	for _, linkID := range slices.Sorted(slices.Values(opts.PaymentLinkIDs)) {
-		add(fetchPaymentLinkEntry(ctx, api, linkID))
+	for _, link := range slices.SortedFunc(slices.Values(opts.PaymentLinks), func(a, b MintedLink) int {
+		return cmp.Compare(a.ID, b.ID)
+	}) {
+		entry := fetchPaymentLinkEntry(ctx, api, link.ID)
+		// Only when the link itself was read and the debt it restates is in the
+		// totals. A link raised against an entity that could not be read is the
+		// only statement of that ask this snapshot has, so it counts on its own
+		// rather than pointing at nothing.
+		if entry.Error == "" && link.DebtID != "" {
+			if carrier := askOf[link.DebtID]; carrier != "" {
+				entry.DuplicateAskOf = carrier
+			}
+		}
+		add(entry)
 	}
 
 	snapshot.Totals.Skipped = len(snapshot.Skipped)
@@ -243,6 +318,13 @@ func Poll(ctx context.Context, api PollAPI, opts PollOptions) (Snapshot, error) 
 		}
 		if entry.DuplicateOf != "" {
 			snapshot.Totals.Duplicates++
+			continue
+		}
+		if entry.DuplicateAskOf != "" {
+			// The ask is already in the gross and the due under another id. The
+			// paid figure is not, because this surface does not mirror that one.
+			snapshot.Totals.DuplicateAsks++
+			snapshot.Totals.AmountPaidPaise += entry.AmountPaidPaise
 			continue
 		}
 		snapshot.Totals.AmountPaise += entry.AmountPaise
@@ -314,6 +396,10 @@ type Delta struct {
 	// amounts were left out of the two money figures above. Their status
 	// changes are still in StatusChanges.
 	EntriesDeduped int `json:"entries_deduped"`
+	// EntriesAskDeduped is how many compared entries carried DuplicateAskOf, so
+	// their amount-due change was left out and their paid change was counted.
+	// See SnapshotEntry.DuplicateAskOf for why one exclusion and not both.
+	EntriesAskDeduped int `json:"entries_ask_deduped"`
 	// StatusChanges names the entities whose status moved, oldest status
 	// first, as "id: before -> after".
 	StatusChanges []string `json:"status_changes,omitempty"`
@@ -336,6 +422,14 @@ type Delta struct {
 // summing both reports one customer paying one debt at twice its value. The
 // debt is counted on the invoice, which is the entry that also carries the
 // notification-status fields, and the order's status flip is still reported.
+//
+// An entry marked DuplicateAskOf is compared for its status, for its payment,
+// and not for its amount due. A run-minted payment link restates an ask that
+// another entry carries, so counting the due change on both would double it,
+// but the two do not mirror each other on payment: a customer who pays the link
+// does not mark the order paid, so the link's paid figure is the only record
+// that the money arrived and dropping it would report a real payment as no
+// recovery.
 func Diff(before, after Snapshot) Delta {
 	index := make(map[string]SnapshotEntry, len(before.Entries))
 	for _, entry := range before.Entries {
@@ -350,12 +444,21 @@ func Diff(before, after Snapshot) Delta {
 			continue
 		}
 		delta.EntriesCompared++
-		// A duplicate is compared for its status and not for its money. The
-		// later snapshot is what decides: an entry that became a duplicate
-		// between two reads is one whose debt the invoice now carries.
-		if entry.DuplicateOf != "" || earlier.DuplicateOf != "" {
+		// A duplicate is compared for its status and not for its money. Either
+		// snapshot carrying the marker is enough: an entry that became a
+		// duplicate between two reads is one whose debt the invoice now carries,
+		// and counting it on the read where the marker is missing would count
+		// the debt twice again.
+		switch {
+		case entry.DuplicateOf != "" || earlier.DuplicateOf != "":
 			delta.EntriesDeduped++
-		} else {
+		case entry.DuplicateAskOf != "" || earlier.DuplicateAskOf != "":
+			// A duplicated ask is not a duplicated payment. This surface does
+			// not mirror the one that carries the ask, so a payment made here
+			// is visible nowhere else and it is the whole of what moved.
+			delta.EntriesAskDeduped++
+			delta.RecoveredPaise += entry.AmountPaidPaise - earlier.AmountPaidPaise
+		default:
 			delta.RecoveredPaise += entry.AmountPaidPaise - earlier.AmountPaidPaise
 			delta.AmountDueChange += entry.AmountDuePaise - earlier.AmountDuePaise
 		}

@@ -82,10 +82,10 @@ func gateway(paid int64) *stubPoll {
 func TestPollReadsEveryManifestEntityAndTheLinksARunCreated(t *testing.T) {
 	api := gateway(0)
 	snapshot, err := Poll(context.Background(), api, PollOptions{
-		Manifest:       pollManifest(),
-		ManifestPath:   "seedbook.json",
-		PaymentLinkIDs: []string{"plink_1"},
-		Now:            time.Date(2026, 9, 5, 8, 0, 0, 0, time.UTC),
+		Manifest:     pollManifest(),
+		ManifestPath: "seedbook.json",
+		PaymentLinks: []MintedLink{{ID: "plink_1", DebtID: "order_2"}},
+		Now:          time.Date(2026, 9, 5, 8, 0, 0, 0, time.UTC),
 	})
 	if err != nil {
 		t.Fatalf("Poll: %v", err)
@@ -347,5 +347,187 @@ func TestDiffSkipsWhatEitherSnapshotCouldNotRead(t *testing.T) {
 	}
 	if delta.RecoveredPaise != 0 {
 		t.Errorf("recovered = %d paise from two identical readable snapshots", delta.RecoveredPaise)
+	}
+}
+
+// rehearsalBook is the shape the 2026-09-05 rehearsal seeded: the demo
+// profile's eight invoices, each mirrored by the order Razorpay minted for it,
+// and three standalone abandoned orders. The amounts are that book's own, so
+// the numbers in these tests are the ones the rehearsal printed.
+const (
+	rehearsalBookPaise = int64(4994500)
+	// linkedOrderPaise is the aged order the engine minted a link against.
+	linkedOrderPaise = int64(178700)
+)
+
+func rehearsalBook() (seed.Manifest, *stubPoll) {
+	invoiceAmounts := []int64{720900, 310400, 647500, 736700, 418300, 729000, 500800, 65300}
+	orderAmounts := []int64{linkedOrderPaise, 107500, 579400}
+
+	manifest := seed.Manifest{RunTag: "rehearsal"}
+	api := &stubPoll{
+		invoices: map[string]razorpay.Invoice{},
+		orders:   map[string]razorpay.Order{},
+		links:    map[string]razorpay.PaymentLinkDetail{},
+	}
+	for i, amount := range invoiceAmounts {
+		invoiceID := fmt.Sprintf("inv_%d", i)
+		orderID := fmt.Sprintf("order_inv_%d", i)
+		manifest.Items = append(manifest.Items, seed.Item{Kind: seed.EntityInvoice, ID: invoiceID, OrderID: orderID})
+		api.invoices[invoiceID] = razorpay.Invoice{
+			ID: invoiceID, OrderID: orderID, Status: "issued", Currency: "INR",
+			AmountPaise: amount, AmountDue: amount,
+		}
+		api.orders[orderID] = razorpay.Order{
+			ID: orderID, Status: "created", Currency: "INR",
+			AmountPaise: amount, AmountDue: amount,
+		}
+	}
+	for i, amount := range orderAmounts {
+		orderID := fmt.Sprintf("order_%d", i)
+		manifest.Items = append(manifest.Items, seed.Item{Kind: seed.EntityOrder, ID: orderID})
+		api.orders[orderID] = razorpay.Order{
+			ID: orderID, Status: "created", Currency: "INR",
+			AmountPaise: amount, AmountDue: amount,
+		}
+	}
+	// The link the engine arm minted for order_0, at the amount that order
+	// still owed. Its reference is the risk item, not the order: paying it does
+	// not mark order_0 paid, and order_0 being paid does not mark it paid.
+	api.links["plink_0"] = razorpay.PaymentLinkDetail{
+		ID: "plink_0", Status: "created", Currency: "INR", AmountPaise: linkedOrderPaise,
+	}
+	return manifest, api
+}
+
+func rehearsalLinks() []MintedLink {
+	return []MintedLink{{ID: "plink_0", DebtID: "order_0"}}
+}
+
+// TestSnapshotCountsARunMintedLinksAskOnce is the second defect the 2026-09-05
+// rehearsal found. A link minted for an order was summed on top of that order,
+// so a book worth INR 49945 read as INR 51732 gross: the ask was counted twice
+// under two ids.
+func TestSnapshotCountsARunMintedLinksAskOnce(t *testing.T) {
+	manifest, api := rehearsalBook()
+
+	snapshot, err := Poll(context.Background(), api, PollOptions{
+		Manifest:     manifest,
+		PaymentLinks: rehearsalLinks(),
+	})
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+
+	if snapshot.Totals.AmountPaise != rehearsalBookPaise {
+		t.Errorf("gross = %d paise, want %d: the minted link restates an ask the order already carries",
+			snapshot.Totals.AmountPaise, rehearsalBookPaise)
+	}
+	if snapshot.Totals.AmountDuePaise != rehearsalBookPaise {
+		t.Errorf("due = %d paise, want %d", snapshot.Totals.AmountDuePaise, rehearsalBookPaise)
+	}
+	if snapshot.Totals.DuplicateAsks != 1 {
+		t.Errorf("%d duplicate ask(s), want 1: the link minted for order_0", snapshot.Totals.DuplicateAsks)
+	}
+
+	var link SnapshotEntry
+	for _, entry := range snapshot.Entries {
+		if entry.Kind == EntryPaymentLink {
+			link = entry
+		}
+	}
+	if link.DuplicateAskOf != "order_0" {
+		t.Errorf("the link entry carries duplicate_ask_of %q, want order_0", link.DuplicateAskOf)
+	}
+	if link.DuplicateOf != "" {
+		t.Errorf("the link entry carries duplicate_of %q; a link does not mirror its order and its paid figure has to count", link.DuplicateOf)
+	}
+	// Every amount Razorpay reported stays on the entry. Blanking one would
+	// make the file disagree with the gateway.
+	if link.AmountPaise != linkedOrderPaise {
+		t.Errorf("the link entry lost its amount: %d", link.AmountPaise)
+	}
+}
+
+// TestDiffCountsAPaymentOnAMintedLinkExactlyOnce. A standalone payment link
+// does not mirror its order: paying the link does not mark the order paid, so
+// the link's amount_paid is the only place that payment is visible and it has
+// to reach the recovered figure.
+func TestDiffCountsAPaymentOnAMintedLinkExactlyOnce(t *testing.T) {
+	manifest, api := rehearsalBook()
+	opts := PollOptions{Manifest: manifest, PaymentLinks: rehearsalLinks()}
+
+	before, err := Poll(context.Background(), api, opts)
+	if err != nil {
+		t.Fatalf("Poll before: %v", err)
+	}
+
+	paid := api.links["plink_0"]
+	paid.Status, paid.AmountPaid = "paid", linkedOrderPaise
+	api.links["plink_0"] = paid
+
+	after, err := Poll(context.Background(), api, opts)
+	if err != nil {
+		t.Fatalf("Poll after: %v", err)
+	}
+
+	delta := Diff(before, after)
+	if delta.RecoveredPaise != linkedOrderPaise {
+		t.Errorf("recovered = %d paise for one paid link, want %d", delta.RecoveredPaise, linkedOrderPaise)
+	}
+	if snapshotPaid := after.Totals.AmountPaidPaise; snapshotPaid != linkedOrderPaise {
+		t.Errorf("the later snapshot totals %d paise paid, want %d", snapshotPaid, linkedOrderPaise)
+	}
+	// The gross does not move when a link is paid, because the ask was never
+	// counted on the link in the first place.
+	if after.Totals.AmountPaise != rehearsalBookPaise {
+		t.Errorf("gross = %d paise after the payment, want %d", after.Totals.AmountPaise, rehearsalBookPaise)
+	}
+	var found bool
+	for _, change := range delta.StatusChanges {
+		if change == "plink_0: created -> paid" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the link's status flip is not in the delta: %v", delta.StatusChanges)
+	}
+}
+
+// TestDiffCountsAPaymentOnAnInvoiceExactlyOnce is the other half of the same
+// rule, and it is the half that has to keep working. An invoice and the order
+// it minted do mirror each other, so one payment shows on both and only one of
+// them may count, even with a minted link in the same snapshot.
+func TestDiffCountsAPaymentOnAnInvoiceExactlyOnce(t *testing.T) {
+	manifest, api := rehearsalBook()
+	opts := PollOptions{Manifest: manifest, PaymentLinks: rehearsalLinks()}
+
+	before, err := Poll(context.Background(), api, opts)
+	if err != nil {
+		t.Fatalf("Poll before: %v", err)
+	}
+
+	const amount = int64(720900)
+	invoice := api.invoices["inv_0"]
+	invoice.Status, invoice.AmountPaid, invoice.AmountDue = "paid", amount, 0
+	api.invoices["inv_0"] = invoice
+	mirror := api.orders["order_inv_0"]
+	mirror.Status, mirror.AmountPaid, mirror.AmountDue = "paid", amount, 0
+	api.orders["order_inv_0"] = mirror
+
+	after, err := Poll(context.Background(), api, opts)
+	if err != nil {
+		t.Fatalf("Poll after: %v", err)
+	}
+
+	delta := Diff(before, after)
+	if delta.RecoveredPaise != amount {
+		t.Errorf("recovered = %d paise for one paid invoice, want %d", delta.RecoveredPaise, amount)
+	}
+	if delta.AmountDueChange != -amount {
+		t.Errorf("amount due change = %d, want %d", delta.AmountDueChange, -amount)
+	}
+	if after.Totals.AmountPaidPaise != amount {
+		t.Errorf("the later snapshot totals %d paise paid, want %d", after.Totals.AmountPaidPaise, amount)
 	}
 }
