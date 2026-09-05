@@ -10,8 +10,8 @@ sightings that are the same debt, a fifteen-rule policy gate decides one action
 per item, and an intervention engine executes only what the gate allowed. Every
 decision is an append-only JSONL row carrying the rule id that produced it,
 including the refusals, and in the MCP path it is also an OpenTelemetry span:
-`cmd/rzp-mcp` is the one binary here that starts a tracer, and `cmd/rzp
-risk-run` does not.
+`cmd/rzp-mcp` is the one binary here that starts a tracer, and
+`cmd/rzp risk-run` does not.
 
 Two arms run over the same queue in one process. `a0-control` detects,
 classifies, and evaluates, and then stops. `a1-engine` executes. Assignment is a
