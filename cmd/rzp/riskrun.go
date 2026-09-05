@@ -421,6 +421,10 @@ flags:
 	fmt.Println()
 	fmt.Printf("against   %s (%s)\n", *against, delta.FromTakenAt.Format(time.RFC3339))
 	fmt.Printf("compared  %d entit(ies), %d unmatched or unreadable\n", delta.EntriesCompared, delta.EntriesUnmatched)
+	if delta.EntriesDeduped > 0 || delta.EntriesAskDeduped > 0 {
+		fmt.Printf("deduped   %d entit(ies) whose debt another entry carries, %d whose ask another entry carries\n",
+			delta.EntriesDeduped, delta.EntriesAskDeduped)
+	}
 	fmt.Printf("collected %s more than the earlier snapshot reported\n", formatPaise(delta.RecoveredPaise))
 	fmt.Printf("due       %s change\n", formatPaise(delta.AmountDueChange))
 	for _, change := range delta.StatusChanges {
