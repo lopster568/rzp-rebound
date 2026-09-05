@@ -144,6 +144,14 @@ func orderNotes(item seed.Item) razorpay.Notes {
 
 // ListOrders answers one page, honouring Count and Skip the way the sweep in
 // internal/detect expects: a short page ends the walk.
+//
+// ListOptions.From is deliberately ignored here, by both list methods. On the
+// live path it is a created_at floor that keeps an account's older debt out of
+// the queue, and the entities this source hands back carry the manifest's
+// simulated at-risk instant as their created_at rather than a real one. Honouring
+// the floor against a backdated timestamp would filter out exactly the aged book
+// a dry run exists to replay. A dry run is therefore always an unscoped sweep,
+// and it says so here rather than looking like it applied a bound it did not.
 func (s *manifestSource) ListOrders(_ context.Context, opts razorpay.ListOptions) ([]razorpay.Order, error) {
 	return page(s.orders, opts), nil
 }

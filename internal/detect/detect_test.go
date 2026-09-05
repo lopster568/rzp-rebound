@@ -258,3 +258,53 @@ func TestCustomerFromNotesReadsOnlyTheDocumentedKeys(t *testing.T) {
 		t.Errorf("no notes gave %+v, want the zero Customer", got)
 	}
 }
+
+// TestSweepScopesEveryListCallToConfigSince pins the created_at floor onto the
+// wire.
+//
+// The account a demo runs against carries every order it has ever had, and an
+// unscoped sweep puts months of settled-in-somebody-else's-head debt into the
+// same queue as the book that was just seeded. Razorpay's list endpoints take a
+// from bound, so the scoping is the gateway's job: a page never returned cannot
+// be paged past, counted, or acted on by mistake.
+func TestSweepScopesEveryListCallToConfigSince(t *testing.T) {
+	const since = int64(1788586217)
+	gateway := &stubGateway{orders: decodeOrders(t, probeOrderListMixed)}
+	detector := NewUnpaidOrderDetector(gateway, Config{PageSize: 2, Since: since})
+
+	if _, err := detector.Detect(context.Background()); err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+
+	if len(gateway.orderOpts) == 0 {
+		t.Fatal("the sweep made no list call, so this proves nothing")
+	}
+	for i, opts := range gateway.orderOpts {
+		if opts.From != since {
+			t.Errorf("list call %d asked From = %d, want %d", i, opts.From, since)
+		}
+		if opts.To != 0 {
+			t.Errorf("list call %d bounded the upper end at %d; Since sets no ceiling", i, opts.To)
+		}
+	}
+}
+
+// TestSweepLeavesTheListUnscopedWhenSinceIsZero pins the default. Zero is not a
+// 1970 floor sent on the wire, it is the absence of the parameter, which is what
+// ListOptions documents.
+func TestSweepLeavesTheListUnscopedWhenSinceIsZero(t *testing.T) {
+	gateway := &stubGateway{invoices: decodeInvoices(t, probeInvoiceListMixed)}
+	detector := NewOverdueInvoiceDetector(gateway, Config{})
+
+	if _, err := detector.Detect(context.Background()); err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	if len(gateway.invoiceOpts) == 0 {
+		t.Fatal("the sweep made no list call, so this proves nothing")
+	}
+	for i, opts := range gateway.invoiceOpts {
+		if opts.From != 0 {
+			t.Errorf("list call %d asked From = %d with no Since configured, want 0", i, opts.From)
+		}
+	}
+}

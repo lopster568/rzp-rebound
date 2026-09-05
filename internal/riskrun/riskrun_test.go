@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/lopster568/rzp-recovery-agent/internal/intervene"
 	"github.com/lopster568/rzp-recovery-agent/internal/policy"
 	"github.com/lopster568/rzp-recovery-agent/internal/promise"
+	"github.com/lopster568/rzp-recovery-agent/internal/quiet"
 	"github.com/lopster568/rzp-recovery-agent/internal/razorpay"
 	"github.com/lopster568/rzp-recovery-agent/internal/riskitem"
 	"github.com/lopster568/rzp-recovery-agent/internal/seed"
@@ -572,5 +574,172 @@ func TestDetectGraceFiltersTheFreshInvoices(t *testing.T) {
 	}
 	if narrow.DetectGrace == wide.DetectGrace {
 		t.Error("the summary records the same grace for two runs that used different ones")
+	}
+}
+
+// tickingClock moves forward a fixed step on every read.
+//
+// R6 is an elapsed-time rule and the frozen fake the tests above use reports
+// zero elapsed between any two reads, which denies under every positive send
+// window and allows under none. That makes the rule untestable rather than
+// strict: a real run's items are microseconds apart, not simultaneous. This is
+// the smallest seam that models forward progress without a sleep.
+type tickingClock struct {
+	mu   sync.Mutex
+	now  time.Time
+	step time.Duration
+}
+
+func newTickingClock(start time.Time, step time.Duration) *tickingClock {
+	return &tickingClock{now: start, step: step}
+}
+
+func (c *tickingClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(c.step)
+	return c.now
+}
+
+// liveRun drives the fixture through the whole pipeline against the in-memory
+// gateway, with the policy the caller asked for. It is the shared body of the
+// two notify-window cases below.
+func liveRun(t *testing.T, policyCfg policy.Config) (Summary, []ItemResult) {
+	t.Helper()
+
+	var ledger, results bytes.Buffer
+	// A millisecond a read. Two notifications in one run land milliseconds
+	// apart, which is inside R6's one second default and outside a window set
+	// small enough to be irrelevant, and that is exactly the difference the
+	// flag exists to make.
+	fake := newTickingClock(fixtureBase.Add(time.Hour), time.Millisecond)
+	recorder, err := audit.NewRecorder(audit.Options{Writer: &ledger, Clock: fake})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := loadFixture(t)
+
+	summary, err := Run(context.Background(), Options{
+		Manifest:     manifest,
+		ManifestPath: "testdata/manifest.json",
+		RunTag:       "test",
+		Seed:         1234,
+		SimulateAge:  true,
+		API:          newManifestSource(manifest),
+		Gateway:      &stubGateway{},
+		PolicyConfig: policyCfg,
+		Clock:        fake,
+		Recorder:     recorder,
+		Escalations:  intervene.NewMemorySink(),
+		Promises:     promise.NewStore(),
+		Results:      &results,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	return summary, decodeRows(t, results.Bytes())
+}
+
+// notifyAllows counts the notifications the gate let through, and r6Denials
+// counts the ones it refused for the run-wide send rate.
+//
+// The count is on the decision rather than on the gateway call, because that is
+// what R6 decides and because only the engine arm's allowed items ever reach a
+// gateway. A control-arm notification that the gate allowed is a notification
+// this policy would have sent, and counting it is the same measurement the arm
+// split exists to make.
+func notifyAllows(rows []ItemResult) int {
+	allowed := 0
+	for _, row := range rows {
+		if policy.IsNotifyAction(row.ProposedAction) && row.Verdict == string(policy.VerdictAllow) {
+			allowed++
+		}
+	}
+	return allowed
+}
+
+func r6Denials(rows []ItemResult) int {
+	denied := 0
+	for _, row := range rows {
+		if row.RuleID == policy.RuleNotifyRate {
+			denied++
+		}
+	}
+	return denied
+}
+
+// TestTheDefaultNotifyWindowAllowsOneNotificationAndTheFlagLetsMoreThrough is
+// the reason cmd/rzp grew a -notify-window flag.
+//
+// R6 is a run-wide send rate and its default is one second. A run evaluates its
+// items microseconds apart, so on the default every notification after the first
+// is denied: the whole engine arm reduces to one message and a column of
+// R6-NOTIFY-RATE. That is the right default for an unattended run over a real
+// book and it is wrong for a demo, which is what the flag is for. A send window
+// short enough to be irrelevant lets the queue through.
+//
+// The assertion is on both sides on purpose. Proving the permissive window sends
+// more says nothing unless the default is also shown to be the thing that was
+// stopping it.
+func TestTheDefaultNotifyWindowAllowsOneNotificationAndTheFlagLetsMoreThrough(t *testing.T) {
+	// A zero Config is the standard policy, which is the one cmd/rzp used
+	// before it had a flag to say anything else.
+	standard, standardRows := liveRun(t, policy.Config{})
+	widened, widenedRows := liveRun(t, policy.Config{NotifyWindow: time.Nanosecond})
+
+	if got := notifyAllows(standardRows); got != 1 {
+		t.Fatalf("the standard policy allowed %d notification(s), want exactly 1; this test is about the ones after the first", got)
+	}
+	if got := r6Denials(standardRows); got == 0 {
+		t.Fatal("the standard policy denied nothing under R6, so there is no send rate for the flag to open")
+	}
+
+	if got := notifyAllows(widenedRows); got < 2 {
+		t.Errorf("a one nanosecond send window allowed %d notification(s), want at least 2", got)
+	}
+	if got := r6Denials(widenedRows); got != 0 {
+		t.Errorf("a one nanosecond send window still denied %d item(s) under R6", got)
+	}
+
+	// The two runs saw the same book. Only the gate moved.
+	if standard.ItemsTotal != widened.ItemsTotal {
+		t.Errorf("the two runs saw %d and %d item(s); the send window is not supposed to change what is detected",
+			standard.ItemsTotal, widened.ItemsTotal)
+	}
+}
+
+// TestTheSummaryRecordsThePolicyTheRunActuallyRanUnder pins the three knobs
+// cmd/rzp exposes to the block a reader checks a run against.
+//
+// A run whose summary reported the package defaults while the flags had moved
+// them would be a run nobody could score six months later, which is the failure
+// PolicySnapshot exists to prevent.
+func TestTheSummaryRecordsThePolicyTheRunActuallyRanUnder(t *testing.T) {
+	summary, _ := liveRun(t, policy.Config{
+		NotifyWindow:  time.Nanosecond,
+		ActionBudget:  7,
+		ContactWindow: quiet.AlwaysOpen(),
+	})
+
+	if summary.Policy.NotifyWindow != time.Nanosecond.String() {
+		t.Errorf("summary notify_window = %q, want %q", summary.Policy.NotifyWindow, time.Nanosecond)
+	}
+	if summary.Policy.ActionBudget != 7 {
+		t.Errorf("summary action_budget = %d, want 7", summary.Policy.ActionBudget)
+	}
+	if want := quiet.AlwaysOpen().String(); summary.Policy.ContactWindow != want {
+		t.Errorf("summary contact_window = %q, want %q", summary.Policy.ContactWindow, want)
+	}
+
+	// And the standard policy still reports the standard numbers, so the check
+	// above is reading the config rather than a constant.
+	standard, _ := liveRun(t, policy.Config{})
+	if standard.Policy.NotifyWindow != policy.DefaultNotifyWindow.String() {
+		t.Errorf("the standard policy reported notify_window %q, want %q",
+			standard.Policy.NotifyWindow, policy.DefaultNotifyWindow)
+	}
+	if standard.Policy.ContactWindow != quiet.DefaultWindow().String() {
+		t.Errorf("the standard policy reported contact_window %q, want %q",
+			standard.Policy.ContactWindow, quiet.DefaultWindow())
 	}
 }

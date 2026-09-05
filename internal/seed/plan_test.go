@@ -228,3 +228,77 @@ func TestProfileByNameUnknown(t *testing.T) {
 		t.Fatal("ProfileByName could not find the demo profile")
 	}
 }
+
+// TestGeneratePlanAgesTwoOfTheThreeDemoOrders is the fix for a demo that
+// depended on how long ago the book was seeded.
+//
+// policy.GraceUnpaidOrder is one hour and nothing in the orders API backdates
+// created_at, so when every order carried AgeFresh a book seeded less than an
+// hour before the take had all three denied under R11-NOT-YET-DUE, and the beat
+// where the engine mints a payment link had nothing to mint one for. Two aged
+// orders make that beat reproducible; the third stays fresh so R11 still fires
+// on something real.
+func TestGeneratePlanAgesTwoOfTheThreeDemoOrders(t *testing.T) {
+	plan := GeneratePlan(DemoProfile(), "ages", 13)
+
+	if len(plan.Orders) != 3 {
+		t.Fatalf("len(Orders) = %d, want 3", len(plan.Orders))
+	}
+
+	var aged, fresh int
+	for _, ord := range plan.Orders {
+		if ord.AgeBucket.AgeDays() > 0 {
+			aged++
+			continue
+		}
+		fresh++
+		if ord.AgeBucket != AgeFresh {
+			t.Errorf("an order with no age carries bucket %q, want %q", ord.AgeBucket, AgeFresh)
+		}
+	}
+	if aged != 2 {
+		t.Errorf("aged orders = %d, want 2", aged)
+	}
+	if fresh != 1 {
+		t.Errorf("fresh orders = %d, want 1", fresh)
+	}
+}
+
+// TestGeneratePlanKeepsTheNoContactOrderOldEnoughToReachR10 pins the rule order
+// the demo depends on.
+//
+// R11-NOT-YET-DUE is evaluated before R10-NO-CONTACT-CHANNEL, so a fresh order
+// with no contact channel is denied for being young and never reaches the rule
+// it exists to demonstrate. The order the profile keeps fresh has to be one of
+// the contact-bearing ones.
+func TestGeneratePlanKeepsTheNoContactOrderOldEnoughToReachR10(t *testing.T) {
+	plan := GeneratePlan(DemoProfile(), "r10", 17)
+
+	found := false
+	for _, ord := range plan.Orders {
+		if ord.CustomerEmail != "" || ord.CustomerContact != "" {
+			continue
+		}
+		found = true
+		if ord.AgeBucket.AgeDays() == 0 {
+			t.Errorf("the no-contact order is %s, so R11 denies it before R10 can escalate it", ord.AgeBucket)
+		}
+	}
+	if !found {
+		t.Fatal("the demo profile seeded no order without a contact channel")
+	}
+}
+
+// TestGeneratePlanOrderAgesDefaultToFresh pins the zero value: a profile that
+// names no ages seeds the book it seeded before OrderAges existed.
+func TestGeneratePlanOrderAgesDefaultToFresh(t *testing.T) {
+	profile := DemoProfile()
+	profile.OrderAges = nil
+	plan := GeneratePlan(profile, "default", 19)
+
+	for i, ord := range plan.Orders {
+		if ord.AgeBucket != AgeFresh {
+			t.Errorf("order %d has bucket %q with no OrderAges set, want %q", i, ord.AgeBucket, AgeFresh)
+		}
+	}
+}

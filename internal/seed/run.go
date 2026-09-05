@@ -210,8 +210,18 @@ func createInvoiceItem(ctx context.Context, client Client, b *budget, spec Invoi
 // An order deliberately seeded with no contact simply gets none of the three
 // keys, which is what makes riskitem.Customer.HasContactChannel false for it
 // and routes it to escalation instead of a guessed notification.
+//
+// The age bucket is the spec's, on the same manifest-only terms an invoice's
+// is: no order field can be backdated either, so the bucket is a claim this
+// package writes into the manifest and never into Razorpay. An unset bucket
+// reads as AgeFresh rather than as the empty string, so every manifest item
+// names a bucket a scorer recognises.
 func createOrderItem(ctx context.Context, client Client, b *budget, spec OrderSpec, runTag string, now time.Time) (Item, error) {
 	hasContact := riskitem.Customer{Email: spec.CustomerEmail, Contact: spec.CustomerContact}.HasContactChannel()
+	bucket := spec.AgeBucket
+	if bucket == "" {
+		bucket = AgeFresh
+	}
 
 	item := Item{
 		Kind:                 EntityOrder,
@@ -220,8 +230,8 @@ func createOrderItem(ctx context.Context, client Client, b *budget, spec OrderSp
 		CustomerContact:      spec.CustomerContact,
 		AmountPaise:          spec.AmountPaise,
 		Currency:             "INR",
-		AgeBucket:            AgeFresh,
-		SimulatedAtRiskSince: now.Unix(),
+		AgeBucket:            bucket,
+		SimulatedAtRiskSince: now.Add(-time.Duration(bucket.AgeDays()) * 24 * time.Hour).Unix(),
 		Flags:                Flags{NoContact: !hasContact},
 		ExpectedRiskSource:   riskitem.SourceUnpaidOrder,
 		CreatedAt:            now,
@@ -230,6 +240,7 @@ func createOrderItem(ctx context.Context, client Client, b *budget, spec OrderSp
 	notes := map[string]string{
 		"seedbook_run": runTag,
 		"purpose":      "abandoned order for the unpaid-order detector, left untouched so attempts stays 0",
+		"age_bucket":   string(bucket),
 	}
 	if hasContact {
 		if spec.CustomerName != "" {

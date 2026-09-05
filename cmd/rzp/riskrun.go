@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -19,7 +20,9 @@ import (
 	"github.com/lopster568/rzp-recovery-agent/internal/intervene"
 	"github.com/lopster568/rzp-recovery-agent/internal/policy"
 	"github.com/lopster568/rzp-recovery-agent/internal/promise"
+	"github.com/lopster568/rzp-recovery-agent/internal/quiet"
 	"github.com/lopster568/rzp-recovery-agent/internal/razorpay"
+	"github.com/lopster568/rzp-recovery-agent/internal/riskitem"
 	"github.com/lopster568/rzp-recovery-agent/internal/riskrun"
 	"github.com/lopster568/rzp-recovery-agent/internal/seed"
 )
@@ -32,22 +35,65 @@ const (
 	riskEscalationsFile = "escalations.jsonl"
 )
 
-// runRiskRun is the pipeline: detect, dedupe, gate, and, in the engine arm,
-// intervene, over the ground truth a seedbook manifest records.
-func runRiskRun(ctx context.Context, args []string) (runErr error) {
+// riskRunConfig is what the risk-run flags said, after parsing. It is a struct
+// rather than a dozen pointers threaded through the command body so that flag
+// parsing is a function a test can call: the two policy knobs below decide
+// whether a demo's second notification is sent or refused, and a default that
+// silently changed would be invisible until a recording.
+type riskRunConfig struct {
+	manifestPath   string
+	outDir         string
+	runTag         string
+	randSeed       int64
+	offline        bool
+	simulateAge    bool
+	detectGrace    time.Duration
+	killSwitchPath string
+	pageSize       int
+	maxPages       int
+
+	// since is the created_at floor every sweep is scoped to, in Unix
+	// seconds, and sinceSet says whether the operator asked for it. The two
+	// are separate because 0 is a meaningful value: it means an unscoped
+	// sweep, and a run that wants one over an account with months of history
+	// has to be able to say so past the manifest default.
+	since    int64
+	sinceSet bool
+
+	notifyWindow      time.Duration
+	actionBudget      int
+	contactAlwaysOpen bool
+}
+
+// parseRiskRunFlags binds and parses the risk-run flag set. A nil output
+// leaves the flag set writing to os.Stderr, which is what the command wants
+// and what a test does not.
+func parseRiskRunFlags(args []string, output io.Writer) (riskRunConfig, error) {
+	var cfg riskRunConfig
 	fs := flag.NewFlagSet("risk-run", flag.ContinueOnError)
-	manifestPath := fs.String("manifest", "seedbook.json", "the seedbook manifest this run is about")
-	outDir := fs.String("out", "", "the directory the ledger, the results, and the summary go in (default: results/risk-runs/<run tag>)")
-	runTag := fs.String("run-tag", "", "tag for this run (default: risk-<unix time>)")
-	randSeed := fs.Int64("seed", 1234, "the seed the per-item arm assignment is drawn from")
-	dryRun := fs.Bool("dry-run", false, "stop before any side-effecting call and read the manifest instead of Razorpay: no API call of any kind")
-	replay := fs.Bool("replay", false, "an alias for -dry-run")
-	simulateAge := fs.Bool("simulate-age", true,
+	if output != nil {
+		fs.SetOutput(output)
+	}
+	var dryRun, replay bool
+	fs.StringVar(&cfg.manifestPath, "manifest", "seedbook.json", "the seedbook manifest this run is about")
+	fs.StringVar(&cfg.outDir, "out", "", "the directory the ledger, the results, and the summary go in (default: results/risk-runs/<run tag>)")
+	fs.StringVar(&cfg.runTag, "run-tag", "", "tag for this run (default: risk-<unix time>)")
+	fs.Int64Var(&cfg.randSeed, "seed", 1234, "the seed the per-item arm assignment is drawn from")
+	fs.BoolVar(&dryRun, "dry-run", false, "stop before any side-effecting call and read the manifest instead of Razorpay: no API call of any kind")
+	fs.BoolVar(&replay, "replay", false, "an alias for -dry-run")
+	fs.BoolVar(&cfg.simulateAge, "simulate-age", true,
 		"measure an item's age against the manifest's simulated at-risk instant rather than Razorpay's own timestamp (nothing in the API can backdate an invoice)")
-	detectGrace := fs.Duration("detect-grace", detect.DefaultGrace, "how long an issued invoice is left alone before the detector calls it overdue")
-	killSwitchPath := fs.String("kill-switch-file", "", "a path whose existence halts every action")
-	pageSize := fs.Int("page-size", detect.DefaultPageSize, "how many records each list call asks for")
-	maxPages := fs.Int("max-pages", detect.DefaultMaxPages, "how many pages a sweep reads before it stops")
+	fs.DurationVar(&cfg.detectGrace, "detect-grace", detect.DefaultGrace, "how long an issued invoice is left alone before the detector calls it overdue")
+	fs.StringVar(&cfg.killSwitchPath, "kill-switch-file", "", "a path whose existence halts every action")
+	fs.IntVar(&cfg.pageSize, "page-size", detect.DefaultPageSize, "how many records each list call asks for")
+	fs.IntVar(&cfg.maxPages, "max-pages", detect.DefaultMaxPages, "how many pages a sweep reads before it stops")
+	fs.Int64Var(&cfg.since, "since", 0,
+		"only sweep records Razorpay created at or after this Unix second (default: the manifest's created_at; pass 0 explicitly for an unscoped sweep)")
+	fs.DurationVar(&cfg.notifyWindow, "notify-window", policy.DefaultNotifyWindow,
+		"R6's run-wide minimum interval between any two notifications; a value small enough to be irrelevant, such as 1ns, is how a run takes the rate bound off")
+	fs.IntVar(&cfg.actionBudget, "action-budget", policy.DefaultActionBudget, "R5's cap on how many actions the whole run may take")
+	fs.BoolVar(&cfg.contactAlwaysOpen, "contact-always-open", false,
+		"open R12's contact window to the whole day instead of 09:00 to 21:00 IST; a demo accommodation, and a run that uses it should say so")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), `usage: rzp risk-run [flags]
 
@@ -65,20 +111,87 @@ flags:
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
+		return riskRunConfig{}, err
+	}
+	cfg.offline = dryRun || replay
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "since" {
+			cfg.sinceSet = true
+		}
+	})
+	return cfg, nil
+}
+
+// sinceSkewMargin is how far before the manifest's own created_at the default
+// floor is set.
+//
+// The manifest records the seed run's clock, and the floor is compared against
+// Razorpay's clock. The two are different machines, and an entity Razorpay
+// stamps a few seconds earlier than this host thought it asked for it would fall
+// outside a floor set exactly at created_at, which would empty the queue for a
+// reason nobody watching a demo could diagnose. An hour is far more skew than
+// two networked clocks will ever have and it is far less than the weeks of
+// stale debt the floor exists to exclude, so it costs the scoping nothing.
+const sinceSkewMargin = time.Hour
+
+// sinceFor is the created_at floor the sweep runs with.
+//
+// An operator who named one gets it, including an explicit 0, which means an
+// unscoped sweep. Otherwise the manifest's own created_at, less the skew margin,
+// is the floor, because the account this demo runs against has months of orders
+// on it that predate the book being seeded, and an unscoped sweep mints fresh
+// payment links against weeks-old debt nobody intended to chase. A manifest with
+// no created_at, which is what a hand-written fixture has, leaves the sweep
+// unscoped.
+func sinceFor(cfg riskRunConfig, manifest seed.Manifest) int64 {
+	if cfg.sinceSet {
+		return cfg.since
+	}
+	if manifest.CreatedAt.IsZero() {
+		return 0
+	}
+	return manifest.CreatedAt.Add(-sinceSkewMargin).Unix()
+}
+
+// riskPolicyConfig is the gate's settings as the flags asked for them.
+//
+// The three knobs here are the ones a demo actually has to move. R6's default
+// send window is one second and a run's notifications are microseconds apart, so
+// on the default every notification after the first is denied; R12's default
+// band closes at 21:00 IST, so an evening take gets nothing sent at all. Both
+// are correct defaults for an unattended run and both need a way to be said out
+// loud, which is what these are. Every value here lands in the summary's policy
+// block, so a run records the cadence it actually ran under.
+func riskPolicyConfig(cfg riskRunConfig) policy.Config {
+	out := policy.Config{
+		NotifyWindow: cfg.notifyWindow,
+		ActionBudget: cfg.actionBudget,
+	}
+	if cfg.contactAlwaysOpen {
+		out.ContactWindow = quiet.AlwaysOpen()
+	}
+	return out
+}
+
+// runRiskRun is the pipeline: detect, dedupe, gate, and, in the engine arm,
+// intervene, over the ground truth a seedbook manifest records.
+func runRiskRun(ctx context.Context, args []string) (runErr error) {
+	cfg, err := parseRiskRunFlags(args, nil)
+	if err != nil {
 		return err
 	}
-	offline := *dryRun || *replay
+	offline := cfg.offline
 
-	manifest, err := seed.ReadManifest(*manifestPath)
+	manifest, err := seed.ReadManifest(cfg.manifestPath)
 	if err != nil {
 		return err
 	}
 
-	tag := *runTag
+	tag := cfg.runTag
 	if tag == "" {
 		tag = fmt.Sprintf("risk-%d", time.Now().UTC().Unix())
 	}
-	dir := *outDir
+	dir := cfg.outDir
 	if dir == "" {
 		dir = filepath.Join("results", "risk-runs", tag)
 	}
@@ -86,7 +199,7 @@ flags:
 		return fmt.Errorf("make %s: %w", dir, err)
 	}
 
-	engaged, err := policy.KillSwitchFile(*killSwitchPath)
+	engaged, err := policy.KillSwitchFile(cfg.killSwitchPath)
 	if err != nil {
 		return err
 	}
@@ -119,24 +232,26 @@ flags:
 
 	opts := riskrun.Options{
 		Manifest:     manifest,
-		ManifestPath: *manifestPath,
+		ManifestPath: cfg.manifestPath,
 		RunTag:       tag,
-		Seed:         *randSeed,
+		Seed:         cfg.randSeed,
 		DryRun:       offline,
-		SimulateAge:  *simulateAge,
+		SimulateAge:  cfg.simulateAge,
 		KillSwitch:   engaged,
 		DetectConfig: detect.Config{
-			PageSize: *pageSize,
-			MaxPages: *maxPages,
-			Grace:    *detectGrace,
+			PageSize: cfg.pageSize,
+			MaxPages: cfg.maxPages,
+			Grace:    cfg.detectGrace,
+			Since:    sinceFor(cfg, manifest),
 			Clock:    runClock,
 		},
-		Clock:       runClock,
-		Recorder:    recorder,
-		Escalations: escalations,
-		Promises:    promise.NewStore(),
-		Results:     results,
-		Log:         os.Stdout,
+		PolicyConfig: riskPolicyConfig(cfg),
+		Clock:        runClock,
+		Recorder:     recorder,
+		Escalations:  escalations,
+		Promises:     promise.NewStore(),
+		Results:      results,
+		Log:          os.Stdout,
 	}
 
 	// The client is built only on the live path, so a dry run cannot reach
@@ -314,7 +429,7 @@ func paymentLinksFrom(runDir string) ([]string, error) {
 		if err := json.Unmarshal(scanner.Bytes(), &row); err != nil {
 			return nil, fmt.Errorf("parse a result row in %s: %w", path, err)
 		}
-		if row.HandleID != "" && row.ExecutedAction == "create_payment_link" {
+		if row.HandleID != "" && row.ExecutedAction == riskitem.ActionCreatePaymentLink {
 			links = append(links, row.HandleID)
 		}
 	}

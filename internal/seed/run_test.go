@@ -223,6 +223,10 @@ func TestExecutePlanStopsOnAPIError(t *testing.T) {
 	}
 }
 
+// TestExecutePlanSimulatedAtRiskSinceMatchesAgeBucket covers both kinds. Orders
+// carry a bucket for the same reason invoices do: policy.GraceUnpaidOrder is an
+// hour and nothing in the API can backdate an order either, so an order that is
+// meant to look aged says so in the manifest and nowhere else.
 func TestExecutePlanSimulatedAtRiskSinceMatchesAgeBucket(t *testing.T) {
 	plan := GeneratePlan(DemoProfile(), "run-age", 1)
 	client := &stubClient{}
@@ -233,16 +237,24 @@ func TestExecutePlanSimulatedAtRiskSinceMatchesAgeBucket(t *testing.T) {
 	}
 
 	now := testClock.Now()
+	var agedOrders int
 	for _, item := range manifest.Items {
-		if item.Kind != EntityInvoice {
+		if item.AgeBucket == "" {
+			t.Errorf("%s %s carries no age bucket at all", item.Kind, item.ID)
 			continue
 		}
 		wantDays := item.AgeBucket.AgeDays()
 		wantSince := now.Add(-time.Duration(wantDays) * 24 * time.Hour).Unix()
 		if item.SimulatedAtRiskSince != wantSince {
-			t.Errorf("invoice %s age_bucket=%s: SimulatedAtRiskSince = %d, want %d",
-				item.ID, item.AgeBucket, item.SimulatedAtRiskSince, wantSince)
+			t.Errorf("%s %s age_bucket=%s: SimulatedAtRiskSince = %d, want %d",
+				item.Kind, item.ID, item.AgeBucket, item.SimulatedAtRiskSince, wantSince)
 		}
+		if item.Kind == EntityOrder && wantDays > 0 {
+			agedOrders++
+		}
+	}
+	if agedOrders != 2 {
+		t.Errorf("the demo manifest carries %d aged order(s), want 2", agedOrders)
 	}
 }
 

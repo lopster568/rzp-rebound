@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/razorpay"
@@ -418,5 +419,107 @@ func TestFailedPaymentDetectorPrefersThePaymentContactOverTheNote(t *testing.T) 
 	}
 	if items[0].Customer != want {
 		t.Errorf("Customer = %+v, want %+v", items[0].Customer, want)
+	}
+}
+
+// twoUnpaidOrders is two orders with money still due on both, so a walk that
+// stops at the first failure and a walk that carries on give different answers.
+const twoUnpaidOrders = `{
+  "entity": "collection",
+  "count": 2,
+  "items": [
+    {
+      "id": "order_TWu8G6mQV0Drc9",
+      "entity": "order",
+      "amount": 100000,
+      "amount_paid": 0,
+      "amount_due": 100000,
+      "currency": "INR",
+      "receipt": null,
+      "offer_id": null,
+      "status": "created",
+      "attempts": 1,
+      "notes": [],
+      "created_at": 1788294472
+    },
+    {
+      "id": "order_TYEyaa7bjDHn7P",
+      "entity": "order",
+      "amount": 50000,
+      "amount_paid": 0,
+      "amount_due": 50000,
+      "currency": "INR",
+      "receipt": null,
+      "offer_id": null,
+      "status": "created",
+      "attempts": 1,
+      "notes": [],
+      "created_at": 1788586217
+    }
+  ]
+}`
+
+// TestFailedPaymentDetectorCarriesOnPastOnePaymentsFailure is the other half of
+// the partial-sweep contract, applied to the per-order call this detector makes
+// on top of the sweep.
+//
+// The first order's payments call fails and the second order's succeeds. A walk
+// that returned at the first failure would report an empty queue and one error,
+// which reads as an account with no failed payments on it rather than as an
+// account this run could not finish reading. The debt on every order after the
+// failing one is real and it is what the run exists to find.
+func TestFailedPaymentDetectorCarriesOnPastOnePaymentsFailure(t *testing.T) {
+	gateway := &stubGateway{
+		orders: decodeOrders(t, twoUnpaidOrders),
+		payments: map[string][]razorpay.Payment{
+			"order_TYEyaa7bjDHn7P": decodePayments(t, probeOrderPaymentsFailed),
+		},
+		paymentErrOnOrder: "order_TWu8G6mQV0Drc9",
+	}
+	detector := NewFailedPaymentDetector(gateway, Config{})
+
+	items, err := detector.Detect(context.Background())
+
+	if !errors.Is(err, errStub) {
+		t.Fatalf("Detect error = %v, want the stub failure to survive", err)
+	}
+	if len(gateway.paymentOrders) != 2 {
+		t.Fatalf("asked for the payments on %v, want both orders", gateway.paymentOrders)
+	}
+	if len(items) != 1 {
+		t.Fatalf("returned %d item(s), want the 1 from the order after the failure", len(items))
+	}
+	if items[0].RootOrderID != "order_TYEyaa7bjDHn7P" {
+		t.Errorf("RootOrderID = %q, want the order read after the failing one", items[0].RootOrderID)
+	}
+	if !strings.Contains(err.Error(), "order_TWu8G6mQV0Drc9") {
+		t.Errorf("the error %q does not name the order whose payments could not be read", err)
+	}
+}
+
+// TestFailedPaymentDetectorKeepsTheSweepErrorAlongsideAPaymentsError pins that
+// one failure does not stand in for another.
+//
+// The sweep is cut short on its second page and the one order it did read then
+// fails its payments call. Both are real and they mean different things: a
+// truncated sweep says the queue is incomplete, and a failed payments call says
+// one known order could not be judged. Returning either on its own loses a fact
+// the caller needs to decide whether the run is worth acting on.
+func TestFailedPaymentDetectorKeepsTheSweepErrorAlongsideAPaymentsError(t *testing.T) {
+	gateway := &stubGateway{
+		orders:            decodeOrders(t, twoUnpaidOrders),
+		orderErrOnCall:    2,
+		paymentErrOnOrder: "order_TWu8G6mQV0Drc9",
+	}
+	detector := NewFailedPaymentDetector(gateway, Config{PageSize: 1})
+
+	_, err := detector.Detect(context.Background())
+
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		t.Fatalf("Detect error = %v (%T), want a joined error carrying both failures", err, err)
+	}
+	if got := len(joined.Unwrap()); got != 2 {
+		t.Errorf("the joined error carries %d failure(s), want 2: the sweep and the payments call", got)
 	}
 }

@@ -2,6 +2,8 @@ package detect
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/lopster568/rzp-recovery-agent/internal/razorpay"
 	"github.com/lopster568/rzp-recovery-agent/internal/riskitem"
@@ -43,8 +45,17 @@ func (d *FailedPaymentDetector) Name() string { return string(riskitem.SourceFai
 //
 // A page that reads and a payments call that then fails returns the items
 // already built along with the error, per the Detector contract.
+//
+// One order's payments call failing does not end the walk and does not lose the
+// sweep's own error. Both were happening: the first payments failure returned
+// early, so every order after it went unread and its debt was invisible to the
+// run, and it returned that one error in place of sweepErr, so a truncated
+// sweep stopped being reported at all. Every failure is collected with
+// errors.Join and the walk carries on, which is the partial-sweep contract
+// detect.go's sweep documents, applied to the second call this detector makes.
 func (d *FailedPaymentDetector) Detect(ctx context.Context) ([]riskitem.RiskItem, error) {
 	orders, sweepErr := sweep(ctx, d.cfg, d.api.ListOrders)
+	errs := sweepErr
 
 	var items []riskitem.RiskItem
 	for _, order := range orders {
@@ -53,7 +64,8 @@ func (d *FailedPaymentDetector) Detect(ctx context.Context) ([]riskitem.RiskItem
 		}
 		payments, err := d.api.ListPaymentsForOrder(ctx, order.ID)
 		if err != nil {
-			return items, err
+			errs = errors.Join(errs, fmt.Errorf("read the payments on %s: %w", order.ID, err))
+			continue
 		}
 		failed, ok := newestFailed(payments)
 		if !ok {
@@ -61,7 +73,7 @@ func (d *FailedPaymentDetector) Detect(ctx context.Context) ([]riskitem.RiskItem
 		}
 		items = append(items, itemFromFailedPayment(order, failed))
 	}
-	return items, sweepErr
+	return items, errs
 }
 
 // newestFailed returns the failed payment with the largest created_at.

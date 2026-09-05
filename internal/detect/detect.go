@@ -100,6 +100,18 @@ type Config struct {
 	// Grace is how long an issued invoice is left alone. Zero means
 	// DefaultGrace. Read by OverdueInvoiceDetector only.
 	Grace time.Duration
+	// Since scopes every sweep to records Razorpay created at or after this
+	// Unix second. Zero means unscoped, which is the whole account back to its
+	// first order.
+	//
+	// It is the gateway's own created_at, not the simulated age a manifest
+	// carries, and the two answer different questions: this one bounds what a
+	// sweep reads, and the simulated age bounds what the gate will act on once
+	// it has been read. A real account carries debt that predates the book a
+	// run is about, and an unscoped sweep puts all of it in the same queue,
+	// where the engine arm mints fresh payment links against months-old
+	// receivables nobody meant to chase.
+	Since int64
 	// Clock supplies the instant an invoice's age is measured against. Nil
 	// means clock.Real(). Read by OverdueInvoiceDetector only.
 	Clock clock.Clock
@@ -145,13 +157,17 @@ func (c Config) now() time.Time {
 // because a detector that read four pages and failed on the fifth has still
 // seen four pages of real debt, and the Detector contract says the caller
 // decides whether a partial sweep is worth acting on.
+//
+// Config.Since goes on the wire as ListOptions.From, so the scoping is done by
+// Razorpay rather than by discarding records after reading them: a page the
+// endpoint never returns costs nothing and cannot be counted by mistake.
 func sweep[T any](ctx context.Context, cfg Config, page func(context.Context, razorpay.ListOptions) ([]T, error)) ([]T, error) {
 	size := cfg.pageSize()
 	limit := cfg.maxPages()
 
 	var out []T
 	for read := 0; read < limit; read++ {
-		items, err := page(ctx, razorpay.ListOptions{Count: size, Skip: read * size})
+		items, err := page(ctx, razorpay.ListOptions{Count: size, Skip: read * size, From: cfg.Since})
 		if err != nil {
 			return out, err
 		}

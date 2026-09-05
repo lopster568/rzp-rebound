@@ -76,7 +76,14 @@ type OrderSpec struct {
 	CustomerEmail   string
 	CustomerContact string
 	AmountPaise     int64
-	Description     string
+	// AgeBucket is the age this order claims, on the same manifest-only terms
+	// an invoice's is: nothing in the orders API backdates created_at either.
+	// It exists because policy.GraceUnpaidOrder is one hour and every seeded
+	// order is minutes old, so a book seeded shortly before a run denies every
+	// order under R11-NOT-YET-DUE and the link-minting beat has nothing to mint
+	// a link for. AgeFresh is the zero value and stays the honest default.
+	AgeBucket   AgeBucket
+	Description string
 }
 
 // Plan is everything a seed run intends to create, before any API call is
@@ -116,6 +123,16 @@ type Profile struct {
 	// escalates rather than guesses when riskitem.Customer.HasContactChannel
 	// is false, whichever of the three sources produced the item.
 	NoContactOrders int
+	// OrderAges is the age bucket for each order the profile seeds, in the
+	// order they are created: the Orders that carry a contact first, then the
+	// NoContactOrders. A position with no entry gets AgeFresh.
+	//
+	// It is a list rather than one bucket for the whole set because the demo
+	// needs both answers out of one source: an order old enough for R11 to let
+	// through, so the engine mints a link, and an order young enough for R11 to
+	// deny, so the containment beat has something to fire on that is not a
+	// contrived flag.
+	OrderAges []AgeBucket
 }
 
 // DemoProfile is the mix the risk-engine demo asks for: a couple of fresh
@@ -123,6 +140,17 @@ type Profile struct {
 // partial-payment-plan candidate, one invoice with no contact channel at
 // all, a couple of abandoned orders with a contact in their notes, and one
 // abandoned order with none.
+//
+// Two of the three orders are aged and the middle one is deliberately not.
+// policy.GraceUnpaidOrder is one hour and no API call can backdate an order, so
+// a book seeded less than an hour before the run is taken has every order denied
+// under R11-NOT-YET-DUE and the demo never mints a payment link. The two aged
+// orders make that beat work whatever time the seeder ran; the fresh one keeps
+// R11 firing on something real, which is a containment beat rather than a gap.
+// It is one of the contact-bearing orders that stays fresh, so that the
+// no-contact order is old enough to reach R10-NO-CONTACT-CHANNEL: R11 is
+// evaluated before R10, and a fresh no-contact order would be denied for being
+// young before anything asked whether it could be contacted at all.
 func DemoProfile() Profile {
 	return Profile{
 		Name:                "demo",
@@ -133,6 +161,7 @@ func DemoProfile() Profile {
 		NoContactInvoices:   1,
 		Orders:              2,
 		NoContactOrders:     1,
+		OrderAges:           []AgeBucket{Age30, AgeFresh, Age30},
 	}
 }
 
@@ -199,21 +228,34 @@ func GeneratePlan(profile Profile, runTag string, randSeed int64) Plan {
 	}
 
 	orderSeq := 0
+	// orderAge reads the bucket for the order about to be appended. Positions
+	// past the end of OrderAges get AgeFresh, so a profile that names no ages
+	// seeds the book it seeded before this field existed.
+	orderAge := func() AgeBucket {
+		if len(plan.Orders) < len(profile.OrderAges) {
+			return profile.OrderAges[len(plan.Orders)]
+		}
+		return AgeFresh
+	}
 	for i := 0; i < profile.Orders; i++ {
 		orderSeq++
 		name := syntheticName(rng)
+		bucket := orderAge()
 		plan.Orders = append(plan.Orders, OrderSpec{
 			CustomerName:    name,
 			CustomerEmail:   syntheticEmail(name, runTag, seq+orderSeq),
 			CustomerContact: syntheticContact(rng),
 			AmountPaise:     syntheticAmount(rng),
-			Description:     fmt.Sprintf("seedbook %s order %d, abandoned", runTag, i+1),
+			AgeBucket:       bucket,
+			Description:     fmt.Sprintf("seedbook %s order %d, abandoned, age=%s", runTag, i+1, bucket),
 		})
 	}
 	for i := 0; i < profile.NoContactOrders; i++ {
+		bucket := orderAge()
 		plan.Orders = append(plan.Orders, OrderSpec{
 			AmountPaise: syntheticAmount(rng),
-			Description: fmt.Sprintf("seedbook %s order %d, abandoned, no contact channel", runTag, profile.Orders+i+1),
+			AgeBucket:   bucket,
+			Description: fmt.Sprintf("seedbook %s order %d, abandoned, no contact channel, age=%s", runTag, profile.Orders+i+1, bucket),
 		})
 	}
 
