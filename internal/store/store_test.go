@@ -98,8 +98,14 @@ func TestStoreSnapshotCarriesLastActionAndNotifyTimes(t *testing.T) {
 		t.Error("a retry moved last_notify_at, which is what R6 rate limits")
 	}
 
+	// A notification, under what policy.IsNotifyAction now means: a message
+	// goes out. It used to mean "asks the customer for a reauthentication or a
+	// new card", and this line committed request_reauth on that reading. That
+	// action is not a message and is not in the lawful set any more, so it is
+	// no longer a notification to the store either, and the assertion below
+	// was failing against a last_notify_at that correctly did not move.
 	c.Advance(time.Minute)
-	s.Commit("order_a", "k2", policy.ActionRequestReauth)
+	s.Commit("order_a", "k2", policy.ActionNotifyEmail)
 	afterNotify := s.Snapshot("order_a", "k0", false)
 	if !afterNotify.LastNotifyAt.Equal(start.Add(time.Minute)) {
 		t.Errorf("last_notify_at = %s, want %s", afterNotify.LastNotifyAt, start.Add(time.Minute))

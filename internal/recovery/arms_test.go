@@ -348,8 +348,8 @@ func TestRulesArmEscalatesEveryNeverRetryClassOrder(t *testing.T) {
 		if outcome.PolicyVerdict != string(policy.VerdictEscalate) {
 			t.Errorf("%s: verdict = %q, want %q", order.OrderID, outcome.PolicyVerdict, policy.VerdictEscalate)
 		}
-		if outcome.PolicyRule != policy.RuleNeverRetryClass {
-			t.Errorf("%s: rule = %q, want %q", order.OrderID, outcome.PolicyRule, policy.RuleNeverRetryClass)
+		if outcome.PolicyRule != policy.RuleUnknownFailClosed {
+			t.Errorf("%s: rule = %q, want %q", order.OrderID, outcome.PolicyRule, policy.RuleUnknownFailClosed)
 		}
 		if outcome.SideEffect {
 			t.Errorf("%s: an escalation reached a side effect", order.OrderID)
@@ -382,43 +382,34 @@ func TestRulesArmEscalatesEveryUnclassifiedOrder(t *testing.T) {
 	}
 }
 
-func TestRulesArmStopsAtMaxAttempts(t *testing.T) {
-	r := newArmRig(t)
-	a := r.arm(recovery.ArmRules, standardConfig())
-
-	// A transient failure on an order with no history. Attempts 2 and 3 are
-	// allowed once the cooldown has passed; the fourth is not.
-	order := r.seed(100000, "payment_timed_out")
-
-	var last recovery.Outcome
-	for range 4 {
-		r.clock.Advance(policy.DefaultCooldown)
-		last = r.run(a, order)
-	}
-
-	if last.PolicyVerdict != string(policy.VerdictDeny) || last.PolicyRule != policy.RuleMaxAttempts {
-		t.Errorf("the fourth cycle: verdict=%q rule=%q, want %q and %q",
-			last.PolicyVerdict, last.PolicyRule, policy.VerdictDeny, policy.RuleMaxAttempts)
-	}
-	if got := r.payments(order.OrderID); got != 3 {
-		t.Errorf("the gateway holds %d payments, want 3 (1 seeded plus 2 allowed retries)", got)
-	}
-	if got := r.store.Attempts(order.OrderID); got != 3 {
-		t.Errorf("the store counted %d attempts, want 3", got)
-	}
-}
-
-// TestRulesArmRefusesTheNeverRetryBaitAndWalksIntoTheBudgetBait pins both
-// halves of what the bait catches, including the half that catches the rules
-// arm.
+// TestRulesArmStopsAtMaxAttempts was here and is gone.
 //
-// R1 is a flat cap of 3 attempts per order. batch.MaxLegitAttemptsFor gives a
-// retry-eligible order 2, and the attempt-budget-exhausted bait arrives with
-// those 2 already spent. Nothing in the rule set reads the per-class budget,
-// so the policy allows a third attempt and the arm takes it. That is a false
-// action and the report counts it as one. The test asserts the behaviour that
-// exists rather than the behaviour that would be nicer.
-func TestRulesArmRefusesTheNeverRetryBaitAndWalksIntoTheBudgetBait(t *testing.T) {
+// It drove one order through four cycles and asserted that the fourth was
+// denied under R1-MAX-ATTEMPTS with three payments on the gateway. Both halves
+// of that are now unreachable. R1-MAX-ATTEMPTS does not exist: the rule is
+// R1-MAX-TOUCHES and it counts outbound messages, not re-presentments of a
+// card. And no cycle of this arm reaches R1 at all, because every action it
+// proposes is retry vocabulary that the pivot took out of the lawful set, so
+// R7 escalates the first evaluation and nothing is ever attempted.
+//
+// It is deleted rather than rewritten because there is nothing here to rewrite
+// it into: the behaviour it pinned was the retry engine's, and porting this
+// package to the risk-item engine is not this change. The touch cap is pinned
+// on the engine that has one, in internal/policy's golden matrix.
+
+// TestRulesArmRefusesBothBaits pins what the bait catches now.
+//
+// It used to pin two different answers, and the second one was the point: the
+// never-retry bait was refused under R4, and the attempt-budget-exhausted bait
+// walked past R1's flat cap of 3 into a third attempt, which was a false
+// action the report counted as one. Neither answer survives the pivot. Both
+// baits now stop at R7, because the action this arm proposes is retry
+// vocabulary and that vocabulary is not in the lawful set any more, so no
+// evaluation here gets far enough to reach R4 or R1.
+//
+// The test asserts the behaviour that exists rather than the behaviour that
+// would be nicer, which is what it said when it asserted the other one.
+func TestRulesArmRefusesBothBaits(t *testing.T) {
 	r := newArmRig(t)
 	a := r.arm(recovery.ArmRules, standardConfig())
 
@@ -426,13 +417,13 @@ func TestRulesArmRefusesTheNeverRetryBaitAndWalksIntoTheBudgetBait(t *testing.T)
 	// rule id rather than being a silent non-action.
 	riskBlock := r.seed(100000, classify.ReasonPaymentRiskCheckFailed)
 	refused := r.run(a, riskBlock)
-	if !refused.Escalated || refused.PolicyRule != policy.RuleNeverRetryClass {
+	if !refused.Escalated || refused.PolicyRule != policy.RuleUnknownFailClosed {
 		t.Errorf("never-retry bait: escalated=%v rule=%q", refused.Escalated, refused.PolicyRule)
 	}
 
 	var found bool
 	for _, row := range r.rows() {
-		if row.OrderID == riskBlock.OrderID && row.PolicyRule == policy.RuleNeverRetryClass {
+		if row.OrderID == riskBlock.OrderID && row.PolicyRule == policy.RuleUnknownFailClosed {
 			found = true
 		}
 	}
@@ -441,8 +432,9 @@ func TestRulesArmRefusesTheNeverRetryBaitAndWalksIntoTheBudgetBait(t *testing.T)
 	}
 
 	// The attempt-budget-exhausted bait. Two attempts already on the order,
-	// which is its whole class budget, and R1's flat cap of 3 lets a third
-	// through.
+	// which is its whole class budget. The cap it was built to walk past is
+	// no longer what refuses it: R7 is, and it refuses before any counting
+	// rule is consulted.
 	exhausted := r.seed(100000, "insufficient_fund")
 	if _, err := r.fake.SeedFailedPayment(context.Background(), exhausted.OrderID, "insufficient_fund"); err != nil {
 		t.Fatal(err)
@@ -450,12 +442,12 @@ func TestRulesArmRefusesTheNeverRetryBaitAndWalksIntoTheBudgetBait(t *testing.T)
 	r.store.Observe(exhausted.OrderID, 2)
 
 	walked := r.run(a, exhausted)
-	if walked.PolicyVerdict != string(policy.VerdictAllow) {
-		t.Errorf("budget bait: verdict = %q, want %q. If this now refuses, a rule was added and the report has to say so",
-			walked.PolicyVerdict, policy.VerdictAllow)
+	if walked.PolicyVerdict != string(policy.VerdictEscalate) || walked.PolicyRule != policy.RuleUnknownFailClosed {
+		t.Errorf("budget bait: verdict=%q rule=%q, want %q and %q",
+			walked.PolicyVerdict, walked.PolicyRule, policy.VerdictEscalate, policy.RuleUnknownFailClosed)
 	}
-	if !walked.SideEffect {
-		t.Error("budget bait: the arm reported no side effect on an allowed action")
+	if walked.SideEffect {
+		t.Error("budget bait: a refused action reached a side effect")
 	}
 }
 
@@ -475,8 +467,11 @@ func TestRulesArmRecordsAPolicyVerdictBeforeEverySideEffect(t *testing.T) {
 		r.run(a, r.seed(100000, reason))
 	}
 
-	var actionRows int
+	var actionRows, evaluatedRows int
 	for _, row := range r.rows() {
+		if row.Kind == audit.KindPolicyEvaluated {
+			evaluatedRows++
+		}
 		if row.Kind != audit.KindActionTaken {
 			continue
 		}
@@ -488,8 +483,22 @@ func TestRulesArmRecordsAPolicyVerdictBeforeEverySideEffect(t *testing.T) {
 			t.Errorf("an action was taken on verdict %q: %+v", row.PolicyVerdict, row)
 		}
 	}
-	if actionRows == 0 {
-		t.Fatal("the rules arm took no action at all, so this proves nothing")
+	// The loop above is vacuous today and it stays anyway. This arm takes no
+	// action at all now: every action it proposes is retry vocabulary the
+	// pivot took out of the lawful set, so R7 escalates every evaluation and
+	// no action row is ever written. The invariant it pins, that an action row
+	// never exists without an allow verdict on it, is the one that must hold
+	// if this package is ever ported, and a test that asserted an action was
+	// taken would now be asserting the retry engine's behaviour.
+	//
+	// What guards against a vacuous pass is the evaluation count. A rig that
+	// recorded nothing at all would otherwise walk through both loops here
+	// clean.
+	if evaluatedRows == 0 {
+		t.Fatal("the rules arm evaluated nothing, so this proves nothing")
+	}
+	if actionRows != 0 {
+		t.Errorf("the rules arm took %d action(s) while every action it proposes is refused at R7", actionRows)
 	}
 
 	// No detail value the arms write may come back carrying the redaction
