@@ -1,6 +1,6 @@
-# rzp-recovery-agent
+# Rebound (rzp-rebound)
 
-Rebound (rzp-rebound): a unified revenue-at-risk engine for Razorpay, and the
+A unified revenue-at-risk engine for Razorpay, and the
 regulatory self-audit that deleted its predecessor's headline action.
 
 Three detectors sweep an account for money that is owed and not collected:
