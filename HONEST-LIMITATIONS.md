@@ -268,11 +268,18 @@ sequence. The other three arms' live data is from the original run. This is
 about the phase 3 tables; `phase-5-live` was driven in one pass on the fixed
 binary.
 
-**21. The action budget can overshoot under concurrency.** The middleware
+**21. The action budget can overshoot under concurrency.** Written 2026-09-01
+about the retry engine, and the rule id in it is a pre-pivot one. The middleware
 checks the invocation budget before the handler spends it, so two calls
 admitted at once can both spend. The lock in `Server.act` stops the attempt cap
 being raced; it does not make the invocation budget exact. The bound that
 matters, `R1-MAX-ATTEMPTS`, is exact.
+
+The race is unchanged and so is the finding. What changed on 2026-09-05 is the
+rule: `R1` is `R1-MAX-TOUCHES` now and it bounds outbound contacts about one
+debt, not re-presentments of a card. The pre-pivot name is left in the paragraph
+above rather than rewritten, for the reason the heading of this file's pivot
+section gives.
 
 **22. `ActionOutput.Action` means two things.** On a middleware refusal it is
 the tool name and on a handler refusal it is the policy action. Cosmetic, in a
@@ -365,7 +372,10 @@ reconstruction of Visa's member-gated table, `VisaCategory1IsReconstructed` is
 true, and the source string says so. This project first cited the bulletin for
 the list itself, which the bulletin does not contain.
 
-**33. Two cited code paths are exercised by unit tests and by no run.** No
+**33. Two cited code paths are exercised by unit tests and by no run.** Written
+2026-09-01 about the retry engine. `R4-NEVER-RETRY-CLASS` below is a pre-pivot
+rule id; the rule is `R4-NEVER-CONTACT` since 2026-09-05 and it refuses contact
+rather than re-presentment. No
 Razorpay payload this project has observed carries a raw network response code,
 so `classify.ClassifyNetworkDeclineCode` and every list in
 `internal/networkcodes` are reached by their own tests and by nothing else.
@@ -374,13 +384,21 @@ the network path. Separately, the fake gateway stamps every payment it seeds as
 a card payment, so `batch.Generate` draws from the documented card table and the
 eight UPI reason mappings have never been driven either.
 
-**34. The two interval rules have no citable value and say so.** No industry
+**34. The two interval rules have no citable value and say so.** Written
+2026-09-01 about the retry engine, and the 30 second figure in it is that
+engine's. No industry
 source publishes a retry interval at seconds scale. The shortest scheme-native
 one is the Mastercard automated-clearing schedule, which starts at one hour, and
 the RBI e-mandate 24 hour pre-debit notice is a notice floor rather than a rate.
 `R2-COOLDOWN` and `R6-NOTIFY-RATE` keep their 30 seconds and are declared
 configured choices in `policy.ConfiguredChoices`, which a test walks. Attaching
 either source to a 30 second constant would be worse than attaching none.
+
+Neither constant is 30 seconds any more and neither rule is about a retry. The
+current values are in the pivot section below, under item 47, and they are what
+`internal/policy/sources.go` holds. The paragraph above is kept because the
+finding it records, that no source publishes these numbers, survived the pivot
+unchanged: the values moved and their citation status did not.
 
 **35. The Mastercard reattempt thresholds are contested and nothing here uses
 them.** Secondary sources quote a specific per-merchant reattempt limit and do
@@ -581,6 +599,35 @@ consistent both with code that works and with an assertion that cannot fire. It
 is flagged rather than backfilled. Re-running the tests against a stubbed
 implementation after the fact would produce a red run and prove nothing about the
 order the code was written in, which is a ceremony rather than a fix.
+
+**47. The cadence numbers items 21, 33, and 34 quote are the old engine's.**
+Those three items are dated 2026-09-01 and they describe the retry engine. They
+are kept because their findings survived the pivot, and they are wrong about
+every number and two of the three rule ids they name. The current values, read
+from `internal/policy/sources.go` and `internal/policy/policy.go` on 2026-09-05:
+
+- `R2-COOLDOWN`, the minimum interval between two contacts about one debt, is 24
+  hours for a failed payment, 24 hours for an unpaid order, and 48 hours for an
+  overdue invoice. The 30 second constant item 34 quotes is gone. It was a retry
+  rate, it bounded how fast a card was re-presented, and half a minute between
+  two messages to one customer about one debt is harassment.
+- `R6-NOTIFY-RATE` is one second, and it is not a per-customer rule at all. It is
+  a run-wide send rate: the minimum interval between any two notifications this
+  run sends, to anyone, so a sweep that just found two hundred overdue invoices
+  does not emit two hundred sends in a burst. `cmd/rzp risk-run` takes
+  `-notify-window` to move it.
+- `R1` is `R1-MAX-TOUCHES`, not `R1-MAX-ATTEMPTS`. It is a lifetime cap on
+  outbound contacts about one debt: 3 for a failed payment, 3 for an unpaid
+  order, 4 for an overdue invoice, because an issued invoice is a debt the
+  customer has already acknowledged.
+- `R4` is `R4-NEVER-CONTACT`, not `R4-NEVER-RETRY-CLASS`. It refuses to chase a
+  customer whose payment the gateway's risk check blocked, rather than refusing
+  to re-present a card.
+
+Every one of these is a configured choice and none of them is cited.
+`policy.ConfiguredChoices` says so per rule and the block in `sources.go` says so
+per number, which is the same status item 34 recorded for the values it
+replaced. That is the part of item 34 that did not change.
 
 ## The rule behind this file
 

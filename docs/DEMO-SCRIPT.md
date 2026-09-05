@@ -113,13 +113,52 @@ decline.** Show the decline card on screen.
 failed-payment detector reads it on the next sweep. Nothing wrote it there
 directly.
 
+Note for the presenter, not a line to say: the failure you just caused is on the
+order an invoice minted, and that order and that invoice are one debt. The dedupe
+collapses them and the invoice sighting wins, because the detectors run
+invoice first. So the failed-payment count is in `sightings_by_source`, which is
+what the three detectors returned, and it will not be in `items_by_source`, which
+is what survived `Collapse`. The terminal roll-up prints items. Prove this beat
+from `summary.json` in the next block, not from the screen.
+
 ## 2:00 to 3:10, the risk run, beat two
 
 **On screen:** back to a clean terminal.
 
 ```
-make risk-run FLAGS='--manifest seedbook.json --out results/risk-runs/demo'
+make risk-run FLAGS='--manifest seedbook.json --out results/risk-runs/demo \
+    --detect-grace 1s --notify-window 1ns'
 ```
+
+Both of those flags are load bearing and neither is cosmetic.
+
+`--detect-grace 1s` is the one without which the demo shows an empty queue.
+`OverdueInvoiceDetector.Detect` measures its grace against Razorpay's own
+`issued_at`, before anything simulated is applied: `internal/riskrun` swaps in
+the manifest's simulated at-risk instant after `Collapse`, so the detector has
+already decided what it will report by then. Every seeded invoice is minutes old
+to Razorpay, and the default grace is 24 hours, so on the default the detector
+returns nothing at all and the aged book never reaches the gate. It cannot be
+turned off with a zero either: `Config.grace()` treats a zero or negative value
+as unset and falls back to the 24 hour default, so a small positive value is the
+floor, and 1s is the readable one.
+
+`--notify-window 1ns` opens `R6-NOTIFY-RATE`, which is a run-wide send rate with
+a one second default. A run evaluates its items microseconds apart, so on the
+default exactly one notification goes out and every one after it is denied. That
+is the right default for an unattended run over a real book and it makes the
+demo look like a rule misfiring. Say what the flag does if the roll-up is on
+screen long enough for anyone to ask.
+
+Two flags that are not on this line and do not need to be. `--since` defaults to
+the manifest's own `created_at`, which scopes all three sweeps to the book this
+run is about rather than to every order the test account has ever carried;
+nothing has to be typed for that. `--contact-always-open` opens
+`R12-QUIET-HOURS`, whose band is 09:00 to 21:00 IST, and it is needed only if
+you are recording after 21:00 IST, in which case every notification is denied
+without it. If you use it, say so out loud: it is a demo accommodation, and a
+recording that quietly disabled a contact-hours rule while narrating containment
+is the kind of thing this repository has a limitations file to avoid.
 
 **Say while the header prints:** Three detectors sweep the account. Failed
 payments, orders created and never paid, invoices issued and overdue. All three
@@ -131,6 +170,15 @@ the order detector at the same time, under two different ids. Every merged
 sighting on that line is a customer who would otherwise have been contacted twice
 about one debt, by two detectors that were each individually right. The queue
 collapses on the root order, not on the sighting.
+
+**Then open `results/risk-runs/demo/summary.json` and point at
+`sightings_by_source`.** This is where the payment you failed by hand shows up.
+That failure landed on the order an invoice had minted, so it is the same debt the
+invoice detector reported, and the dedupe kept the invoice. The failed-payment
+detector did fire, and `sightings_by_source` is the field that says so;
+`items_by_source` beside it is what was left after the merge. Reading the second
+one and calling it a detector that found nothing is the mistake this block exists
+to stop.
 
 **Point at the age line.** There it is: `manifest_simulated`. That is label one of
 three. It is also on the summary file and on every single result row.
@@ -167,15 +215,32 @@ other, and the kill switch stops it like any other.
 **On screen:** the terminal, then the browser.
 
 ```
-make risk-poll FLAGS='--manifest seedbook.json --out snapshots/before.json'
+make risk-poll FLAGS='--manifest seedbook.json --run results/risk-runs/demo \
+    --out snapshots/before.json'
 ```
+
+`--run` is on the before poll as well as the after one, and it has to be. The
+risk run happened in the previous block, so its output directory already exists
+and the links it minted already exist. `riskrun.Diff` matches entities by kind
+and id across the two snapshots and counts anything it can only find in the
+later one as unmatched, contributing nothing to the recovered figure. A before
+poll taken without `--run` therefore cannot see a run-minted link, and a payment
+made on one would show up as a paid entity the delta refuses to count. The rule
+is simply: wherever the run directory exists, pass `--run`.
 
 **Say:** That is the before reading. Every call it makes is a fetch. Nothing in
 the poller writes to Razorpay.
 
-**Switch to the browser, open one of the payment links the run created or one of
-the invoice short URLs, and pay it.** Card `4100 2800 0000 1007`, any future
-expiry, any CVV.
+**Switch to the browser, open one of the invoice short URLs the seeder printed,
+and pay it.** Card `4100 2800 0000 1007`, any future expiry, any CVV.
+
+This script commits to an invoice short URL rather than to a run-minted payment
+link, and the reason is that the invoice is in both snapshots by construction:
+it is in the manifest, so every poll reads it whatever flags were passed. A
+run-minted link is in both snapshots only when both polls carried `--run`, which
+is now true above, so paying one is a legitimate choice; take it only after
+checking the id is in `snapshots/before.json` as well as in the run's
+`results.jsonl`. If it is not in both, pay the invoice.
 
 **Say while it processes:** This is the first thing in the project's history that
 is a genuine observed transition rather than a simulated one. Until 2026-09-05
@@ -224,15 +289,18 @@ countable instead of silent.
 
 **Then cut to the limitations file, scrolled to the pivot section.**
 
-**Say:** Eight new limits, dated, in the same file as the twenty-something the
+**Say:** Nine new limits, dated, in the same file as the twenty-something the
 old build found, and none of the old ones were softened when the system changed
 underneath them. The aging is simulated and labelled in three places. Any paid
 transition is one payment by the person running the demo. A notification is an
 API acceptance and never a delivery. A dispute is a manifest flag. Failed
 payments need a human to exist. The idempotency guard bounds one run and not a
 campaign. The model arm cannot trip the dispute rule at all, and that is written
-in the code that fails to fill the field. And the test-first ritual was not
-followed for the pivot packages, which is flagged rather than backfilled.
+in the code that fails to fill the field. The test-first ritual was not
+followed for the pivot packages, which is flagged rather than backfilled. And the
+last one is about the file itself: three of the old items quote cadence numbers
+and rule ids the pivot moved, so they carry a date and the current values are
+written out beside them rather than edited into them.
 
 **Close:** Most agents demo actions. This one deleted its headline action because
 the regulation says it cannot exist, kept the audit that proves it, and shipped

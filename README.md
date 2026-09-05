@@ -85,12 +85,24 @@ failed-payment detector reads the account's history on its next sweep.
 **3. Detect, gate, and intervene.**
 
 ```
-make risk-run FLAGS='--manifest seedbook.json --out results/risk-runs/r1'
+make risk-run FLAGS='--manifest seedbook.json --out results/risk-runs/r1 \
+    --detect-grace 1s --notify-window 1ns'
 ```
 
 Prints the run header, one line per item with its source, arm, proposed action,
 verdict, and rule, then the verdicts-by-rule roll-up. Writes `ledger.jsonl`,
 `results.jsonl`, `escalations.jsonl`, and `summary.json` into `--out`.
+
+Both flags are there because a book seeded minutes ago is not a book the
+defaults are written for. `--detect-grace` is measured against Razorpay's own
+`issued_at`, before the manifest's simulated age is applied, so on the 24 hour
+default the overdue-invoice detector reports nothing at all; a zero falls back to
+that same default, so a small positive value is the floor.
+`--notify-window` opens `R6-NOTIFY-RATE`, a run-wide send rate whose one second
+default means exactly one notification goes out per run. Add
+`--contact-always-open` after 21:00 IST, which is when `R12-QUIET-HOURS` closes.
+`--since` needs nothing: it defaults to the manifest's own `created_at`, which
+keeps every order the account carried before this book out of the queue.
 
 Offline, with no credentials and no API call of any kind:
 
@@ -104,7 +116,8 @@ real gate, and stops before the intervention engine.
 **4. Take the before reading, pay one link in a browser, take the after.**
 
 ```
-make risk-poll FLAGS='--manifest seedbook.json --out snapshots/before.json'
+make risk-poll FLAGS='--manifest seedbook.json --run results/risk-runs/r1 \
+    --out snapshots/before.json'
 ```
 
 Then open one of the payment links on screen and pay it with the documented
@@ -116,7 +129,11 @@ make risk-poll FLAGS='--manifest seedbook.json --run results/risk-runs/r1 \
 ```
 
 `--run` folds in the payment links the risk run created, which the seedbook
-manifest does not know about. `--against` prints the delta: recovered paise,
+manifest does not know about, and it goes on both polls whenever the run
+directory exists. `riskrun.Diff` matches entities across the two snapshots and
+counts anything present only in the later one as unmatched, so a link missing
+from the before reading is a payment the delta will not count. `--against`
+prints the delta: recovered paise,
 change in amount due, and the entities whose status moved. Every call a poll
 makes is a fetch. Nothing in `risk-poll` writes to Razorpay.
 

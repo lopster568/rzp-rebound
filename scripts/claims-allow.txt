@@ -68,3 +68,9 @@
 36      the HONEST-LIMITATIONS item number the demo script points at for the trace-id gap
 42      the HONEST-LIMITATIONS item number RESULTS.md points at for the disputed-flag limit
 43      the HONEST-LIMITATIONS item number RESULTS.md points at for the failed-payment seeding gap
+34      the HONEST-LIMITATIONS item number item 47 points at for the pre-pivot cadence values
+
+# The pivot's own cadence constants, quoted in HONEST-LIMITATIONS 47. Configured
+# choices in internal/policy/sources.go, not run output, and policy.ConfiguredChoices
+# is what says per rule that none of them is cited.
+48      the overdue-invoice contact cooldown in hours, policy.CooldownOverdueInvoice

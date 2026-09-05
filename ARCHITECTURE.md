@@ -160,9 +160,22 @@ a value: `email_status:sent` when the invoice read back said so,
 `notify_api:accepted` when the call succeeded and the read did not, and
 `plink_status:created` on a link the create call returned a status for.
 
-**`internal/store`, the run's own ledger.** Touch counts, contact and
-notification timestamps, the run-wide action count, and the set of committed
-idempotency keys. In memory, for one run. `internal/intervene` holds a second
+**`internal/riskrun`'s own ledger, the run's memory of what it has touched.**
+Touch counts, contact and notification timestamps, the run-wide action count,
+and the set of committed idempotency keys. It is the `policy.State` supplier for
+a `risk-run`, it lives in `internal/riskrun/ledger.go`, and it is keyed by risk
+item id.
+
+`internal/store` is the retry engine's version of the same thing and a
+`risk-run` does not use it. It is keyed on an order, it counts a
+non-notification as a payment attempt on that order, and it still speaks the
+deprecated `AttemptsMade` spelling, none of which is true of a run over risk
+items. It is still live: `cmd/rzp run`, `cmd/rzp-mcp`, `internal/recovery`, and
+`internal/mcpserver` read and write it, so the model arm's state is in
+`internal/store` and a `risk-run`'s is not. Two ledgers, and the split is on
+which pipeline is running rather than on which is newer.
+
+Both are in memory and both live for one run. `internal/intervene` holds a third
 guard for the same reason and with the same limitation: a slot per item and
 action, never evicted, gone when the process exits. A second run over the same
 manifest starts with an empty ledger and will contact an item it already
@@ -326,6 +339,14 @@ notification-status fields. Every call is a fetch and nothing in it writes to
 Razorpay. A recovered-paise figure is the rise in what Razorpay reports as
 collected between two snapshots with the intervention between them, over the
 entities both snapshots could read.
+
+That figure is one account-level number and it carries no arm attribution.
+`Snapshot` is a list of entities and what Razorpay says about each; nothing on it
+records which arm an entity was assigned to, so a delta cannot be split between
+`a0-control` and `a1-engine`. The arm comparison this repository can make is at
+the decision level, out of the result rows and the summary, which do carry the
+arm. Anyone wanting recovered paise per arm has to run the arms over disjoint
+books and diff each one separately, and this build does not.
 
 An invoice contributes two reads, the invoice and the order it minted, because
 they are two different answers about one debt: the invoice carries the
