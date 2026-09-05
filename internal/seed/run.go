@@ -229,7 +229,10 @@ func (b *budget) spend(n int) error {
 //
 // A budget refusal or an API error stops the run and returns the manifest
 // with everything created before the failing call, alongside a non-nil
-// error. The caller is expected to write that manifest out regardless: a
+// error. A 429 that survives razorpay.Client's own retries is the one error
+// that does not stop it immediately: it is the invoice burst quota, the run
+// waits DefaultBurstWait and makes the same call again, and only a quota that
+// outlives the wait budget stops anything. The caller is expected to write that manifest out regardless: a
 // half-finished run has still spent real API calls and created real
 // resources, and a manifest that silently drops them is worse than one that
 // reports the run stopped early. Nothing already created is ever rolled
