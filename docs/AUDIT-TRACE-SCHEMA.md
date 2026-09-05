@@ -8,6 +8,14 @@ The run it describes is trace `84775a556f3c0aec9fcd504d00fb77b4`, 30 spans,
 against Razorpay test mode with Jaeger on the build machine. It wrote
 `results/runs/demo-1788205925.jsonl`, four rows.
 
+Written 2026-08-31 from a `make demo` run under the retry engine. Examples
+below, including the `retry_same_instrument` payload, predate the 2026-09-05
+pivot to the revenue-at-risk engine except where noted, such as the `kind`
+enum in the ledger schema section, which already carries the three
+intervention kinds the current engine writes. Read `README.md` for what the
+system is today and `docs/INDIA-CONSTRAINTS-AUDIT.md` for why the retry action
+is gone.
+
 ## The two sinks and what joins them
 
 `internal/audit.Recorder` writes one event to two places: attributes on the

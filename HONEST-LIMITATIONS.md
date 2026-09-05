@@ -9,6 +9,176 @@ of phase 5, when the batch mix and the cost model stopped being invented and
 four of the items below changed with them. The tables it qualifies are in
 `/RESULTS.md`.
 
+## What the pivot to the risk engine could not make real
+
+Added 2026-09-05, and moved to the top of this file on 2026-09-05 so a reader
+meets the current system's limits first. Everything under the headings below
+this section is about the retry engine and stays exactly as it was written;
+nothing in it has been softened because the system changed underneath it.
+`docs/INDIA-CONSTRAINTS-AUDIT.md` is why the system changed, and `/RESULTS.md`
+says which of the tables below still describe anything that exists.
+
+The items below are the new engine's limits, and there are more of them per
+feature than the old build had, because the new build closes a loop the old one
+could not and every closed loop has a joint that is held together by hand.
+
+**39. Aging is simulated from the manifest, and no Razorpay call can backdate an
+invoice.** The demo is a book of aged receivables, and nothing in the invoice or
+order creation API lets a caller set `issued_at` or `created_at` to a past
+instant. Every item `cmd/seedbook` creates is, to Razorpay, minutes old. A gate
+reading Razorpay's own `issued_at` therefore denies the whole seeded book under
+`R11-NOT-YET-DUE`, which is a correct answer to the wrong question.
+
+So the seeder writes the age it meant the item to have into the manifest, as
+`age_bucket` and `simulated_at_risk_since`, and `risk-run` measures the grace
+period against that instant instead. It is labelled in three places, deliberately,
+so that no reading of a run can mistake a stated age for a real one: `age
+manifest_simulated` in the run header on stdout, `"age_source":
+"manifest_simulated"` on the run summary, and `age_source` on every single result
+row and every `policy_evaluated` ledger row. An item the manifest does not know
+keeps the gateway's clock and says so per row, which is why the field is per item
+and not only per run.
+
+What this costs: `R11`, `R1`, and `R2` are exercised against a timeline this
+project stated. They are real rules doing real arithmetic on a number nobody
+observed. The one thing that would fix it is an account with a genuine aged
+ledger in it, and a test-mode account cannot have one.
+
+**40. Any paid transition is n=1, paid by the person running the demo, and
+selected rather than sampled.** The first confirmed payment against Razorpay test
+mode in this project's history was completed in a browser by the author on
+2026-09-05, on a probe payment link, with the documented success test card, and
+the link's status was observed moving to paid. That is a real observed state
+transition and it is the reason the receivables direction was chosen over the
+three the audit rejected.
+
+It is also one payment, on one link, chosen because it was the link on screen. It
+is not a sample of anything. Nobody decided independently to pay; the demoer
+decided to demonstrate paying. A recovered-paise figure from a `risk-poll` delta
+is arithmetic on that, and `riskrun.Diff` says so in its own doc comment: a
+customer who paid for their own reasons moves the same number. The control arm
+exists so the question can be asked of two groups rather than of one, and at demo
+scale it is a group of a handful against a group of a handful, which bounds
+nothing. Do not quote a recovery rate off this system.
+
+**41. A notification is an accepted API call and it is never a delivery.** The
+strongest thing this system can observe about a message is `email_status:sent`,
+read back off the invoice after the notify call, and that is Razorpay reporting
+that it sent something rather than a person having read anything. Where the read
+is not available the observable falls back to `notify_api:accepted`, which is
+weaker still: it says the call returned success.
+
+`{"success":true}` on a notify call means the API accepted the request. It is
+worth restating what that is worth, because the evidence is unusually blunt: a
+payment link created with `notify.sms` false and no contact on it at all still
+answered `200` with `{"success":true}` in test mode. `notify.Receipt.DeliveryConfirmed`
+is a false constant on every path, the audit phrase is that the notification API
+call succeeded, and `scripts/check-docs.sh` fails the build on any wording that
+claims a person was reached. Nothing anywhere counts a message as a recovery.
+
+**42. A dispute exists only as a manifest flag.** `R13-DISPUTED-NEVER-CHASE` is a
+real rule with a real refusal, and nothing in this system detects a real dispute.
+Razorpay has no field for a contested debt on an invoice, an order, or a payment,
+so there is nothing for a detector to read. The flag is set by
+`cmd/seedbook` when it seeds the item, travels in the manifest as
+`flags.disputed`, and is read back by `riskrun`'s facts provider and handed to
+the gate.
+
+That is enough to prove the rule fires and to show the refusal in a demo, and it
+is not evidence that the rule would ever fire in production. Wiring it to
+something real means a dispute source outside Razorpay, which this project does
+not have. The same applies to the source status the rule sits next to: a
+cancelled or expired resource is read from the manifest in a risk run, not
+detected.
+
+**43. Failed payments cannot be seeded through the API, and the class needs a
+human to exist.** Two of the three detectors have data because `cmd/seedbook`
+created it. The third does not. Test-mode checkout is browser only, and the
+undocumented headless attempt path this repository used through 2026-08-31
+(`POST /v1/payments/create/ajax`) returns `403` as of 2026-09-05, cause
+unresolved, deliberately not probed further to avoid evading a block.
+
+So the seeder prints an operator to-do list instead: which links to open, which
+documented failure cards to use, any future expiry, any CVV. A person does it by
+hand and the failed-payment detector reads the account's history on its next
+sweep. The consequence for a demo is that the failed-payment class is as large as
+whoever ran the seeder had patience for, and the consequence for the committed
+fixture is that `internal/riskrun/testdata/manifest.json` contains no
+failed-payment items at all: the dry run over it exercises two detectors of the
+three, and the third is covered by unit tests and by a live account somebody
+clicked in.
+
+**44. The idempotency guard is process-local and nothing evicts it.**
+`internal/store` holds the committed keys and `internal/intervene` holds a second
+guard, both in memory, both for the life of one process. A second run over the
+same manifest starts with an empty ledger and will contact an item it already
+contacted, so `R1-MAX-TOUCHES` and `R2-COOLDOWN` bound one run and not a
+campaign. `R9-IDEMPOTENCY` catches a replay inside a run and nothing across runs.
+
+Slots are never evicted either. A sweep holds one entry per item and action,
+which is bounded by the batch, and a process running for a long time over many
+batches would want an eviction policy and there is none. Both facts are in the
+guard's own doc comment rather than only here. FR-STORE-2 is still the open item
+it was before the pivot: there is no durable store.
+
+**45. `R13` cannot fire in the MCP process at all, so the model arm is blind to
+it.** This is the item above in the one place it bites hardest. `cmd/rzp-mcp`'s facts
+provider fills two of the three facts a risk item does not carry: a promise the
+agent logged this run is read back out of the same ledger the intervention engine
+wrote it to, and the source status is the one that invocation read at startup.
+The third is not filled. Nothing in that process records a dispute, so `Disputed`
+stays false and `R13` cannot fire through it.
+
+A `risk-run` driven off a seedbook manifest can fire it, because that path reads
+the flag off the manifest. The model arm cannot. The gap is stated in the
+provider's own doc comment rather than left to be discovered from an eval that
+never trips the rule, which is exactly the failure mode phase 5 generalised: the
+answer was on a page nobody had read.
+
+**46. The TDD red-run ritual was not followed for the pivot packages.**
+`internal/riskitem`, `internal/detect`, `internal/intervene`, `internal/riskrun`,
+`internal/seed`, and the risk half of `internal/mcpserver` were built and tested
+on the same day, and the tests were not watched failing first against absent
+implementations. They are real tests over real behaviour and the suite is green,
+and that is a different claim from the one this repository's process documents
+make for the pre-pivot packages.
+
+What the ritual buys and this code did not get: a test that has never been red is
+a test that has not been shown to be capable of failing, and a green suite is
+consistent both with code that works and with an assertion that cannot fire. It
+is flagged rather than backfilled. Re-running the tests against a stubbed
+implementation after the fact would produce a red run and prove nothing about the
+order the code was written in, which is a ceremony rather than a fix.
+
+**47. The cadence numbers items 21, 33, and 34 quote are the old engine's.**
+Those three items are dated 2026-09-01 and they describe the retry engine. They
+are kept because their findings survived the pivot, and they are wrong about
+every number and two of the three rule ids they name. The current values, read
+from `internal/policy/sources.go` and `internal/policy/policy.go` on 2026-09-05:
+
+- `R2-COOLDOWN`, the minimum interval between two contacts about one debt, is 24
+  hours for a failed payment, 24 hours for an unpaid order, and 48 hours for an
+  overdue invoice. The 30 second constant item 34 quotes is gone. It was a retry
+  rate, it bounded how fast a card was re-presented, and half a minute between
+  two messages to one customer about one debt is harassment.
+- `R6-NOTIFY-RATE` is one second, and it is not a per-customer rule at all. It is
+  a run-wide send rate: the minimum interval between any two notifications this
+  run sends, to anyone, so a sweep that just found two hundred overdue invoices
+  does not emit two hundred sends in a burst. `cmd/rzp risk-run` takes
+  `-notify-window` to move it.
+- `R1` is `R1-MAX-TOUCHES`, not `R1-MAX-ATTEMPTS`. It is a lifetime cap on
+  outbound contacts about one debt: 3 for a failed payment, 3 for an unpaid
+  order, 4 for an overdue invoice, because an issued invoice is a debt the
+  customer has already acknowledged.
+- `R4` is `R4-NEVER-CONTACT`, not `R4-NEVER-RETRY-CLASS`. It refuses to chase a
+  customer whose payment the gateway's risk check blocked, rather than refusing
+  to re-present a card.
+
+Every one of these is a configured choice and none of them is cited.
+`policy.ConfiguredChoices` says so per rule and the block in `sources.go` says so
+per number, which is the same status item 34 recorded for the values it
+replaced. That is the part of item 34 that did not change.
+
 ## What Razorpay test mode does not give you
 
 **1. Test mode collapses every failure to one reason.** All eight documented
@@ -395,7 +565,7 @@ configured choices in `policy.ConfiguredChoices`, which a test walks. Attaching
 either source to a 30 second constant would be worse than attaching none.
 
 Neither constant is 30 seconds any more and neither rule is about a retry. The
-current values are in the pivot section below, under item 47, and they are what
+current values are in the pivot section above, under item 47, and they are what
 `internal/policy/sources.go` holds. The paragraph above is kept because the
 finding it records, that no source publishes these numbers, survived the pivot
 unchanged: the values moved and their citation status did not.
@@ -459,175 +629,6 @@ the counts are not: at n=37 non-bait the split is 10/9/9/9 where it was 13/8/8/8
 That is a real change to a mix that was supposed to be the one thing holding
 still for the comparison, and it is why the comparison in `/RESULTS.md` is
 between two phase 5 runs rather than between a phase 5 run and a phase 3 one.
-
-## What the pivot to the risk engine could not make real
-
-Added 2026-09-05. Everything above this heading is about the retry engine and
-stays exactly as it was written; nothing in it has been softened because the
-system changed underneath it. `docs/INDIA-CONSTRAINTS-AUDIT.md` is why the system
-changed, and `/RESULTS.md` says which of the tables above still describe anything
-that exists.
-
-The items below are the new engine's limits, and there are more of them per
-feature than the old build had, because the new build closes a loop the old one
-could not and every closed loop has a joint that is held together by hand.
-
-**39. Aging is simulated from the manifest, and no Razorpay call can backdate an
-invoice.** The demo is a book of aged receivables, and nothing in the invoice or
-order creation API lets a caller set `issued_at` or `created_at` to a past
-instant. Every item `cmd/seedbook` creates is, to Razorpay, minutes old. A gate
-reading Razorpay's own `issued_at` therefore denies the whole seeded book under
-`R11-NOT-YET-DUE`, which is a correct answer to the wrong question.
-
-So the seeder writes the age it meant the item to have into the manifest, as
-`age_bucket` and `simulated_at_risk_since`, and `risk-run` measures the grace
-period against that instant instead. It is labelled in three places, deliberately,
-so that no reading of a run can mistake a stated age for a real one: `age
-manifest_simulated` in the run header on stdout, `"age_source":
-"manifest_simulated"` on the run summary, and `age_source` on every single result
-row and every `policy_evaluated` ledger row. An item the manifest does not know
-keeps the gateway's clock and says so per row, which is why the field is per item
-and not only per run.
-
-What this costs: `R11`, `R1`, and `R2` are exercised against a timeline this
-project stated. They are real rules doing real arithmetic on a number nobody
-observed. The one thing that would fix it is an account with a genuine aged
-ledger in it, and a test-mode account cannot have one.
-
-**40. Any paid transition is n=1, paid by the person running the demo, and
-selected rather than sampled.** The first confirmed payment against Razorpay test
-mode in this project's history was completed in a browser by the author on
-2026-09-05, on a probe payment link, with the documented success test card, and
-the link's status was observed moving to paid. That is a real observed state
-transition and it is the reason the receivables direction was chosen over the
-three the audit rejected.
-
-It is also one payment, on one link, chosen because it was the link on screen. It
-is not a sample of anything. Nobody decided independently to pay; the demoer
-decided to demonstrate paying. A recovered-paise figure from a `risk-poll` delta
-is arithmetic on that, and `riskrun.Diff` says so in its own doc comment: a
-customer who paid for their own reasons moves the same number. The control arm
-exists so the question can be asked of two groups rather than of one, and at demo
-scale it is a group of a handful against a group of a handful, which bounds
-nothing. Do not quote a recovery rate off this system.
-
-**41. A notification is an accepted API call and it is never a delivery.** The
-strongest thing this system can observe about a message is `email_status:sent`,
-read back off the invoice after the notify call, and that is Razorpay reporting
-that it sent something rather than a person having read anything. Where the read
-is not available the observable falls back to `notify_api:accepted`, which is
-weaker still: it says the call returned success.
-
-`{"success":true}` on a notify call means the API accepted the request. It is
-worth restating what that is worth, because the evidence is unusually blunt: a
-payment link created with `notify.sms` false and no contact on it at all still
-answered `200` with `{"success":true}` in test mode. `notify.Receipt.DeliveryConfirmed`
-is a false constant on every path, the audit phrase is that the notification API
-call succeeded, and `scripts/check-docs.sh` fails the build on any wording that
-claims a person was reached. Nothing anywhere counts a message as a recovery.
-
-**42. A dispute exists only as a manifest flag.** `R13-DISPUTED-NEVER-CHASE` is a
-real rule with a real refusal, and nothing in this system detects a real dispute.
-Razorpay has no field for a contested debt on an invoice, an order, or a payment,
-so there is nothing for a detector to read. The flag is set by
-`cmd/seedbook` when it seeds the item, travels in the manifest as
-`flags.disputed`, and is read back by `riskrun`'s facts provider and handed to
-the gate.
-
-That is enough to prove the rule fires and to show the refusal in a demo, and it
-is not evidence that the rule would ever fire in production. Wiring it to
-something real means a dispute source outside Razorpay, which this project does
-not have. The same applies to the source status the rule sits next to: a
-cancelled or expired resource is read from the manifest in a risk run, not
-detected.
-
-**43. Failed payments cannot be seeded through the API, and the class needs a
-human to exist.** Two of the three detectors have data because `cmd/seedbook`
-created it. The third does not. Test-mode checkout is browser only, and the
-undocumented headless attempt path this repository used through 2026-08-31
-(`POST /v1/payments/create/ajax`) returns `403` as of 2026-09-05, cause
-unresolved, deliberately not probed further to avoid evading a block.
-
-So the seeder prints an operator to-do list instead: which links to open, which
-documented failure cards to use, any future expiry, any CVV. A person does it by
-hand and the failed-payment detector reads the account's history on its next
-sweep. The consequence for a demo is that the failed-payment class is as large as
-whoever ran the seeder had patience for, and the consequence for the committed
-fixture is that `internal/riskrun/testdata/manifest.json` contains no
-failed-payment items at all: the dry run over it exercises two detectors of the
-three, and the third is covered by unit tests and by a live account somebody
-clicked in.
-
-**44. The idempotency guard is process-local and nothing evicts it.**
-`internal/store` holds the committed keys and `internal/intervene` holds a second
-guard, both in memory, both for the life of one process. A second run over the
-same manifest starts with an empty ledger and will contact an item it already
-contacted, so `R1-MAX-TOUCHES` and `R2-COOLDOWN` bound one run and not a
-campaign. `R9-IDEMPOTENCY` catches a replay inside a run and nothing across runs.
-
-Slots are never evicted either. A sweep holds one entry per item and action,
-which is bounded by the batch, and a process running for a long time over many
-batches would want an eviction policy and there is none. Both facts are in the
-guard's own doc comment rather than only here. FR-STORE-2 is still the open item
-it was before the pivot: there is no durable store.
-
-**45. `R13` cannot fire in the MCP process at all, so the model arm is blind to
-it.** This is the item above in the one place it bites hardest. `cmd/rzp-mcp`'s facts
-provider fills two of the three facts a risk item does not carry: a promise the
-agent logged this run is read back out of the same ledger the intervention engine
-wrote it to, and the source status is the one that invocation read at startup.
-The third is not filled. Nothing in that process records a dispute, so `Disputed`
-stays false and `R13` cannot fire through it.
-
-A `risk-run` driven off a seedbook manifest can fire it, because that path reads
-the flag off the manifest. The model arm cannot. The gap is stated in the
-provider's own doc comment rather than left to be discovered from an eval that
-never trips the rule, which is exactly the failure mode phase 5 generalised: the
-answer was on a page nobody had read.
-
-**46. The TDD red-run ritual was not followed for the pivot packages.**
-`internal/riskitem`, `internal/detect`, `internal/intervene`, `internal/riskrun`,
-`internal/seed`, and the risk half of `internal/mcpserver` were built and tested
-on the same day, and the tests were not watched failing first against absent
-implementations. They are real tests over real behaviour and the suite is green,
-and that is a different claim from the one this repository's process documents
-make for the pre-pivot packages.
-
-What the ritual buys and this code did not get: a test that has never been red is
-a test that has not been shown to be capable of failing, and a green suite is
-consistent both with code that works and with an assertion that cannot fire. It
-is flagged rather than backfilled. Re-running the tests against a stubbed
-implementation after the fact would produce a red run and prove nothing about the
-order the code was written in, which is a ceremony rather than a fix.
-
-**47. The cadence numbers items 21, 33, and 34 quote are the old engine's.**
-Those three items are dated 2026-09-01 and they describe the retry engine. They
-are kept because their findings survived the pivot, and they are wrong about
-every number and two of the three rule ids they name. The current values, read
-from `internal/policy/sources.go` and `internal/policy/policy.go` on 2026-09-05:
-
-- `R2-COOLDOWN`, the minimum interval between two contacts about one debt, is 24
-  hours for a failed payment, 24 hours for an unpaid order, and 48 hours for an
-  overdue invoice. The 30 second constant item 34 quotes is gone. It was a retry
-  rate, it bounded how fast a card was re-presented, and half a minute between
-  two messages to one customer about one debt is harassment.
-- `R6-NOTIFY-RATE` is one second, and it is not a per-customer rule at all. It is
-  a run-wide send rate: the minimum interval between any two notifications this
-  run sends, to anyone, so a sweep that just found two hundred overdue invoices
-  does not emit two hundred sends in a burst. `cmd/rzp risk-run` takes
-  `-notify-window` to move it.
-- `R1` is `R1-MAX-TOUCHES`, not `R1-MAX-ATTEMPTS`. It is a lifetime cap on
-  outbound contacts about one debt: 3 for a failed payment, 3 for an unpaid
-  order, 4 for an overdue invoice, because an issued invoice is a debt the
-  customer has already acknowledged.
-- `R4` is `R4-NEVER-CONTACT`, not `R4-NEVER-RETRY-CLASS`. It refuses to chase a
-  customer whose payment the gateway's risk check blocked, rather than refusing
-  to re-present a card.
-
-Every one of these is a configured choice and none of them is cited.
-`policy.ConfiguredChoices` says so per rule and the block in `sources.go` says so
-per number, which is the same status item 34 recorded for the values it
-replaced. That is the part of item 34 that did not change.
 
 ## The rule behind this file
 

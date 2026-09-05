@@ -6,6 +6,13 @@
 | Date | 2026-09-01 |
 | Owner | Roshan Singh |
 
+Written 2026-09-01 for the retry engine, superseded 2026-09-05 by the
+revenue-at-risk engine that replaced it. Everything below is left exactly as
+written, including "Seven tools" and `TestServerServesExactlyTheSevenNamedTools`,
+which is `TestServerServesExactlyTheEightNamedTools` now. Read `README.md` for
+what the system is today and `docs/INDIA-CONSTRAINTS-AUDIT.md` for why the
+retry action is gone.
+
 ## 1. Executive summary
 
 A bounded recovery agent whose every decision is a trace span and whose

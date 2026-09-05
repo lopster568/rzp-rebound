@@ -8,8 +8,10 @@ payments Razorpay reports as failed, orders created and never paid, and invoices
 issued and gone overdue. All three return one item type. The queue collapses the
 sightings that are the same debt, a fifteen-rule policy gate decides one action
 per item, and an intervention engine executes only what the gate allowed. Every
-decision is an OpenTelemetry span and an append-only JSONL row carrying the rule
-id that produced it, including the refusals.
+decision is an append-only JSONL row carrying the rule id that produced it,
+including the refusals, and in the MCP path it is also an OpenTelemetry span:
+`cmd/rzp-mcp` is the one binary here that starts a tracer, and `cmd/rzp
+risk-run` does not.
 
 Two arms run over the same queue in one process. `a0-control` detects,
 classifies, and evaluates, and then stops. `a1-engine` executes. Assignment is a
@@ -54,7 +56,10 @@ that invents one as a policy action gets `R7-UNKNOWN-FAIL-CLOSED`.
 
 What is left is the action set a merchant may actually take: tell the customer,
 give them something to pay against, record what they said, hand it to a person,
-or write it off.
+or write it off. Write-off has no tool either: `cancel_write_off` is a
+decision `record_decision` can state and nothing executes, so recording one is
+the whole of it, and any amount above the Rs 100 write-off floor goes to a
+person under `R3-HUMAN-APPROVAL-CEILING` before it is even recorded that way.
 
 ## Quickstart
 

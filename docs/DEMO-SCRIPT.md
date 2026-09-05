@@ -341,8 +341,11 @@ those is a span for an action that no longer exists, and the second cites a rule
 under an id and a ceiling the pivot changed. Showing either would be showing a
 viewer a system this repository does not have.
 
-The trace design is unchanged and `ARCHITECTURE.md` describes it. A presenter who
-wants a Jaeger shot should produce a fresh pair from a risk run with an OTLP
-endpoint configured and take the ids off that run's own ledger, rather than
-reusing the pair in this document's history. `/HONEST-LIMITATIONS.md` item 36 is
-the standing gap in that design and it is not closed.
+The trace design is unchanged and `ARCHITECTURE.md` describes it, but
+`cmd/rzp risk-run` itself starts no tracer, so its own ledger's `trace_id` and
+`span_id` are always empty; `cmd/rzp-mcp` is the one process in this engine
+that opens spans, and only when an OTLP endpoint is configured. A presenter who
+wants a Jaeger shot should produce a fresh pair from a `cmd/rzp-mcp` session
+serving the agent arm and take the ids off that session's own ledger rows,
+rather than reusing the pair in this document's history. `/HONEST-LIMITATIONS.md`
+item 36 is the standing gap in that design and it is not closed.
