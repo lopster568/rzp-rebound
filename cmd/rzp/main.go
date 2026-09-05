@@ -19,6 +19,8 @@ var subcommands = map[string]func(ctx context.Context, args []string) error{
 	"demo":          runDemo,
 	"seed":          runSeed,
 	"run":           runRun,
+	"risk-run":      runRiskRun,
+	"risk-poll":     runRiskPoll,
 	"policy-config": runPolicyConfig,
 }
 
@@ -55,6 +57,8 @@ func usage() {
   demo         Run the recovery loop end to end against test mode
   seed         Write a batch manifest with its ground truth under results/batches/
   run          Run one arm over one batch and write its outcomes and its ledger
+  risk-run     Detect, gate, and intervene over a seedbook manifest, in two arms
+  risk-poll    Re-read every manifest item and write a status snapshot
   policy-config Print the policy a run would use, as JSON, for the run manifest
 
 Every subcommand reads RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET from the

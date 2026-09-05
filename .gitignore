@@ -55,3 +55,14 @@ results/tables/verify-phase-3.csv
 results/tables/verify-phase-3.md
 /rzp
 /rzp-mcp
+
+# Risk-run output and snapshots. Both carry live Razorpay test-mode ids, so
+# neither is committed: a risk run names the invoices, orders, and payment links
+# of whatever account it ran against, and a snapshot is a read of the same
+# account. The dry-run fixture at internal/riskrun/testdata/manifest.json is the
+# one that is tracked, and every id in it is synthetic.
+results/risk-runs/
+snapshots/
+# The default seedbook manifest path. It records real test-mode ids of resources
+# a seed run created.
+seedbook.json

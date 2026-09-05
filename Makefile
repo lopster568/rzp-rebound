@@ -2,7 +2,7 @@
 .PHONY: help hooks preflight test test-go test-race test-python test-integration lint \
 	docs-check claims-check ci verify-phase-0 verify-offline verify-live verify-phase-2 \
 	verify-phase-3 verify-phase-4 jaeger-up jaeger-down seed run-arm run-all report \
-	auth-probe capture demo showcase agent-smoke trace-links
+	auth-probe capture demo showcase agent-smoke trace-links seedbook risk-run risk-poll
 
 # Live targets read .env so a run does not depend on the caller having
 # exported the key pair by hand. .env is gitignored and chmod 600, and nothing
@@ -79,6 +79,20 @@ report: ## Score the newest run and write results/tables/<run_id>.{csv,md}
 
 auth-probe: ## Prove the test-mode credentials reach Razorpay
 	@$(RUN_WITH_ENV) go run ./cmd/rzp auth-probe
+
+# The three risk-engine targets. They pass FLAGS through verbatim rather than
+# naming each flag as its own variable, because the commands underneath have
+# more knobs than a Makefile should mirror and a mirrored flag list is one that
+# goes stale silently. FLAGS='--dry-run' is the offline path and makes no API
+# call at all.
+seedbook: ## Seed live test-mode data for the risk engine and write its manifest. FLAGS='--dry-run'
+	@$(RUN_WITH_ENV) go run ./cmd/seedbook $(FLAGS)
+
+risk-run: ## Detect, gate, and intervene over a seedbook manifest. FLAGS='--manifest seedbook.json --out results/risk-runs/r1'
+	@$(RUN_WITH_ENV) go run ./cmd/rzp risk-run $(FLAGS)
+
+risk-poll: ## Re-read every manifest item live and write a status snapshot. FLAGS='--manifest seedbook.json --out snap.json'
+	@$(RUN_WITH_ENV) go run ./cmd/rzp risk-poll $(FLAGS)
 
 capture: ## Capture real test-mode responses into testdata/recorded/
 	@bash scripts/capture-fixtures.sh
