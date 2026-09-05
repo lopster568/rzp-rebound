@@ -47,11 +47,11 @@ ARM = "a2-agent"
 OUTCOME_WAIT_SEC = 10.0
 OUTCOME_POLL_SEC = 0.1
 
-# The task line appended to the charter. It names the order and nothing else:
+# The task line appended to the charter. It names the item and nothing else:
 # every judgment the arm makes has to come from what the tools return, and a
 # task line carrying a hint would be the harness deciding for the model.
 TASK_TEMPLATE = (
-    "You have one failed order to handle. Start with list_failed_payments. "
+    "You have one risk item to handle. Start with list_risk_items. "
     "Work it through to a decision and an action, and then stop."
 )
 
