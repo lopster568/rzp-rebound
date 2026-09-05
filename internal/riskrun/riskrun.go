@@ -43,6 +43,22 @@ type Options struct {
 	// DryRun stops the run before any side-effecting call and reads the
 	// manifest instead of Razorpay. It makes no network call of any kind.
 	DryRun bool
+	// Simulated declares that API and Gateway are in-memory stand-ins rather
+	// than Razorpay, and labels the run ModeSimulated wherever the mode is
+	// recorded: the summary, every result row, and every ledger row.
+	//
+	// It changes no behaviour at all. The detectors, the dedupe, the gate, and
+	// the intervention engine run exactly as they do on the live path, which is
+	// the point: a caller that wants to show the real pipeline without an
+	// account behind it should not have to reimplement the loop. What it
+	// changes is what the run calls itself, and the alternative is a summary
+	// stamped "live" over a book nobody was ever billed for.
+	//
+	// This package cannot check the claim. Nothing here can tell a fixture
+	// DetectAPI from a real one, so the caller that sets this owns it. It is
+	// ignored when DryRun is set, because a dry run is already its own mode and
+	// already makes no call.
+	Simulated bool
 	// SimulateAge measures every item the manifest knows against the age the
 	// manifest says it was meant to have, rather than against Razorpay's own
 	// timestamp. See simulatedAtRiskSince.
@@ -128,9 +144,12 @@ func Run(ctx context.Context, opts Options) (Summary, error) {
 	}
 	mode := ModeLive
 	api := opts.API
-	if opts.DryRun {
+	switch {
+	case opts.DryRun:
 		mode = ModeDryRun
 		api = newManifestSource(opts.Manifest)
+	case opts.Simulated:
+		mode = ModeSimulated
 	}
 
 	pol := policy.New(opts.PolicyConfig, clk)
@@ -546,10 +565,14 @@ func policySnapshot(pol *policy.Policy) PolicySnapshot {
 }
 
 func modeCaveat(mode string) string {
-	if mode == ModeDryRun {
+	switch mode {
+	case ModeDryRun:
 		return "  (the manifest replayed through the real detectors and the real gate, no API call of any kind)"
+	case ModeSimulated:
+		return "  (fixture book and a simulated gateway, the whole pipeline, no network call of any kind)"
+	default:
+		return "  (Razorpay TEST MODE, see docs/RAZORPAY-TEST-MODE-NOTES.md)"
 	}
-	return "  (Razorpay TEST MODE, see docs/RAZORPAY-TEST-MODE-NOTES.md)"
 }
 
 // promiseAdapter is the seam internal/intervene's PromiseRecord doc comment

@@ -1,0 +1,237 @@
+{
+  "run_tag": "e2e-2026-09-05",
+  "profile": "demo",
+  "created_at": "2026-09-05T13:10:34.191152139Z",
+  "gateway": "live-test-mode",
+  "dry_run": false,
+  "call_budget": 60,
+  "calls_used": 27,
+  "items": [
+    {
+      "kind": "invoice",
+      "id": "inv_TYMop8Wn8gRjQb",
+      "order_id": "order_TYMoquST1LipVG",
+      "short_url": "https://rzp.io/rzp/M77h5j5j",
+      "customer_id": "cust_TYMonmev02qu2q",
+      "customer_name": "Priya Malhotra",
+      "customer_email": "priya.malhotra+e2e-2026-09-05.1@example.com",
+      "customer_contact": "9960861843",
+      "amount_paise": 720900,
+      "currency": "INR",
+      "age_bucket": "fresh",
+      "simulated_at_risk_since": 1788613834,
+      "flags": {},
+      "expected_risk_source": "overdue_invoice",
+      "created_at": "2026-09-05T13:10:34.191152139Z",
+      "status": "issued"
+    },
+    {
+      "kind": "invoice",
+      "id": "inv_TYMotP6TyMgsG2",
+      "order_id": "order_TYMoustirlERkT",
+      "short_url": "https://rzp.io/rzp/dIMNOJi4",
+      "customer_id": "cust_TYMos6OlUQ2MUV",
+      "customer_name": "Aanya Shah",
+      "customer_email": "aanya.shah+e2e-2026-09-05.2@example.com",
+      "customer_contact": "9165971032",
+      "amount_paise": 310400,
+      "currency": "INR",
+      "age_bucket": "fresh",
+      "simulated_at_risk_since": 1788613834,
+      "flags": {},
+      "expected_risk_source": "overdue_invoice",
+      "created_at": "2026-09-05T13:10:34.191152139Z",
+      "status": "issued"
+    },
+    {
+      "kind": "invoice",
+      "id": "inv_TYMoxKskz6hAGr",
+      "order_id": "order_TYMoynxRXUAuLe",
+      "short_url": "https://rzp.io/rzp/Z71OeE2",
+      "customer_id": "cust_TYMow4Hc9EOc0i",
+      "customer_name": "Neha Chopra",
+      "customer_email": "neha.chopra+e2e-2026-09-05.3@example.com",
+      "customer_contact": "9211756678",
+      "amount_paise": 647500,
+      "currency": "INR",
+      "age_bucket": "30",
+      "simulated_at_risk_since": 1786021834,
+      "flags": {},
+      "expected_risk_source": "overdue_invoice",
+      "created_at": "2026-09-05T13:10:34.191152139Z",
+      "status": "issued"
+    },
+    {
+      "kind": "invoice",
+      "id": "inv_TYMp15ihONkWVI",
+      "order_id": "order_TYMp2cvAjVQqtY",
+      "short_url": "https://rzp.io/rzp/kEgyu8g",
+      "customer_id": "cust_TYMozrmSoGT6pk",
+      "customer_name": "Aanya Shah",
+      "customer_email": "aanya.shah+e2e-2026-09-05.4@example.com",
+      "customer_contact": "9000196181",
+      "amount_paise": 736700,
+      "currency": "INR",
+      "age_bucket": "60",
+      "simulated_at_risk_since": 1783429834,
+      "flags": {},
+      "expected_risk_source": "overdue_invoice",
+      "created_at": "2026-09-05T13:10:34.191152139Z",
+      "status": "issued"
+    },
+    {
+      "kind": "invoice",
+      "id": "inv_TYMp5AZLKbU362",
+      "order_id": "order_TYMp6mLDKA1QGr",
+      "short_url": "https://rzp.io/rzp/EWczDZM",
+      "customer_id": "cust_TYMp3hTd5gHT6d",
+      "customer_name": "Aanya Chopra",
+      "customer_email": "aanya.chopra+e2e-2026-09-05.5@example.com",
+      "customer_contact": "9825769585",
+      "amount_paise": 418300,
+      "currency": "INR",
+      "age_bucket": "90",
+      "simulated_at_risk_since": 1780837834,
+      "flags": {},
+      "expected_risk_source": "overdue_invoice",
+      "created_at": "2026-09-05T13:10:34.191152139Z",
+      "status": "issued"
+    },
+    {
+      "kind": "invoice",
+      "id": "inv_TYMqErD54Pv3pa",
+      "order_id": "order_TYMqGHoRFDWNJI",
+      "short_url": "https://rzp.io/rzp/LVaXqPz8",
+      "customer_id": "cust_TYMp7vmrh4E3uO",
+      "customer_name": "Ishita Reddy",
+      "customer_email": "ishita.reddy+e2e-2026-09-05.6@example.com",
+      "customer_contact": "9319491567",
+      "amount_paise": 729000,
+      "currency": "INR",
+      "age_bucket": "60",
+      "simulated_at_risk_since": 1783429834,
+      "flags": {
+        "disputed": true
+      },
+      "expected_risk_source": "overdue_invoice",
+      "created_at": "2026-09-05T13:10:34.191152139Z",
+      "status": "issued"
+    },
+    {
+      "kind": "invoice",
+      "id": "inv_TYMqIoI60k1bRR",
+      "order_id": "order_TYMqKgpJp4wvO6",
+      "short_url": "https://rzp.io/rzp/PJW1ca9R",
+      "customer_id": "cust_TYMqHMLvNjrLOX",
+      "customer_name": "Vikram Bose",
+      "customer_email": "vikram.bose+e2e-2026-09-05.7@example.com",
+      "customer_contact": "9970454038",
+      "amount_paise": 500800,
+      "currency": "INR",
+      "age_bucket": "30",
+      "simulated_at_risk_since": 1786021834,
+      "flags": {
+        "partial_plan": true
+      },
+      "expected_risk_source": "overdue_invoice",
+      "created_at": "2026-09-05T13:10:34.191152139Z",
+      "status": "issued"
+    },
+    {
+      "kind": "invoice",
+      "id": "inv_TYMqNTXHwI3xvL",
+      "order_id": "order_TYMqP7CW1lDPTB",
+      "short_url": "https://rzp.io/rzp/u6mxnoA1",
+      "customer_id": "cust_TYMqLwGgSLFRtY",
+      "customer_name": "Vikram Shah",
+      "amount_paise": 65300,
+      "currency": "INR",
+      "age_bucket": "90",
+      "simulated_at_risk_since": 1780837834,
+      "flags": {
+        "no_contact": true
+      },
+      "expected_risk_source": "overdue_invoice",
+      "created_at": "2026-09-05T13:10:34.191152139Z",
+      "status": "issued"
+    },
+    {
+      "kind": "order",
+      "id": "order_TYMqQDMvzyPV3L",
+      "customer_name": "Suresh Shah",
+      "customer_email": "suresh.shah+e2e-2026-09-05.9@example.com",
+      "customer_contact": "9044095290",
+      "amount_paise": 178700,
+      "currency": "INR",
+      "age_bucket": "30",
+      "simulated_at_risk_since": 1786021834,
+      "flags": {},
+      "expected_risk_source": "unpaid_order",
+      "created_at": "2026-09-05T13:10:34.191152139Z",
+      "status": "created"
+    },
+    {
+      "kind": "order",
+      "id": "order_TYMqR87XlLzzuY",
+      "customer_name": "Suresh Iyer",
+      "customer_email": "suresh.iyer+e2e-2026-09-05.10@example.com",
+      "customer_contact": "9473488597",
+      "amount_paise": 107500,
+      "currency": "INR",
+      "age_bucket": "fresh",
+      "simulated_at_risk_since": 1788613834,
+      "flags": {},
+      "expected_risk_source": "unpaid_order",
+      "created_at": "2026-09-05T13:10:34.191152139Z",
+      "status": "created"
+    },
+    {
+      "kind": "order",
+      "id": "order_TYMqS2y0Y2EMhe",
+      "amount_paise": 579400,
+      "currency": "INR",
+      "age_bucket": "30",
+      "simulated_at_risk_since": 1786021834,
+      "flags": {
+        "no_contact": true
+      },
+      "expected_risk_source": "unpaid_order",
+      "created_at": "2026-09-05T13:10:34.191152139Z",
+      "status": "created"
+    }
+  ],
+  "instructions": {
+    "headline": "Failed payments cannot be created by this seeder: test-mode checkout is browser-only and the headless attempt path answers 403. Open each link below in a browser, pay with one of the cards, use any future expiry and any CVV, and let the bank step decline it. The failed-payment detector reads the account's history on its next sweep; nothing here writes to it directly.",
+    "targets": [
+      {
+        "kind": "invoice",
+        "id": "inv_TYMop8Wn8gRjQb",
+        "url": "https://rzp.io/rzp/M77h5j5j"
+      },
+      {
+        "kind": "invoice",
+        "id": "inv_TYMotP6TyMgsG2",
+        "url": "https://rzp.io/rzp/dIMNOJi4"
+      },
+      {
+        "kind": "invoice",
+        "id": "inv_TYMoxKskz6hAGr",
+        "url": "https://rzp.io/rzp/Z71OeE2"
+      }
+    ],
+    "test_cards": [
+      {
+        "number": "4100280000080001",
+        "error_code": "insufficient_fund"
+      },
+      {
+        "number": "4100280000060003",
+        "error_code": "card_declined"
+      },
+      {
+        "number": "4100280000070002",
+        "error_code": "payment_cancelled"
+      }
+    ]
+  }
+}

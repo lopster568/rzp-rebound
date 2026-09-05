@@ -23,6 +23,22 @@ type DetectAPI interface {
 
 var _ DetectAPI = (*razorpay.Client)(nil)
 
+// NewManifestSource returns the dry-run source as a DetectAPI, so a caller
+// outside this package can drive the three real detectors over a seedbook
+// manifest with nothing underneath them.
+//
+// Run builds one of these for itself when Options.DryRun is set, and a dry run
+// stops before the intervention engine. This exists for the caller that wants
+// the other half: the whole pipeline, the engine included, over a fixture book
+// and a gateway that is memory. That caller supplies this as Options.API, its
+// own Gateway, and Options.Simulated, and gets a run labelled ModeSimulated.
+// cmd/rzp-demo is the one in this repository.
+//
+// It makes no network call and holds no credential. It reads what a seed run
+// recorded creating and nothing else: the type's own doc comment below says
+// what it does not model, and every one of those gaps applies here too.
+func NewManifestSource(m seed.Manifest) DetectAPI { return newManifestSource(m) }
+
 // manifestSource answers the detectors' list calls out of a seedbook manifest.
 //
 // It is the dry-run gateway and it is not a fake Razorpay. It replays what the

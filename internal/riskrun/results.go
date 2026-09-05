@@ -16,13 +16,20 @@ const (
 	AgeSourceManifest = "manifest_simulated"
 )
 
-// The two modes a run can be in.
+// The three modes a run can be in.
 const (
 	// ModeLive reads Razorpay and, in the engine arm, calls it.
 	ModeLive = "live"
 	// ModeDryRun reads the manifest instead of Razorpay and stops before the
 	// intervention engine. It makes no network call of any kind.
 	ModeDryRun = "dry-run"
+	// ModeSimulated is the whole pipeline, the intervention engine included,
+	// driven against a fixture book and a gateway that is memory rather than
+	// Razorpay. It is not a dry run: actions execute, outcomes come back, and
+	// the ledger carries intervention rows. What is on the far side of the
+	// gateway interface is the only difference from ModeLive, and that
+	// difference is the entire reason the label exists. See Options.Simulated.
+	ModeSimulated = "simulated"
 )
 
 // ItemResult is one line of the results file: one risk item, what the gate

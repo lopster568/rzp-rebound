@@ -1,0 +1,218 @@
+{
+  "taken_at": "2026-09-05T13:26:56.403348082Z",
+  "manifest_path": "book.json",
+  "manifest_run_tag": "e2e-2026-09-05",
+  "entries": [
+    {
+      "kind": "invoice",
+      "id": "inv_TYMop8Wn8gRjQb",
+      "order_id": "order_TYMoquST1LipVG",
+      "status": "issued",
+      "amount_paise": 720900,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 720900,
+      "currency": "INR"
+    },
+    {
+      "kind": "order",
+      "id": "order_TYMoquST1LipVG",
+      "status": "attempted",
+      "amount_paise": 720900,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 720900,
+      "currency": "INR",
+      "duplicate_of": "inv_TYMop8Wn8gRjQb"
+    },
+    {
+      "kind": "invoice",
+      "id": "inv_TYMotP6TyMgsG2",
+      "order_id": "order_TYMoustirlERkT",
+      "status": "issued",
+      "amount_paise": 310400,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 310400,
+      "currency": "INR"
+    },
+    {
+      "kind": "order",
+      "id": "order_TYMoustirlERkT",
+      "status": "attempted",
+      "amount_paise": 310400,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 310400,
+      "currency": "INR",
+      "duplicate_of": "inv_TYMotP6TyMgsG2"
+    },
+    {
+      "kind": "invoice",
+      "id": "inv_TYMoxKskz6hAGr",
+      "order_id": "order_TYMoynxRXUAuLe",
+      "status": "issued",
+      "amount_paise": 647500,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 647500,
+      "currency": "INR",
+      "email_status": "sent"
+    },
+    {
+      "kind": "order",
+      "id": "order_TYMoynxRXUAuLe",
+      "status": "created",
+      "amount_paise": 647500,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 647500,
+      "currency": "INR",
+      "duplicate_of": "inv_TYMoxKskz6hAGr"
+    },
+    {
+      "kind": "invoice",
+      "id": "inv_TYMp15ihONkWVI",
+      "order_id": "order_TYMp2cvAjVQqtY",
+      "status": "issued",
+      "amount_paise": 736700,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 736700,
+      "currency": "INR",
+      "email_status": "sent"
+    },
+    {
+      "kind": "order",
+      "id": "order_TYMp2cvAjVQqtY",
+      "status": "created",
+      "amount_paise": 736700,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 736700,
+      "currency": "INR",
+      "duplicate_of": "inv_TYMp15ihONkWVI"
+    },
+    {
+      "kind": "invoice",
+      "id": "inv_TYMp5AZLKbU362",
+      "order_id": "order_TYMp6mLDKA1QGr",
+      "status": "issued",
+      "amount_paise": 418300,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 418300,
+      "currency": "INR",
+      "email_status": "sent"
+    },
+    {
+      "kind": "order",
+      "id": "order_TYMp6mLDKA1QGr",
+      "status": "created",
+      "amount_paise": 418300,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 418300,
+      "currency": "INR",
+      "duplicate_of": "inv_TYMp5AZLKbU362"
+    },
+    {
+      "kind": "invoice",
+      "id": "inv_TYMqErD54Pv3pa",
+      "order_id": "order_TYMqGHoRFDWNJI",
+      "status": "issued",
+      "amount_paise": 729000,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 729000,
+      "currency": "INR"
+    },
+    {
+      "kind": "order",
+      "id": "order_TYMqGHoRFDWNJI",
+      "status": "created",
+      "amount_paise": 729000,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 729000,
+      "currency": "INR",
+      "duplicate_of": "inv_TYMqErD54Pv3pa"
+    },
+    {
+      "kind": "invoice",
+      "id": "inv_TYMqIoI60k1bRR",
+      "order_id": "order_TYMqKgpJp4wvO6",
+      "status": "issued",
+      "amount_paise": 500800,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 500800,
+      "currency": "INR",
+      "email_status": "sent"
+    },
+    {
+      "kind": "order",
+      "id": "order_TYMqKgpJp4wvO6",
+      "status": "created",
+      "amount_paise": 500800,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 500800,
+      "currency": "INR",
+      "duplicate_of": "inv_TYMqIoI60k1bRR"
+    },
+    {
+      "kind": "invoice",
+      "id": "inv_TYMqNTXHwI3xvL",
+      "order_id": "order_TYMqP7CW1lDPTB",
+      "status": "issued",
+      "amount_paise": 65300,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 65300,
+      "currency": "INR"
+    },
+    {
+      "kind": "order",
+      "id": "order_TYMqP7CW1lDPTB",
+      "status": "created",
+      "amount_paise": 65300,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 65300,
+      "currency": "INR",
+      "duplicate_of": "inv_TYMqNTXHwI3xvL"
+    },
+    {
+      "kind": "order",
+      "id": "order_TYMqQDMvzyPV3L",
+      "status": "created",
+      "amount_paise": 178700,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 178700,
+      "currency": "INR"
+    },
+    {
+      "kind": "order",
+      "id": "order_TYMqR87XlLzzuY",
+      "status": "created",
+      "amount_paise": 107500,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 107500,
+      "currency": "INR"
+    },
+    {
+      "kind": "order",
+      "id": "order_TYMqS2y0Y2EMhe",
+      "status": "created",
+      "amount_paise": 579400,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 579400,
+      "currency": "INR"
+    },
+    {
+      "kind": "payment_link",
+      "id": "plink_TYN5Z2tLU0sFOa",
+      "status": "created",
+      "amount_paise": 178700,
+      "amount_paid_paise": 0,
+      "amount_due_paise": 0,
+      "currency": "INR",
+      "duplicate_ask_of": "order_TYMqQDMvzyPV3L"
+    }
+  ],
+  "totals": {
+    "entries": 20,
+    "errors": 0,
+    "duplicates": 8,
+    "duplicate_asks": 1,
+    "skipped": 0,
+    "amount_paise": 4994500,
+    "amount_paid_paise": 0,
+    "amount_due_paise": 4994500
+  }
+}

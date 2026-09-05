@@ -1,0 +1,111 @@
+{
+  "run_tag": "risk-1788614771",
+  "mode": "live",
+  "seed": 1,
+  "started_at": "2026-09-05T13:26:11.093396259Z",
+  "finished_at": "2026-09-05T13:26:26.853025192Z",
+  "manifest_path": "book.json",
+  "manifest_run_tag": "e2e-2026-09-05",
+  "manifest_items": 11,
+  "age_source": "manifest_simulated",
+  "detect_grace": "1s",
+  "sweep_since": 1788610234,
+  "sweep_since_source": "the manifest's created_at (2026-09-05T13:10:34Z) less a 1h0m0s skew margin",
+  "kill_switch_engaged": false,
+  "policy": {
+    "amount_ceiling_paise": 1500000,
+    "write_off_floor_paise": 10000,
+    "action_budget": 500,
+    "notify_window": "1ns",
+    "contact_window": "09:00-21:00",
+    "source_params": {
+      "failed_payment": {
+        "grace": "0s",
+        "max_touches": 3,
+        "cooldown": "24h0m0s",
+        "requires_signal": true
+      },
+      "overdue_invoice": {
+        "grace": "72h0m0s",
+        "max_touches": 4,
+        "cooldown": "48h0m0s",
+        "requires_signal": false
+      },
+      "unpaid_order": {
+        "grace": "1h0m0s",
+        "max_touches": 3,
+        "cooldown": "24h0m0s",
+        "requires_signal": false
+      }
+    }
+  },
+  "sightings_by_source": {
+    "failed_payment": 2,
+    "overdue_invoice": 8,
+    "unpaid_order": 9
+  },
+  "items_by_source": {
+    "overdue_invoice": 8,
+    "unpaid_order": 3
+  },
+  "collapsed_away": 8,
+  "items_total": 11,
+  "items_by_arm": {
+    "a0-control": 5,
+    "a1-engine": 6
+  },
+  "verdicts_by_rule": {
+    "R0-DEFAULT-ALLOW": {
+      "allow": 5
+    },
+    "R10-NO-CONTACT-CHANNEL": {
+      "escalate": 2
+    },
+    "R11-NOT-YET-DUE": {
+      "deny": 3
+    },
+    "R13-DISPUTED-NEVER-CHASE": {
+      "escalate": 1
+    }
+  },
+  "verdict_totals": {
+    "allow": 5,
+    "deny": 3,
+    "escalate": 3
+  },
+  "escalation_verdicts_by_rule": {
+    "R0-DEFAULT-ALLOW": {
+      "allow": 3
+    }
+  },
+  "escalation_verdict_totals": {
+    "allow": 3
+  },
+  "actions_proposed": {
+    "create_payment_link": 3,
+    "notify_email": 7,
+    "notify_sms": 1
+  },
+  "actions_executed": {
+    "create_payment_link": 1,
+    "escalate": 1,
+    "notify_email": 4
+  },
+  "actions_accepted": {
+    "create_payment_link": 1,
+    "escalate": 1,
+    "notify_email": 4
+  },
+  "escalations": 1,
+  "observables": {
+    "email_status:sent": 4,
+    "escalated:queued": 1,
+    "plink_status:created": 1
+  },
+  "errors": 0,
+  "amount_due_by_source": {
+    "overdue_invoice": 4128900,
+    "unpaid_order": 865600
+  },
+  "amount_due_total": 4994500
+}

@@ -1,0 +1,816 @@
+<title>Rebound</title>
+<style>
+  :root {
+    --bg: #08090a;
+    --panel: #101314;
+    --panel-2: #161a1c;
+    --line: #23292b;
+    --line-soft: #1a1f21;
+    --ink: #d8dedb;
+    --ink-dim: #8b9691;
+    --ink-faint: #5d6764;
+    --allow: #4ec98a;
+    --deny: #e0a63c;
+    --escalate: #e5695f;
+    --accent: #6ad3c4;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    background-image:
+      radial-gradient(ellipse 90% 60% at 50% -10%, rgba(106, 211, 196, 0.07), transparent 70%),
+      linear-gradient(var(--line-soft) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line-soft) 1px, transparent 1px);
+    background-size: auto, 44px 44px, 44px 44px;
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 20px 72px; }
+
+  /* Header */
+  header { padding: 44px 0 26px; border-bottom: 1px solid var(--line); }
+  .brandline { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+  h1 {
+    margin: 0;
+    font-size: 34px;
+    letter-spacing: -0.6px;
+    font-weight: 600;
+    color: #f2f6f4;
+  }
+  .slug {
+    font-size: 12px;
+    color: var(--ink-faint);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 2px 8px;
+    background: var(--panel);
+  }
+  .thesis { margin: 14px 0 0; max-width: 74ch; color: var(--ink-dim); font-size: 13px; }
+  .headlinks { margin-top: 16px; display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid rgba(106, 211, 196, 0.28); }
+  a:hover { border-bottom-color: var(--accent); }
+
+  /* Tabs */
+  nav.tabs { display: flex; gap: 0; margin: 26px 0 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  nav.tabs button {
+    appearance: none;
+    background: none;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    color: var(--ink-faint);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    padding: 12px 18px;
+    cursor: pointer;
+  }
+  nav.tabs button:hover { color: var(--ink); }
+  nav.tabs button[aria-selected="true"] { color: #f2f6f4; border-bottom-color: var(--accent); }
+
+  section[hidden] { display: none !important; }
+
+  /* Blocks */
+  .block { margin-top: 34px; }
+  .block > h2 {
+    margin: 0 0 4px;
+    font-size: 12px;
+    letter-spacing: 1.6px;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 600;
+  }
+  .block > p.note { margin: 0 0 14px; color: var(--ink-dim); max-width: 84ch; font-size: 12px; }
+
+  .banner {
+    margin-top: 22px;
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    background: var(--panel);
+    padding: 13px 16px;
+    color: var(--ink-dim);
+    font-size: 12px;
+    max-width: 96ch;
+  }
+  .banner strong { color: var(--ink); font-weight: 600; }
+  .banner.warn { border-left-color: var(--deny); }
+
+  /* Stat strip */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 18px; }
+  .stat { border: 1px solid var(--line); background: var(--panel); padding: 12px 14px; }
+  .stat .k { font-size: 10px; letter-spacing: 1.3px; text-transform: uppercase; color: var(--ink-faint); }
+  .stat .v { font-size: 20px; color: #f2f6f4; margin-top: 4px; letter-spacing: -0.3px; }
+  .stat .s { font-size: 11px; color: var(--ink-dim); margin-top: 2px; }
+
+  /* Tables */
+  .scroll { overflow-x: auto; border: 1px solid var(--line); background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; min-width: 620px; }
+  th {
+    text-align: left;
+    font-weight: 600;
+    font-size: 10px;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+    background: var(--panel-2);
+    position: sticky;
+    top: 0;
+  }
+  td { padding: 8px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: top; white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  td.wrap-cell { white-space: normal; min-width: 260px; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .dim { color: var(--ink-faint); }
+
+  /* Verdicts */
+  .rule { font-weight: 600; }
+  .v-allow, .rule.v-allow { color: var(--allow); }
+  .v-deny, .rule.v-deny { color: var(--deny); }
+  .v-escalate, .rule.v-escalate { color: var(--escalate); }
+  .pill {
+    display: inline-block;
+    font-size: 10px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 1px 7px;
+    border: 1px solid currentColor;
+    border-radius: 2px;
+  }
+  .arm { font-size: 11px; color: var(--ink-dim); }
+
+  /* Terminal pane */
+  .term {
+    border: 1px solid var(--line);
+    background: #060708;
+    padding: 14px 16px;
+    max-height: 340px;
+    overflow: auto;
+    font-size: 12px;
+    white-space: pre;
+    color: var(--ink-dim);
+    tab-size: 4;
+  }
+  .term .l-head { color: var(--ink); }
+  .term .l-err { color: var(--escalate); }
+
+  /* Buttons */
+  button.go {
+    appearance: none;
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+    background: var(--accent);
+    color: #04120f;
+    border: 0;
+    padding: 12px 26px;
+    cursor: pointer;
+    font-weight: 700;
+  }
+  button.go:hover { filter: brightness(1.1); }
+  button.go:disabled { background: var(--line); color: var(--ink-faint); cursor: not-allowed; filter: none; }
+  .runbar { display: flex; align-items: center; gap: 16px; margin-top: 18px; flex-wrap: wrap; }
+  .status { font-size: 12px; color: var(--ink-dim); }
+  .status.bad { color: var(--deny); }
+
+  /* Settings */
+  .kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 0; border: 1px solid var(--line); background: var(--panel); margin-top: 14px; }
+  .kv > div { padding: 10px 14px; border-right: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
+  .kv .k { font-size: 10px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--ink-faint); }
+  .kv .v { color: var(--ink); margin-top: 2px; font-size: 12px; }
+
+  /* Delta */
+  .delta { border: 1px solid var(--line); background: var(--panel); padding: 20px; margin-top: 16px; }
+  .delta .figure { font-size: 40px; color: var(--allow); letter-spacing: -1.4px; line-height: 1.1; }
+  .delta .caveat { margin-top: 12px; color: var(--deny); font-size: 12px; max-width: 82ch; }
+  .delta .caveat strong { color: #f0c268; }
+  .delta ul { margin: 14px 0 0; padding-left: 18px; color: var(--ink-dim); font-size: 12px; }
+
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; margin-top: 16px; align-items: start; }
+
+  footer {
+    margin-top: 56px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+    color: var(--ink-faint);
+    font-size: 11.5px;
+    max-width: 96ch;
+  }
+  footer p { margin: 0 0 8px; }
+
+  @media (max-width: 640px) {
+    h1 { font-size: 26px; }
+    .wrap { padding: 0 14px 56px; }
+    .delta .figure { font-size: 30px; }
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="brandline">
+      <h1 id="brand">Rebound</h1>
+      <span class="slug" id="slug">rzp-rebound</span>
+    </div>
+    <p class="thesis">
+      A unified revenue-at-risk engine for Razorpay. Three detectors sweep an account for money that is
+      owed and not collected, the queue collapses the sightings that are the same debt, a fifteen-rule
+      policy gate decides one action per item, and an intervention engine executes only what the gate
+      allowed. Every decision is an append-only audit row carrying the rule id that produced it,
+      including the refusals.
+    </p>
+    <div class="headlinks">
+      <a id="repo" href="#">source on GitHub</a>
+      <a id="repo-arch" href="#">ARCHITECTURE.md</a>
+      <a id="repo-limits" href="#">HONEST-LIMITATIONS.md</a>
+      <a id="repo-audit" href="#">the audit that deleted the retry button</a>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button id="tab-replay" role="tab" aria-selected="true" aria-controls="view-replay">Replay a real run</button>
+    <button id="tab-run" role="tab" aria-selected="false" aria-controls="view-run">Run the engine</button>
+  </nav>
+
+  <!-- ================= REPLAY ================= -->
+  <section id="view-replay" role="tabpanel" aria-labelledby="tab-replay">
+    <div class="banner">
+      <strong>What this is.</strong> The committed artifacts of one run against <strong>Razorpay test
+      mode</strong> on 2026-09-05: the seeded book, the run summary, every result row, the audit ledger,
+      the escalation queue, and the two snapshots taken around a payment. They are files compiled into
+      this binary. Serving them calls no gateway.
+    </div>
+
+    <div class="stats" id="replay-stats"></div>
+
+    <div class="block">
+      <h2>The seeded book</h2>
+      <p class="note">
+        What <code>cmd/seedbook</code> created in the test-mode account before the run: invoices at four
+        age buckets and abandoned orders, with per-item flags. Ages are the manifest's own, not
+        Razorpay's, because no call in the invoice or order API can backdate a resource. Every row the
+        run wrote says which clock it used.
+      </p>
+      <div class="scroll"><table id="book-table"></table></div>
+    </div>
+
+    <div class="block">
+      <h2>Sightings, then items</h2>
+      <p class="note">
+        Razorpay mints an order when an invoice is issued, so one debt is reachable from two detectors
+        under two ids. The queue collapses on the root order rather than on the sighting, or the customer
+        is contacted twice about one debt.
+      </p>
+      <div class="scroll"><table id="dedupe-table"></table></div>
+    </div>
+
+    <div class="block">
+      <h2>Verdicts by rule</h2>
+      <p class="note">
+        First match wins, three verdicts, one decision per item. An escalating verdict raises a second
+        decision, on the escalation itself, which goes through the same gate: the kill switch stops
+        handing an item to a person the same way it stops everything else. Those are counted separately
+        below, so the allow count never exceeds the number of items.
+      </p>
+      <div class="cols">
+        <div>
+          <div class="scroll"><table id="verdict-table"></table></div>
+        </div>
+        <div>
+          <div class="scroll"><table id="escverdict-table"></table></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="block">
+      <h2>Every item, and what the gate said</h2>
+      <div class="scroll"><table id="results-table"></table></div>
+    </div>
+
+    <div class="block">
+      <h2>The audit ledger</h2>
+      <p class="note">
+        Append-only JSONL, one row per decision, refusals included. <code>policy_evaluated</code> goes
+        down before anything acts on it, so a denial leaves the same trail an allow does.
+      </p>
+      <div class="term" id="ledger-pane"></div>
+    </div>
+
+    <div class="block">
+      <h2>The escalation queue</h2>
+      <div class="scroll"><table id="escalation-table"></table></div>
+    </div>
+
+    <div class="block">
+      <h2>Before and after, around one payment</h2>
+      <p class="note">
+        Two reads of the same book, taken by <code>cmd/rzp risk-poll</code>. Nothing in a poll writes to
+        Razorpay. The figure below is computed by this page at startup from the two committed snapshots,
+        using <code>riskrun.Diff</code>, the same function the command calls.
+      </p>
+      <div class="delta" id="delta-pane"></div>
+    </div>
+  </section>
+
+  <!-- ================= RUN ================= -->
+  <section id="view-run" role="tabpanel" aria-labelledby="tab-run" hidden>
+    <div class="banner warn">
+      <strong>Simulated gateway, fixture book, deterministic.</strong> The button below runs the real
+      pipeline in this process: the three real detectors, the real dedupe, the real fifteen-rule policy
+      gate, and the real intervention engine. This is the same policy engine that ran against Razorpay
+      test mode in the replay tab. What is not real is on the far side of two interfaces. The detectors
+      read a committed fixture book instead of an account, and the intervention engine calls an
+      in-memory gateway instead of Razorpay. Nothing here reaches a network, no payment link it mints
+      resolves anywhere, and every row it writes is stamped <code>simulated</code>.
+    </div>
+
+    <div class="kv" id="run-settings"></div>
+
+    <div class="runbar">
+      <button class="go" id="run-btn">Run the engine</button>
+      <span class="status" id="run-status">Ready.</span>
+    </div>
+
+    <div class="block">
+      <h2>Run output</h2>
+      <div class="term" id="run-log">Press the button.</div>
+    </div>
+
+    <div class="block" id="run-items-block" hidden>
+      <h2>Decisions, as they land</h2>
+      <div class="scroll"><table id="run-items"></table></div>
+    </div>
+
+    <div class="block" id="run-summary-block" hidden>
+      <h2>What the run did</h2>
+      <div class="stats" id="run-stats"></div>
+      <div class="cols">
+        <div><div class="scroll"><table id="run-verdicts"></table></div></div>
+        <div><div class="scroll"><table id="run-actions"></table></div></div>
+      </div>
+      <div class="cols">
+        <div>
+          <h2 style="margin-top:22px">Calls the simulated gateway answered</h2>
+          <div class="term" id="run-calls" style="max-height:200px"></div>
+        </div>
+        <div>
+          <h2 style="margin-top:22px">Audit ledger this run wrote</h2>
+          <div class="term" id="run-ledger" style="max-height:200px"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <p>
+      <strong>No live gateway sits behind this page.</strong> The replay view serves committed files from
+      one run against Razorpay <strong>test mode</strong>. The run view drives a fixture book through a
+      simulated in-memory gateway. This process holds no Razorpay credential, reads no key from its
+      environment, and never constructs a gateway client.
+    </p>
+    <p>
+      A paid transition observed in the replay is <strong>n=1</strong>, paid by the person running the
+      demo, and selected rather than sampled. Nobody decided independently to pay. It is not a sample of
+      anything and no recovery rate is quoted off it. An accepted notification means the notification API
+      call succeeded, never that a person read anything.
+    </p>
+    <p>
+      A test-mode number is not evidence about real customers.
+      <a id="repo-limits-2" href="#">HONEST-LIMITATIONS.md</a> is the full list, and it is longer than
+      this footer.
+    </p>
+  </footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var REPO = "https://github.com/lopster568/rzp-recovery-agent";
+  var links = {
+    "repo": "",
+    "repo-arch": "/blob/main/ARCHITECTURE.md",
+    "repo-limits": "/blob/main/HONEST-LIMITATIONS.md",
+    "repo-limits-2": "/blob/main/HONEST-LIMITATIONS.md",
+    "repo-audit": "/blob/main/docs/INDIA-CONSTRAINTS-AUDIT.md"
+  };
+  Object.keys(links).forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) { el.href = REPO + links[id]; }
+  });
+
+  // ---------- helpers ----------
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) { n.className = cls; }
+    if (text !== undefined && text !== null) { n.textContent = String(text); }
+    return n;
+  }
+
+  function inr(paise) {
+    var neg = paise < 0;
+    var p = Math.abs(paise);
+    var s = "INR " + (neg ? "-" : "") + Math.floor(p / 100) + "." + String(p % 100).padStart(2, "0");
+    return s;
+  }
+
+  function verdictClass(v) {
+    if (v === "allow") { return "v-allow"; }
+    if (v === "deny") { return "v-deny"; }
+    if (v === "escalate") { return "v-escalate"; }
+    return "dim";
+  }
+
+  function table(node, headers, rows) {
+    node.textContent = "";
+    var thead = el("thead");
+    var htr = el("tr");
+    headers.forEach(function (h) {
+      var th = el("th", null, typeof h === "string" ? h : h.label);
+      if (typeof h !== "string" && h.num) { th.className = "num"; }
+      htr.appendChild(th);
+    });
+    thead.appendChild(htr);
+    node.appendChild(thead);
+
+    var tbody = el("tbody");
+    rows.forEach(function (cells) {
+      var tr = el("tr");
+      cells.forEach(function (c) {
+        var td = el("td");
+        if (c && typeof c === "object" && !(c instanceof Node)) {
+          td.textContent = c.text === undefined ? "" : String(c.text);
+          if (c.cls) { td.className = c.cls; }
+        } else if (c instanceof Node) {
+          td.appendChild(c);
+        } else {
+          td.textContent = c === undefined || c === null ? "" : String(c);
+        }
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    node.appendChild(tbody);
+  }
+
+  function stats(node, items) {
+    node.textContent = "";
+    items.forEach(function (it) {
+      var d = el("div", "stat");
+      d.appendChild(el("div", "k", it.k));
+      d.appendChild(el("div", "v", it.v));
+      if (it.s) { d.appendChild(el("div", "s", it.s)); }
+      node.appendChild(d);
+    });
+  }
+
+  function ruleCell(rule, verdict) {
+    var s = el("span", "rule " + verdictClass(verdict), rule);
+    return s;
+  }
+
+  function sortedEntries(obj) {
+    return Object.keys(obj || {}).sort().map(function (k) { return [k, obj[k]]; });
+  }
+
+  // Rule ids sort by their number, not by their string: R10 after R9.
+  function ruleOrder(a, b) {
+    function n(id) {
+      var m = /^R(\d+)/.exec(id);
+      return m ? parseInt(m[1], 10) : 999;
+    }
+    return n(a) - n(b) || a.localeCompare(b);
+  }
+
+  function verdictRows(byRule) {
+    var rows = [];
+    Object.keys(byRule || {}).sort(ruleOrder).forEach(function (rule) {
+      var byVerdict = byRule[rule];
+      Object.keys(byVerdict).sort().forEach(function (v) {
+        rows.push([
+          ruleCell(rule, v),
+          { text: v, cls: verdictClass(v) },
+          { text: byVerdict[v], cls: "num" }
+        ]);
+      });
+    });
+    return rows;
+  }
+
+  function countTable(node, label, obj) {
+    var rows = sortedEntries(obj).map(function (e) {
+      return [e[0], { text: e[1], cls: "num" }];
+    });
+    if (!rows.length) { rows = [[{ text: "none", cls: "dim" }, ""]]; }
+    table(node, [label, { label: "count", num: true }], rows);
+  }
+
+  function jsonPane(node, rows) {
+    node.textContent = rows.map(function (r) {
+      return typeof r === "string" ? r : JSON.stringify(r);
+    }).join("\n");
+  }
+
+  // ---------- tabs ----------
+  var tabs = [
+    { btn: document.getElementById("tab-replay"), view: document.getElementById("view-replay") },
+    { btn: document.getElementById("tab-run"), view: document.getElementById("view-run") }
+  ];
+  tabs.forEach(function (t) {
+    t.btn.addEventListener("click", function () {
+      tabs.forEach(function (o) {
+        var on = o === t;
+        o.btn.setAttribute("aria-selected", on ? "true" : "false");
+        o.view.hidden = !on;
+      });
+    });
+  });
+
+  // ---------- replay ----------
+  fetch("/api/replay")
+    .then(function (r) {
+      if (!r.ok) { throw new Error("the replay data answered " + r.status); }
+      return r.json();
+    })
+    .then(renderReplay)
+    .catch(function (err) {
+      document.getElementById("replay-stats").textContent = "could not load the replay data: " + err.message;
+    });
+
+  function renderReplay(d) {
+    var s = d.summary;
+
+    var sightings = Object.keys(s.sightings_by_source || {}).reduce(function (a, k) {
+      return a + s.sightings_by_source[k];
+    }, 0);
+
+    stats(document.getElementById("replay-stats"), [
+      { k: "run", v: s.run_tag, s: s.mode + ", Razorpay test mode" },
+      { k: "items", v: s.items_total, s: sightings + " sightings, " + s.collapsed_away + " merged" },
+      { k: "outstanding", v: inr(s.amount_due_total), s: "as Razorpay reported it" },
+      { k: "verdicts", v: (s.verdict_totals.allow || 0) + " / " + (s.verdict_totals.deny || 0) + " / " + (s.verdict_totals.escalate || 0), s: "allow / deny / escalate" },
+      { k: "escalations", v: s.escalations, s: "handed to a person" },
+      { k: "errors", v: s.errors, s: "rows carrying an error" }
+    ]);
+
+    // The book
+    table(document.getElementById("book-table"),
+      ["kind", "id", "customer", { label: "amount", num: true }, "age", "flags", "status"],
+      (d.book.items || []).map(function (i) {
+        var flags = Object.keys(i.flags || {}).filter(function (k) { return i.flags[k]; });
+        return [
+          i.kind,
+          i.id,
+          { text: i.customer_email ? i.customer_name : (i.customer_name || "no contact on this item"), cls: i.customer_email || i.customer_contact ? "" : "dim" },
+          { text: inr(i.amount_paise), cls: "num" },
+          { text: i.age_bucket, cls: "dim" },
+          { text: flags.length ? flags.join(", ") : "", cls: "v-escalate" },
+          { text: i.status, cls: "dim" }
+        ];
+      }));
+
+    // Dedupe
+    var sources = ["overdue_invoice", "failed_payment", "unpaid_order"];
+    table(document.getElementById("dedupe-table"),
+      ["source", { label: "sightings", num: true }, { label: "items after dedupe", num: true }, { label: "outstanding", num: true }],
+      sources.map(function (src) {
+        return [
+          src,
+          { text: (s.sightings_by_source || {})[src] || 0, cls: "num" },
+          { text: (s.items_by_source || {})[src] || 0, cls: "num" },
+          { text: inr((s.amount_due_by_source || {})[src] || 0), cls: "num" }
+        ];
+      }).concat([[
+        { text: "total", cls: "dim" },
+        { text: sightings, cls: "num" },
+        { text: s.items_total, cls: "num" },
+        { text: inr(s.amount_due_total), cls: "num" }
+      ]]));
+
+    table(document.getElementById("verdict-table"),
+      ["rule, one decision per item", "verdict", { label: "n", num: true }],
+      verdictRows(s.verdicts_by_rule));
+
+    table(document.getElementById("escverdict-table"),
+      ["rule, on the escalation itself", "verdict", { label: "n", num: true }],
+      verdictRows(s.escalation_verdicts_by_rule));
+
+    // Results
+    table(document.getElementById("results-table"),
+      ["source", "item", "arm", { label: "due", num: true }, "proposed", "verdict", "rule", "executed", "observable"],
+      (d.results || []).map(function (r) {
+        return [
+          r.source,
+          r.risk_item_id,
+          { text: r.arm, cls: "arm" },
+          { text: inr(r.amount_due_paise), cls: "num" },
+          r.proposed_action,
+          { text: r.verdict, cls: verdictClass(r.verdict) },
+          ruleCell(r.rule_id, r.verdict),
+          { text: r.executed_action || "nothing ran", cls: r.executed_action ? "" : "dim" },
+          { text: r.observable || "", cls: "dim" }
+        ];
+      }));
+
+    jsonPane(document.getElementById("ledger-pane"), d.ledger || []);
+
+    table(document.getElementById("escalation-table"),
+      ["item", "source", { label: "due", num: true }, "why a person has to look"],
+      (d.escalations || []).map(function (e) {
+        return [
+          e.risk_item_id,
+          e.source,
+          { text: inr(e.amount_due_paise), cls: "num" },
+          { text: e.reason, cls: "wrap-cell v-escalate" }
+        ];
+      }));
+
+    renderDelta(d);
+  }
+
+  function renderDelta(d) {
+    var delta = d.delta;
+    var pane = document.getElementById("delta-pane");
+    pane.textContent = "";
+
+    pane.appendChild(el("div", "figure", inr(delta.recovered_paise) + " recovered"));
+    pane.appendChild(el("div", null,
+      "amount due moved " + inr(delta.amount_due_change_paise) + " across " +
+      delta.entries_compared + " entities compared, " + delta.entries_unmatched + " unmatched, " +
+      delta.entries_deduped + " whose debt another entry carries."));
+
+    var caveat = el("div", "caveat");
+    var b = el("strong", null, "n=1, and the payer is the person running the demo. ");
+    caveat.appendChild(b);
+    caveat.appendChild(document.createTextNode(
+      "That figure is what Razorpay reports as collected between two reads. It is not a claim that this " +
+      "program caused any of it: a customer who paid for their own reasons moves the same number, which " +
+      "is what the control arm is for. One payment, on one link, chosen because it was the link on " +
+      "screen. Nobody decided independently to pay. It is not a sample of anything, and no recovery rate " +
+      "is quoted off this system."));
+    pane.appendChild(caveat);
+
+    if ((delta.status_changes || []).length) {
+      var ul = el("ul");
+      delta.status_changes.forEach(function (c) { ul.appendChild(el("li", null, c)); });
+      pane.appendChild(ul);
+    }
+  }
+
+  // ---------- run ----------
+  var settings = [
+    ["mode", "simulated"],
+    ["book", "committed fixture manifest"],
+    ["gateway", "in memory, no network"],
+    ["arm seed", "1234, fixed"],
+    ["detect grace", "1s"],
+    ["notify window (R6)", "1ns, so the rate bound is off"],
+    ["contact window (R12)", "open all day, a demo accommodation"],
+    ["action budget (R5)", "500, the default"],
+    ["amount ceiling (R3)", "INR 15000.00"]
+  ];
+  var kv = document.getElementById("run-settings");
+  settings.forEach(function (p) {
+    var d = el("div");
+    d.appendChild(el("div", "k", p[0]));
+    d.appendChild(el("div", "v", p[1]));
+    kv.appendChild(d);
+  });
+
+  var btn = document.getElementById("run-btn");
+  var statusEl = document.getElementById("run-status");
+  var logEl = document.getElementById("run-log");
+  var itemsBlock = document.getElementById("run-items-block");
+  var itemsTable = document.getElementById("run-items");
+  var summaryBlock = document.getElementById("run-summary-block");
+  var source = null;
+
+  function setStatus(text, bad) {
+    statusEl.textContent = text;
+    statusEl.className = bad ? "status bad" : "status";
+  }
+
+  function appendLog(text, cls) {
+    var line = el("div", cls || null, text);
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  btn.addEventListener("click", function () {
+    if (source) { return; }
+
+    btn.disabled = true;
+    setStatus("running.");
+    logEl.textContent = "";
+    summaryBlock.hidden = true;
+    itemsBlock.hidden = true;
+    var rows = [];
+    table(itemsTable,
+      ["source", "item", "arm", { label: "due", num: true }, "proposed", "verdict", "rule", "action or refusal", "observable"],
+      []);
+
+    source = new EventSource("/api/run");
+
+    source.onmessage = function (ev) {
+      var e;
+      try { e = JSON.parse(ev.data); } catch (err) { return; }
+
+      if (e.kind === "log") {
+        appendLog(e.text, /^(run|mode|manifest|items|age)\s/.test(e.text) ? "l-head" : null);
+      } else if (e.kind === "item") {
+        itemsBlock.hidden = false;
+        rows.push(e.item);
+        appendItem(itemsTable, e.item);
+      } else if (e.kind === "calls") {
+        jsonPane(document.getElementById("run-calls"), (e.calls || []).length ? e.calls : ["the gateway was asked to do nothing"]);
+      } else if (e.kind === "ledger") {
+        jsonPane(document.getElementById("run-ledger"), e.ledger || []);
+      } else if (e.kind === "summary") {
+        renderRunSummary(e.summary);
+      } else if (e.kind === "error") {
+        appendLog("error: " + e.text, "l-err");
+        finish("the run stopped: " + e.text, true);
+      } else if (e.kind === "done") {
+        finish("done. " + rows.length + " item(s) decided, nothing left this process.", false);
+      }
+    };
+
+    source.onerror = function () {
+      if (!source) { return; }
+      // EventSource cannot read a status code, so a refusal and a dropped
+      // connection look the same from here. Probing the endpoint to tell them
+      // apart would start a second run, since Go's mux answers HEAD on a GET
+      // route, so the message covers both cases instead.
+      finish("the stream ended. This endpoint runs one engine at a time, so if somebody else is running it, try again in a few seconds.", true);
+    };
+  });
+
+  function finish(text, bad) {
+    if (source) { source.close(); source = null; }
+    btn.disabled = false;
+    setStatus(text, bad);
+  }
+
+  function appendItem(node, r) {
+    var tbody = node.querySelector("tbody");
+    if (!tbody) { return; }
+    var tr = el("tr");
+    var cells = [
+      r.source,
+      r.risk_item_id,
+      { text: r.arm, cls: "arm" },
+      { text: inr(r.amount_due_paise), cls: "num" },
+      r.proposed_action,
+      { text: r.verdict, cls: verdictClass(r.verdict) },
+      ruleCell(r.rule_id, r.verdict),
+      { text: r.executed_action || (r.arm === "a0-control" ? "control arm: decided, executed nothing" : "refused, nothing ran"), cls: r.executed_action ? "" : "dim" },
+      { text: r.observable || "", cls: "dim" }
+    ];
+    cells.forEach(function (c) {
+      var td = el("td");
+      if (c instanceof Node) {
+        td.appendChild(c);
+      } else if (c && typeof c === "object") {
+        td.textContent = c.text === undefined ? "" : String(c.text);
+        if (c.cls) { td.className = c.cls; }
+      } else {
+        td.textContent = c === undefined || c === null ? "" : String(c);
+      }
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  }
+
+  function renderRunSummary(s) {
+    summaryBlock.hidden = false;
+    var sightings = Object.keys(s.sightings_by_source || {}).reduce(function (a, k) {
+      return a + s.sightings_by_source[k];
+    }, 0);
+
+    stats(document.getElementById("run-stats"), [
+      { k: "mode", v: s.mode, s: "fixture book, simulated gateway" },
+      { k: "items", v: s.items_total, s: sightings + " sightings, " + s.collapsed_away + " merged" },
+      { k: "outstanding", v: inr(s.amount_due_total), s: "in the fixture book" },
+      { k: "verdicts", v: (s.verdict_totals.allow || 0) + " / " + (s.verdict_totals.deny || 0) + " / " + (s.verdict_totals.escalate || 0), s: "allow / deny / escalate" },
+      { k: "escalations", v: s.escalations, s: "handed to a person" },
+      { k: "errors", v: s.errors, s: "rows carrying an error" }
+    ]);
+
+    table(document.getElementById("run-verdicts"),
+      ["rule", "verdict", { label: "n", num: true }],
+      verdictRows(s.verdicts_by_rule));
+
+    countTable(document.getElementById("run-actions"), "action accepted (the API call succeeded)", s.actions_accepted);
+  }
+})();
+</script>
