@@ -42,6 +42,7 @@ the results file cannot disagree.
 | `manifest_path`, `manifest_run_tag`, `manifest_items` | The seedbook run it is about |
 | `age_source` | `gateway` or `manifest_simulated`, run-wide. Per-item rows carry their own |
 | `detect_grace`, `kill_switch_engaged` | The sweep's grace period, and whether R8 was engaged |
+| `sweep_since`, `sweep_since_source` | The `created_at` floor all three sweeps ran under, in Unix seconds, and where that number came from in plain words. Zero means an unscoped sweep, which is why the derivation is recorded beside it |
 | `policy` | The full cadence the run ran under: ceiling, write-off floor, action budget, notify window, contact window, and the per-source table of grace, max touches, cooldown, and whether the source requires a signal |
 | `sightings_by_source` | What the detectors returned, before the dedupe |
 | `items_by_source`, `collapsed_away`, `items_total` | What was left after `detect.Collapse`, and how many sightings it merged |
@@ -74,11 +75,12 @@ against that day's constants would be scored against a policy it never saw.
 ### The snapshot schema and the delta
 
 `riskrun.Snapshot` is `taken_at`, the manifest it is about, a list of entries,
-and their totals. An entry carries `kind`, the id, the order behind it, `status`,
-the three amounts, the currency, and the invoice `email_status` and `sms_status`.
-An entry whose read failed carries `error` and stays in the file, because an
-entity that could not be read is not an entity that is settled and dropping it
-would let a delta count it as paid.
+a list of the manifest items no read was made for, and their totals. An entry
+carries `kind`, the id, the order behind it, `status`, the three amounts, the
+currency, and the invoice `email_status` and `sms_status`. An entry whose read
+failed carries `error` and stays in the file, because an entity that could not be
+read is not an entity that is settled and dropping it would let a delta count it
+as paid.
 
 An invoice contributes two entries, the invoice and the order it minted, because
 they are two different answers about one debt: the invoice carries the
@@ -86,11 +88,31 @@ notification-status fields and the order is what a payment lands on. A payment
 link reports no amount due at all, so that field is left at zero on one rather
 than filled in by arithmetic.
 
+**One debt is counted once.** Both of those entries report the same three
+amounts, so summing both reports a book at twice its worth. A live snapshot on
+2026-09-05 did exactly that over a book of issued invoices, and the delta would
+have reported a single paid invoice at double its value. That run is not
+committed and no figure off it is published here, for the reason the live-numbers
+section below gives. The order entry now carries `duplicate_of`, naming the
+invoice whose entry the amounts are counted on, and the totals and the money half
+of the delta skip it. What it does not do is edit what Razorpay said: the
+gateway's own amounts stay on the entry, the entry stays in the file, and its
+status is still compared, because the order's flip to `paid` is a real
+transition. `totals.duplicates` is how many entries were treated that way.
+An invoice that could not be read counts nothing, so its order is not marked and
+the debt stays in the totals rather than disappearing from them.
+
+A manifest item with no gateway id on it, which is what a seed run that stopped
+partway leaves behind, produces no read. It is listed under `skipped` with the
+reason and with the customer id it does carry, and counted in `totals.skipped`,
+rather than being dropped inside a nil check. A snapshot holding fewer entities
+than its manifest has to say so.
+
 `riskrun.Delta` is what moved between two snapshots: `recovered_paise`,
 `amount_due_change_paise`, how many entities were compared, how many were
-unmatched or unreadable, and the entities whose status changed. An entity present
-in one snapshot and not the other contributes nothing and is counted as
-unmatched.
+deduped, how many were unmatched or unreadable, and the entities whose status
+changed. An entity present in one snapshot and not the other contributes nothing
+and is counted as unmatched.
 
 **`recovered_paise` is not a claim about what this program caused.** It is the
 rise in what Razorpay reports as collected between two reads. A customer who paid

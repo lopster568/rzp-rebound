@@ -18,25 +18,45 @@ terminal undoes the credential work in `docs/phases/phase-1-live-loop/`.
 
 ## Setup, before recording
 
+Do not run `make preflight` for this demo. It hard-fails on an unreachable
+docker daemon, and no command in this shot list touches docker: the trace tabs
+left the script, and the four risk commands are `go` and the Razorpay API. It
+also prints a line naming the agent CLI, which the recording checklist below
+says stays off screen.
+
+What the risk sequence actually needs is three things, and this checks all of
+them without printing a credential:
+
 ```
-make preflight
+go version
+jq --version
+grep -q RAZORPAY_KEY_ID .env && echo "key id present"
 make seedbook FLAGS='--dry-run'
 ```
 
-`preflight` reports the toolchain, docker, and credentials in one screen. The
-seedbook dry run prints the plan it would seed and calls nothing, which is the
-rehearsal for beat one and the way to check the account is reachable without
+`jq` is only for the pretty-printed ledger row in the last block. The seedbook
+dry run prints the plan it would seed and calls nothing, which is the rehearsal
+for beat one and the way to check the plan is the one you expect without
 spending a live seed on it.
 
-Then seed the real book, before recording, because the browser step in beat two
-takes longer than a shot:
+Then seed the real book, before recording, because it is not instant and the
+browser step in beat two takes longer than a shot:
 
 ```
 make seedbook
 ```
 
+The seeder waits between creation calls on purpose. Razorpay test mode answered
+`429` partway through an unpaced seed of this profile on 2026-09-05, twice, and
+left half a book behind each time, so the calls are spaced and the demo profile
+now takes something like half a minute. If a seed does stop early anyway, run
+`make seedbook` again: it reads the manifest already at `seedbook.json`,
+continues that same run tag from where it stopped, and refuses to seed a second
+book over the first. `-force` is how you overwrite one deliberately.
+
 Keep the printed instruction block. It names the links to open and the documented
-failure cards to use, and beat two is you reading it back.
+failure cards to use, and beat two is you reading it back. It prints even when a
+seed stopped early, so a partial book still gives you links to work with.
 
 Open a browser with exactly two tabs: one of the invoice short URLs the seeder
 printed, and a second one you will use in beat five. Nothing else. The recording
@@ -121,6 +141,18 @@ what the three detectors returned, and it will not be in `items_by_source`, whic
 is what survived `Collapse`. The terminal roll-up prints items. Prove this beat
 from `summary.json` in the next block, not from the screen.
 
+The guard on that, and it is the one to check before the take:
+`sightings_by_source` is built by counting the sightings that came back, so a
+source that returned none has no key in that object at all. If the browser
+decline did not happen, or had not landed in the account by the time the sweep
+ran, `failed_payment` is missing from the object rather than sitting there with
+a zero beside it. A rehearsal on 2026-09-05 produced exactly that shape:
+`overdue_invoice`, `unpaid_order`, and no third key. So look for the key before
+you narrate it. If it is not there, fail another payment and take the sweep
+again, or cut the line that points at it. A missing key is not a detector
+reporting nothing, and narrating it as one is the same mistake as reading
+`items_by_source` and calling the dedupe a miss.
+
 ## 2:00 to 3:10, the risk run, beat two
 
 **On screen:** back to a clean terminal.
@@ -178,7 +210,8 @@ invoice detector reported, and the dedupe kept the invoice. The failed-payment
 detector did fire, and `sightings_by_source` is the field that says so;
 `items_by_source` beside it is what was left after the merge. Reading the second
 one and calling it a detector that found nothing is the mistake this block exists
-to stop.
+to stop. If `failed_payment` is not a key in that object at all, the browser beat
+did not land and the presenter note in the previous block says what to do.
 
 **Point at the age line.** There it is: `manifest_simulated`. That is label one of
 three. It is also on the summary file and on every single result row.
@@ -324,9 +357,12 @@ Run through this before the first take and again before the final one.
   other tabs, no bookmarks bar carrying anything, no autofill dropdown appearing
   over the card form. Check the card form once before recording, so the browser
   has already offered and been refused whatever it wants to offer.
-- **Seed the book before recording, not on camera.** The browser decline in beat
-  two takes longer than its shot, and a seed that hits its call budget mid-take is
-  not recoverable inside five minutes.
+- **Seed the book before recording, not on camera.** The seeder paces its calls
+  and the demo profile takes something like half a minute, the browser decline in
+  beat two takes longer than its shot, and a seed that hits its call budget
+  mid-take is not recoverable inside five minutes.
+- **Check `failed_payment` is a key in `sightings_by_source`** before the take
+  that points at it. See the presenter note in the browser-cutaway block.
 - **Rehearse the dry run once** immediately before recording, so the on-camera
   run is warm and finishes inside its block:
   `make risk-run FLAGS='--dry-run --manifest internal/riskrun/testdata/manifest.json --out /tmp/rehearsal'`
