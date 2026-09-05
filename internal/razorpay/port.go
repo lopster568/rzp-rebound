@@ -160,12 +160,25 @@ type Order struct {
 // Payment is a Razorpay payment. Amounts are in paise. The five error fields
 // are populated only when Status is failed.
 type Payment struct {
-	ID               string `json:"id"`
-	OrderID          string `json:"order_id"`
-	AmountPaise      int64  `json:"amount"`
-	Currency         string `json:"currency"`
-	Status           string `json:"status"`
-	Method           string `json:"method"`
+	ID          string `json:"id"`
+	OrderID     string `json:"order_id"`
+	AmountPaise int64  `json:"amount"`
+	Currency    string `json:"currency"`
+	Status      string `json:"status"`
+	Method      string `json:"method"`
+	// Email and Contact are the contact details the payer entered at
+	// checkout, carried on the payment entity as "email" and "contact".
+	//
+	// They are the only contact a failed-payment sighting can honestly carry
+	// that does not come out of a merchant-written order note: /v1/orders
+	// answers with no email and no contact field at all. Both were on the
+	// payment body captured on 2026-08-31 in
+	// testdata/recorded/list_payments_after_failure.json, and both are
+	// omitempty because a payment made through a flow that collected neither
+	// carries neither, and an empty string there is the honest report rather
+	// than a gap to fill in from somewhere else.
+	Email            string `json:"email,omitempty"`
+	Contact          string `json:"contact,omitempty"`
 	CreatedAt        int64  `json:"created_at"`
 	ErrorCode        string `json:"error_code,omitempty"`
 	ErrorDescription string `json:"error_description,omitempty"`

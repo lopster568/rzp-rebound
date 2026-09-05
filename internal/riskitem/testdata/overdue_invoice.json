@@ -1,0 +1,25 @@
+{
+  "id": "ri_d4de8e37fb6c",
+  "source": "overdue_invoice",
+  "source_id": "inv_TYEwC7POHGFZNa",
+  "root_order_id": "order_TYEwKA0KjwEW3t",
+  "customer": {
+    "name": "Probe Customer",
+    "email": "probe-2026-09-05@example.com",
+    "contact": "9000090000"
+  },
+  "amount_paise": 50000,
+  "amount_paid_paise": 0,
+  "amount_due_paise": 50000,
+  "currency": "INR",
+  "at_risk_since": 1788586088,
+  "signal": {
+    "attempts": 0,
+    "email_status": "sent"
+  },
+  "pay_handle": {
+    "kind": "invoice",
+    "url": "https://rzp.io/rzp/4U2HXcQ",
+    "id": "inv_TYEwC7POHGFZNa"
+  }
+}

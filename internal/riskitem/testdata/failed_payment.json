@@ -1,0 +1,24 @@
+{
+  "id": "ri_b1cdc1881abb",
+  "source": "failed_payment",
+  "source_id": "pay_TWu8GufuR8yXmA",
+  "root_order_id": "order_TWu8G6mQV0Drc9",
+  "customer": {
+    "email": "probe@example.com",
+    "contact": "+919999999999"
+  },
+  "amount_paise": 100000,
+  "amount_paid_paise": 0,
+  "amount_due_paise": 100000,
+  "currency": "INR",
+  "at_risk_since": 1788294474,
+  "signal": {
+    "failure_code": "BAD_REQUEST_ERROR",
+    "failure_reason": "payment_failed",
+    "failure_source": "gateway",
+    "failure_step": "payment_authorization",
+    "method": "card",
+    "attempts": 1
+  },
+  "pay_handle": {}
+}
