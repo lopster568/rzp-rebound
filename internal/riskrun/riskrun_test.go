@@ -793,3 +793,105 @@ func TestTheSummaryRecordsTheSweepFloorItRanUnder(t *testing.T) {
 		t.Errorf("sweep_since_source = %q, want %q", unscoped.SweepSinceSource, SinceSourceUnrecorded)
 	}
 }
+
+// TestSimulatedLabelsEveryRowWithoutChangingAnything is the pin under
+// Options.Simulated.
+//
+// The label exists so that a run driven against a fixture book and an in-memory
+// gateway cannot be read as a run against an account. cmd/rzp-demo serves one on
+// a public page, and a summary stamped "live" over a book nobody was ever billed
+// for would be the page's one dishonest field.
+//
+// The second half is what makes the label worth having: it changes nothing. The
+// same seed over the same fixture with the same policy has to produce the same
+// decisions under either label, or the flag is doing something and the doc
+// comment is wrong.
+func TestSimulatedLabelsEveryRowWithoutChangingAnything(t *testing.T) {
+	live, liveRows := liveRun(t, policy.Config{})
+
+	manifest := loadFixture(t)
+	var ledger, results bytes.Buffer
+	fake := newTickingClock(fixtureBase.Add(time.Hour), time.Millisecond)
+	recorder, err := audit.NewRecorder(audit.Options{Writer: &ledger, Clock: fake})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sim, err := Run(context.Background(), Options{
+		Manifest:     manifest,
+		ManifestPath: "testdata/manifest.json",
+		RunTag:       "test",
+		Seed:         1234,
+		Simulated:    true,
+		SimulateAge:  true,
+		API:          NewManifestSource(manifest),
+		Gateway:      &stubGateway{},
+		Clock:        fake,
+		Recorder:     recorder,
+		Escalations:  intervene.NewMemorySink(),
+		Promises:     promise.NewStore(),
+		Results:      &results,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	simRows := decodeRows(t, results.Bytes())
+
+	if sim.Mode != ModeSimulated {
+		t.Errorf("summary mode = %q, want %q", sim.Mode, ModeSimulated)
+	}
+	if live.Mode != ModeLive {
+		t.Errorf("the unlabelled run's mode = %q, want %q", live.Mode, ModeLive)
+	}
+	for _, row := range simRows {
+		if row.Mode != ModeSimulated {
+			t.Errorf("row %s is stamped %q, want %q", row.RiskItemID, row.Mode, ModeSimulated)
+		}
+	}
+	// Every ledger row too. The audit trail is what a reader checks a claim
+	// against, so a row in it that says nothing about the mode is a row that can
+	// be quoted as a live one.
+	for _, line := range bytes.Split(bytes.TrimSpace(ledger.Bytes()), []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var row struct {
+			Detail map[string]string `json:"detail"`
+		}
+		if err := json.Unmarshal(line, &row); err != nil {
+			t.Fatalf("decode a ledger row: %v", err)
+		}
+		if mode, ok := row.Detail["mode"]; ok && mode != ModeSimulated {
+			t.Errorf("a ledger row carries mode %q, want %q", mode, ModeSimulated)
+		}
+	}
+
+	// The decisions themselves are untouched.
+	if len(simRows) != len(liveRows) {
+		t.Fatalf("%d simulated row(s) against %d live row(s)", len(simRows), len(liveRows))
+	}
+	for i := range simRows {
+		a, b := simRows[i], liveRows[i]
+		if a.RiskItemID != b.RiskItemID || a.Arm != b.Arm || a.Verdict != b.Verdict ||
+			a.RuleID != b.RuleID || a.ExecutedAction != b.ExecutedAction || a.Accepted != b.Accepted {
+			t.Errorf("row %d differs under the label: %+v against %+v", i, a, b)
+		}
+	}
+}
+
+// TestNewManifestSourceIsTheSameSourceTheDryRunUses keeps the exported wrapper
+// honest. A second implementation that drifted from the one Run builds for
+// itself would let a demo show a queue no dry run can reproduce.
+func TestNewManifestSourceIsTheSameSourceTheDryRunUses(t *testing.T) {
+	manifest := loadFixture(t)
+
+	exported, ok := NewManifestSource(manifest).(*manifestSource)
+	if !ok {
+		t.Fatalf("NewManifestSource returned %T, want *manifestSource", NewManifestSource(manifest))
+	}
+	internal := newManifestSource(manifest)
+
+	if len(exported.orders) != len(internal.orders) || len(exported.invoices) != len(internal.invoices) {
+		t.Errorf("exported source has %d order(s) and %d invoice(s), the internal one has %d and %d",
+			len(exported.orders), len(exported.invoices), len(internal.orders), len(internal.invoices))
+	}
+}

@@ -280,6 +280,7 @@ outcomes the harness chose about an action that may not be taken.
 | [`RESULTS.md`](RESULTS.md) | The risk-run output schema, and the pre-pivot tables under their banner |
 | [`HONEST-LIMITATIONS.md`](HONEST-LIMITATIONS.md) | Every limit the build found, collected, pre-pivot and post-pivot |
 | [`docs/DEMO-SCRIPT.md`](docs/DEMO-SCRIPT.md) | The five minute walkthrough, as a timed shot list |
+| [`docs/DEMO-DEPLOY.md`](docs/DEMO-DEPLOY.md) | The public demo page: what is behind the link, and how to put it on one |
 | [`docs/PRD.md`](docs/PRD.md) | Scope, requirements with their covering tests, open questions |
 | [`docs/EVAL-DESIGN.md`](docs/EVAL-DESIGN.md) | How a run is measured and why each metric exists |
 | [`docs/EVIDENCE.md`](docs/EVIDENCE.md) | Where every constant came from and what kind of source it has |

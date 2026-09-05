@@ -1,0 +1,30 @@
+# Render blueprint for the public demo page.
+#
+# Connect this repository as a Blueprint in the Render dashboard and it reads
+# this file. There is nothing to configure by hand: no environment variable, no
+# secret, no build command, no start command. docs/DEMO-DEPLOY.md has the
+# clicks.
+#
+# There is no envVars block below, and there should never be one. cmd/rzp-demo
+# reads PORT, which Render sets itself, and nothing else. A Razorpay key set on
+# this service would be a key sitting in the environment of a process that has
+# no code path to use it, which is a risk with no benefit on the other side of
+# it.
+
+services:
+  - type: web
+    name: rzp-rebound
+    runtime: docker
+    plan: free
+    # Singapore is the closest free region to an Indian audience. Any region
+    # works; this one is a latency choice and nothing depends on it.
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    # The health check the binary implements. It answers from memory and calls
+    # nothing, so a green check means the process is up and the embedded run
+    # artifacts decoded at startup.
+    healthCheckPath: /healthz
+    # Redeploy on a push to the tracked branch. This is the field that replaced
+    # the deprecated autoDeploy boolean.
+    autoDeployTrigger: commit

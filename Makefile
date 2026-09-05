@@ -2,7 +2,7 @@
 .PHONY: help hooks preflight test test-go test-race test-python test-integration lint \
 	docs-check claims-check ci verify-phase-0 verify-offline verify-live verify-phase-2 \
 	verify-phase-3 verify-phase-4 jaeger-up jaeger-down seed run-arm run-all report \
-	auth-probe capture demo showcase agent-smoke trace-links seedbook risk-run risk-poll
+	auth-probe capture demo demo-web showcase agent-smoke trace-links seedbook risk-run risk-poll
 
 # Live targets read .env so a run does not depend on the caller having
 # exported the key pair by hand. .env is gitignored and chmod 600, and nothing
@@ -99,6 +99,13 @@ capture: ## Capture real test-mode responses into testdata/recorded/
 
 demo: ## Run the recovery loop end to end against Razorpay test mode
 	@$(RUN_WITH_ENV) go run ./cmd/rzp demo
+
+# The one target here that deliberately does not go through RUN_WITH_ENV. The
+# demo server reads PORT and nothing else, and handing it .env would put a
+# credential in the environment of a process with no code path to use it.
+# docs/DEMO-DEPLOY.md has the public link, the tunnel, and the container.
+demo-web: ## Serve the public demo page on http://localhost:8080. PORT= to move it.
+	@go run ./cmd/rzp-demo
 
 showcase: ## The guided tour in four acts. NO_PAUSE=1 skips the pauses, for recording.
 	@bash scripts/showcase.sh
