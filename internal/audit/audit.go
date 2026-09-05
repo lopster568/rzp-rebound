@@ -32,6 +32,16 @@ const (
 	KindActionSkipped         = "action_skipped"
 	KindNotificationRequested = "notification_requested"
 	KindOutcomeObserved       = "outcome_observed"
+	// KindInterventionApplied is one lawful action applied to one risk item,
+	// accepted by whatever it called. internal/intervene writes it.
+	KindInterventionApplied = "intervention_applied"
+	// KindEscalationRaised is a risk item handed to a person through an
+	// escalation sink. It is a refusal to act automatically, so it is its own
+	// kind rather than an intervention that happened to be an escalation.
+	KindEscalationRaised = "escalation_raised"
+	// KindPromiseLogged is a promise to pay written to the promise ledger. No
+	// gateway resource moved.
+	KindPromiseLogged = "promise_logged"
 )
 
 // Span attribute keys. The ledger line and the span carry the same event, so
