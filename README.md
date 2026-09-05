@@ -3,6 +3,10 @@
 A unified revenue-at-risk engine for Razorpay, and the
 regulatory self-audit that deleted its predecessor's headline action.
 
+**Live demo: https://rzp-rebound.onrender.com/** (a replay of a real test-mode
+run plus the real engine running in-process against a fixture book; free-tier
+cold start can take a minute after idle).
+
 Three detectors sweep an account for money that is owed and not collected:
 payments Razorpay reports as failed, orders created and never paid, and invoices
 issued and gone overdue. All three return one item type. The queue collapses the
